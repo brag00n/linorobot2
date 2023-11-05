@@ -1,0 +1,246 @@
+version: "3.9"
+networks:
+  linorobot2.network:
+    external: false
+services:   
+  base:
+    image: ${COMPOSE_PROJECT_NAME}-linorobot2-${DEPLOY}:${ROS_DISTRO}
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile
+      args:
+        ROS_DISTRO: ${ROS_DISTRO}
+        ROBOT_BASE: ${ROBOT_BASE}
+        LASER_SENSOR: ${LASER_SENSOR} 
+        DEPTH_SENSOR: ${DEPTH_SENSOR}
+      target: ${DEPLOY}
+    hostname: linorobot2-${ROS_DISTRO}
+    stdin_open: true
+    tty: true
+#    network_mode: host
+    networks:
+    - linorobot2.network
+    ipc: host
+    privileged: true
+    environment:
+      - LINOROBOT2_BASE=${ROBOT_BASE} 
+      - LINOROBOT2_LASER_SENSOR=${LASER_SENSOR} 
+      - LINOROBOT2_DEPTH_SENSOR=${DEPTH_SENSOR} 
+      - DISPLAY=${DISPLAY} 
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - $HOME/.Xauthority:/root/.Xauthority
+#      - ../linorobot2_navigation/maps:/root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps:rw)
+      - ..:/root/linorobot2_ws/src/linorobot2:rw)
+      - /dev:/dev
+
+  build:
+    image: ${COMPOSE_PROJECT_NAME}.linorobot2-build:${ROS_DISTRO}
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile
+      args:
+        ROS_DISTRO: ${ROS_DISTRO}
+        ROBOT_BASE: ${ROBOT_BASE}
+        LASER_SENSOR: ${LASER_SENSOR} 
+        DEPTH_SENSOR: ${DEPTH_SENSOR}
+      target: build
+    hostname: linorobot2-build-${ROS_DISTRO}
+    stdin_open: true
+    tty: true
+#    network_mode: host
+    networks:
+    - linorobot2.network
+    ipc: host
+    privileged: true
+    environment:
+      - LINOROBOT2_BASE=${ROBOT_BASE} 
+      - LINOROBOT2_LASER_SENSOR=${LASER_SENSOR} 
+      - LINOROBOT2_DEPTH_SENSOR=${DEPTH_SENSOR} 
+      - DISPLAY=${DISPLAY} 
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - $HOME/.Xauthority:/root/.Xauthority
+      - ../linorobot2_navigation/maps:/root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps:rw)
+      - /dev:/dev
+
+  rosbridge:
+    image: linorobot2-rosbridge:${ROS_DISTRO}
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile
+      args:
+        ROS_DISTRO: ${ROS_DISTRO}
+        ROBOT_BASE: ${ROBOT_BASE}
+        LASER_SENSOR: ${LASER_SENSOR} 
+        DEPTH_SENSOR: ${DEPTH_SENSOR}
+      target: rosbridge
+    hostname: linorobot2-rosbridge-${ROS_DISTRO}
+    stdin_open: true
+    tty: true
+#    network_mode: host
+    networks:
+    - linorobot2.network
+    ipc: host
+    privileged: true
+    environment:
+      - LINOROBOT2_BASE=${ROBOT_BASE} 
+      - LINOROBOT2_LASER_SENSOR=${LASER_SENSOR} 
+      - LINOROBOT2_DEPTH_SENSOR=${DEPTH_SENSOR} 
+      - DISPLAY=${DISPLAY} 
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - $HOME/.Xauthority:/root/.Xauthority
+      - ../linorobot2_navigation/maps:/root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps:rw)
+      - /dev:/dev
+
+  foxglovebridge:
+    image: linorobot2-foxglovebridge:${ROS_DISTRO}
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile
+      args:
+        ROS_DISTRO: ${ROS_DISTRO}
+        ROBOT_BASE: ${ROBOT_BASE}
+        LASER_SENSOR: ${LASER_SENSOR} 
+        DEPTH_SENSOR: ${DEPTH_SENSOR}
+      target: foxglovebridge
+    hostname: linorobot2-rosbridge-${ROS_DISTRO}
+    stdin_open: true
+    tty: true
+#    network_mode: host
+    networks:
+    - linorobot2.network
+    ipc: host
+    privileged: true
+    environment:
+      - LINOROBOT2_BASE=${ROBOT_BASE} 
+      - LINOROBOT2_LASER_SENSOR=${LASER_SENSOR} 
+      - LINOROBOT2_DEPTH_SENSOR=${DEPTH_SENSOR} 
+      - DISPLAY=${DISPLAY} 
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - $HOME/.Xauthority:/root/.Xauthority
+      - ../linorobot2_navigation/maps:/root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps:rw)
+      - /dev:/dev
+
+#=== 1 - Booting up robot
+
+#--- Publish Robot description
+  bootup.robodesc:
+    extends: base
+    command: ros2 launch linorobot2_description description.launch.py rviz:=false
+
+#--- Real robot
+  bootup.real:
+    extends: base
+    command: ros2 launch linorobot2_bringup bringup.launch.py base_serial_port:=/dev/ttyACM0
+    volumes:
+      - /dev:/dev
+
+#--- Simulation
+  bootup.simu:
+    extends: base
+    command: ros2 launch linorobot2_gazebo gazebo.launch.py
+
+#--- Teleop
+  bootup.teleop:
+    extends: base
+    command: ros2 run teleop_twist_keyboard teleop_twist_keyboard
+    volumes:
+      - /dev:/dev
+
+#--- Rosbridge
+  bootup.rosbridge:
+    extends: rosbridge
+    ports:
+      - "9090:9090"
+    command: ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+
+#--- foxglovebridge
+  bootup.foxglovebridge:
+    extends: foxglovebridge
+    ports:
+      - "8765:8765"
+    command: ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765
+
+#==== 2 - Creating MAP
+
+#--- in Simution 
+  slam.simu:
+    extends: base
+    command: >
+      ros2 launch linorobot2_navigation slam.launch.py
+      rviz:=true
+      sim:=true
+
+#--- in real robot
+  slam.real:
+    extends: base
+    command: >
+      ros2 launch linorobot2_navigation slam.launch.py
+      rviz:=false
+
+#==== 3 - Saving the MAP
+  save-map:
+    extends: base
+    command: >
+      ros2 run nav2_map_server map_saver_cli 
+      -f /root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps/map
+      --fmt png
+      --ros-args -p save_map_timeout:=10000.
+
+#==== 4 - Navigationg into the MAP
+  navigation.real:
+    extends: base
+    command: >
+      ros2 launch linorobot2_navigation navigation.launch.py
+      map:=/root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps/playground.pgm
+      rviz:=false
+
+  navigation.simu:
+    extends: base
+    command: >
+      ros2 launch linorobot2_navigation navigation.launch.py
+      map:=/root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps/playground.yaml
+      rviz:=true
+      sim:=true
+      use_sim_time:=true
+
+  default:
+    extends: base
+    command: ros2 launch linorobot2_bringup default_robot.launch.py base_serial_port:=/dev/ttyACM0
+    volumes:
+      - /dev:/dev
+
+  bash:
+    extends: base
+    command: /bin/bash
+    volumes:
+      - /dev:/dev
+
+  rviz-nav:
+    extends: base
+    command: rviz2 -d /root/linorobot2_ws/src/linorobot2/linorobot2_navigation/rviz/linorobot2_navigation.rviz
+
+  rviz:
+    extends: base
+    command: rviz2
+
+#=== Build atmelavr
+  build.atmelavr:
+    extends: build
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    command: /bin/bash -c "set +e && pio run && avrdude -c gpio -p m328p -U lfuse:w:0xFF:m && avrdude -c gpio -p m328p -U hfuse:w:0xDA:m && avrdude -c gpio -p m328p -U efuse:w:0x05:m && avrdude -c gpio -p m328p -U flash:w:.pio/build/atmelavr/firmware.hex"
+
+  build.m5stackv2:
+    extends: build
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    command: /bin/bash -c "set +e && pio run && avrdude -c gpio -p m328p -U lfuse:w:0xFF:m && avrdude -c gpio -p m328p -U hfuse:w:0xDA:m && avrdude -c gpio -p m328p -U efuse:w:0x05:m && avrdude -c gpio -p m328p -U flash:w:.pio/build/atmelavr/firmware.hex"
+
