@@ -75,6 +75,7 @@ function install_ldlidar {
 
 function install_ydlidar {
     cd /tmp
+    echo "--- Install YDLidar-SDK"
     git clone https://github.com/YDLIDAR/YDLidar-SDK.git
     mkdir YDLidar-SDK/build
     cd YDLidar-SDK/build
@@ -82,12 +83,23 @@ function install_ydlidar {
     make
     sudo make install
     cd $WORKSPACE
+    echo "--- Install YDLidar source code patch"
+    #Issue on ydlidar build: "ydlidar_ros2_driver_node.cpp:154:26: error"
+    #cf https://github.com/YDLIDAR/ydlidar_ros2_driver/issues/21
     git clone https://github.com/YDLIDAR/ydlidar_ros2_driver src/ydlidar_ros2_driver
+    cd $WORKSPACE/src/ydlidar_ros2_driver/src/
+    mv ydlidar_ros2_driver_node.cpp ydlidar_ros2_driver_node.cpp.sav
+    wget https://raw.githubusercontent.com/slowrunner/ROS2-GoPiGo3/main/ros2ws/src/ydlidar_ros2_driver/src/ydlidar_ros2_driver_node.cpp
+    ls -ltra
+    cd $WORKSPACE
+    echo "--- Install YDLidar udev device mapping"
     chmod 0777 src/ydlidar_ros2_driver/startup/*
     sudo echo  'KERNEL=="ttyUSB*", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", MODE:="0666", GROUP:="dialout",  SYMLINK+="ydlidar"' >/etc/udev/rules.d/ydlidar.rules
     sudo echo  'KERNEL=="ttyACM*", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", MODE:="0666", GROUP:="dialout",  SYMLINK+="ydlidar"' >/etc/udev/rules.d/ydlidar-V2.rules
     sudo echo  'KERNEL=="ttyUSB*", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", MODE:="0666", GROUP:="dialout",  SYMLINK+="ydlidar"' >/etc/udev/rules.d/ydlidar-2303.rules
+    echo "--- Build YDLidar code"
     colcon build --symlink-install
+    echo "--- Set linorobot setup"
     source $WORKSPACE/install/setup.bash
 }
 
