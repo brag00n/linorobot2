@@ -9,6 +9,7 @@ services:
       context: ../
       dockerfile: docker/Dockerfile
       args:
+        BASE_GIT_LINOROBOT2: ${BASE_GIT_LINOROBOT2}
         ROS_DISTRO: ${ROS_DISTRO}
         ROBOT_BASE: ${ROBOT_BASE}
         LASER_SENSOR: ${LASER_SENSOR} 
@@ -23,6 +24,7 @@ services:
     ipc: host
     privileged: true
     environment:
+      - BASE_GIT_LINOROBOT2=${BASE_GIT_LINOROBOT2}
       - LINOROBOT2_BASE=${ROBOT_BASE} 
       - LINOROBOT2_LASER_SENSOR=${LASER_SENSOR} 
       - LINOROBOT2_DEPTH_SENSOR=${DEPTH_SENSOR} 
@@ -41,6 +43,7 @@ services:
       context: ../
       dockerfile: docker/Dockerfile
       args:
+        BASE_GIT_LINOROBOT2: ${BASE_GIT_LINOROBOT2}
         ROS_DISTRO: ${ROS_DISTRO}
         ROBOT_BASE: ${ROBOT_BASE}
         LASER_SENSOR: ${LASER_SENSOR} 
@@ -55,6 +58,7 @@ services:
     ipc: host
     privileged: true
     environment:
+      - BASE_GIT_LINOROBOT2=${BASE_GIT_LINOROBOT2}
       - LINOROBOT2_BASE=${ROBOT_BASE} 
       - LINOROBOT2_LASER_SENSOR=${LASER_SENSOR} 
       - LINOROBOT2_DEPTH_SENSOR=${DEPTH_SENSOR} 
@@ -232,15 +236,46 @@ services:
     command: rviz2
 
 #=== Build atmelavr
+  build.bash:
+    extends: build
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:rw)
+      - ../../linorobot2_hardware_camera:/root/linorobot2_ws/src/linorobot2_hardware_camera:rw)
+    command: /bin/bash
+
   build.atmelavr:
     extends: build
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
     command: /bin/bash -c "set +e && pio run && avrdude -c gpio -p m328p -U lfuse:w:0xFF:m && avrdude -c gpio -p m328p -U hfuse:w:0xDA:m && avrdude -c gpio -p m328p -U efuse:w:0x05:m && avrdude -c gpio -p m328p -U flash:w:.pio/build/atmelavr/firmware.hex"
 
+#cf https://rt-net.jp/humanoid/archives/4382#toc2
   build.m5stackv2:
     extends: build
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-    command: /bin/bash -c "set +e && pio run && avrdude -c gpio -p m328p -U lfuse:w:0xFF:m && avrdude -c gpio -p m328p -U hfuse:w:0xDA:m && avrdude -c gpio -p m328p -U efuse:w:0x05:m && avrdude -c gpio -p m328p -U flash:w:.pio/build/atmelavr/firmware.hex"
+      - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:rw)
+      - ../../linorobot2_hardware_camera:/root/linorobot2_ws/src/linorobot2_hardware_camera:rw)
+    command: >
+      cd /root/linorobot2_ws/src/linorobot2_hardware_camera
+      ros2 run micro_ros_setup create_firmware_ws.sh raspbian buster_v7
+      cd firmware
+      mv raspbian_apps raspbian_apps.sav
+      git clone https://github.com/brag00n/raspbian_apps -b humble
+      cd ..
+      ros2 run micro_ros_setup configure_firmware.sh image_publisher
+      ros2 run micro_ros_setup build_firmware.sh
+      apt-get update && apt-get install -y openssh-client
+      scp firmware/bin/image_publisher root@192.168.1.196:/home/m5stack/
+      ros2 run micro_ros_setup configure_firmware.sh agent_lite
+      ros2 run micro_ros_setup build_firmware.sh
+      scp firmware/bin/micro_ros_agent_lite root@192.168.1.196:/home/m5stack/
+#     ip link set dev eth1 up
+#     dhclient -v eth1
+#     ssh root@10.254.239.89
+#     cd /home/m5stack
+#     chown m5stack:wheel image_publisher micro_ros_agent_lite
+#     nohup ./micro_ros_agent_lite udp4 --port 8888 --middleware ced --verbose 6 &
+#     nohup ./image_publisher &
 

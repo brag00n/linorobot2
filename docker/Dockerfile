@@ -3,6 +3,8 @@ ARG ROS_DISTRO=
 FROM --platform=$BUILDPLATFORM ros:${ROS_DISTRO}-ros-base as base
 SHELL ["/bin/bash", "-c"]
 
+ARG BASE_GIT_LINOROBOT2
+
 #rviz fix https://github.com/ros2/rviz/issues/948
 RUN apt-get update -q \
     && apt-get install -y software-properties-common \
@@ -17,7 +19,7 @@ RUN mkdir -p /root/linorobot2_ws/src
 WORKDIR /root/linorobot2_ws
 
 RUN apt-get install -y git-all
-RUN git clone -b docker https://github.com/linorobot/linorobot2.git  src/linorobot2
+RUN git clone -b docker https://github.com/${BASE_GIT_LINOROBOT2}/linorobot2.git  src/linorobot2
 RUN touch src/linorobot2/linorobot2_gazebo/COLCON_IGNORE
 RUN apt-get update && rosdep install --from-path src --ignore-src -y --skip-keys micro_ros_agent
 RUN source /opt/ros/$ROS_DISTRO/setup.bash && \
@@ -110,7 +112,7 @@ ENV PATH=${PATH}:/root/.platformio/penv/bin
 
 WORKDIR /root/linorobot2_ws
 
-RUN git clone https://github.com/linorobot/linorobot2_hardware.git src/linorobot2_hardware
+RUN git clone https://github.com/${BASE_GIT_LINOROBOT2}/linorobot2_hardware.git src/linorobot2_hardware
 RUN cd src/linorobot2_hardware/firmware
 WORKDIR /root/linorobot2_ws/src/linorobot2_hardware/firmware
 RUN pio run -e teensy40

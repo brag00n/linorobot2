@@ -21,6 +21,7 @@ LASER_SENSOR=$2
 DEPTH_SENSOR=$3
 ARCH="$(uname -m)"
 WORKSPACE="$HOME/linorobot2_ws"
+BASE_GITLINOROBOT2=brag00n
 
 ROBOT_TYPE_ARRAY=(2wd 4wd mecanum)
 DEPTH_SENSOR_ARRAY=(realsense zed zedm zed2 zed2i oakd oakdlite oakdpro)
@@ -67,7 +68,7 @@ function install_rplidar {
 
 function install_ldlidar {
     cd $WORKSPACE
-    git clone https://github.com/linorobot/ldlidar src/ldlidar
+    git clone https://github.com/${BASE_GITLINOROBOT2}/ldlidar src/ldlidar
     sudo cp src/ldlidar/ldlidar.rules /etc/udev/rules.d/
     colcon build
     source $WORKSPACE/install/setup.bash
@@ -113,7 +114,7 @@ function install_realsense {
 function install_astra {
     cd $WORKSPACE
     sudo apt install -y libuvc-dev libopenni2-dev
-    git clone https://github.com/linorobot/ros_astra_camera src/ros_astra_camera
+    git clone https://github.com/${BASE_GITLINOROBOT2}/ros_astra_camera src/ros_astra_camera
     sudo cp src/ros_astra_camera/56-orbbec-usb.rules /etc/udev/rules.d/
     colcon build
     source $WORKSPACE/install/setup.bash
@@ -289,7 +290,7 @@ source $WORKSPACE/install/setup.bash
 
 #### 2.1 Download linorobot2:
 cd $WORKSPACE
-git clone -b $ROS_DISTRO https://github.com/linorobot/linorobot2 src/linorobot2
+git clone -b $ROS_DISTRO https://github.com/${BASE_GITLINOROBOT2}/linorobot2 src/linorobot2
 
 #### 2.2 Ignore Gazebo Packages on robot computer (optional)
 cd $WORKSPACE/src/linorobot2/linorobot2_gazebo
