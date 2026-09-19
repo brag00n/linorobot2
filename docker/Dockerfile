@@ -106,6 +106,11 @@ RUN apt-get update && apt-get install -y \
     ros-$ROS_DISTRO-v4l2-camera \
     ros-$ROS_DISTRO-web-video-server \
     ros-$ROS_DISTRO-image-transport-plugins
+
+# pyserial pour le driver ESP32 (pont MAVLink) : robot_control (codec) est du pur Python
+# monte via PYTHONPATH, sa seule dep runtime est pyserial. python3-serial = paquet Debian
+# (l'image n'a pas pip). Layer final -> rebuild rapide.
+RUN apt-get update && apt-get install -y python3-serial
 ENTRYPOINT ["/entrypoint.sh"]
 
 FROM hardware AS build

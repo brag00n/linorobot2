@@ -6,7 +6,7 @@ std_msgs/Header header
 # Batterie (SYS_STATUS #1)
 float32 battery_voltage   # V
 
-# Attitude (ATTITUDE #30), radians
+# Attitude (ATTITUDE #30), DEGRES (reflet brut du snapshot hote ; imu/data la publie en rad)
 float32 roll
 float32 pitch
 float32 yaw

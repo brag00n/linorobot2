@@ -178,6 +178,29 @@ services:
     volumes:
       - /dev:/dev
 
+#--- Driver ESP32 (pont MAVLink) : proprietaire du serie, telemetrie + cmd_vel gatee.
+#    LECTURE SEULE par defaut (enable_cmd_vel:=false du YAML) ; L6 : enable_cmd_vel:=true.
+  driver.real:
+    extends: base
+    # Monte linorobot2_hardware pour importer tools/ (codec Esp32ComSerial) + firmware/
+    # (hacks sys.path du codec resolus via __file__ -> l'arbre firmware doit etre present).
+    volumes:
+      - /dev:/dev
+      - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:rw
+    # bamboo_interfaces + bamboo_base sont neufs : on les build dans la session (artefacts
+    # ephemeres avec run --rm), on resource l'install, puis launch.
+    # robot_control (codec) = pur Python -> PYTHONPATH sur tools/ suffit (pas de pip, absent de
+    # l'image). Seule dep runtime = pyserial (python3-serial) ; bakee dans le Dockerfile, avec
+    # fallback apt ici pour la 1re execution avant reconstruction de l'image. $$PYTHONPATH est
+    # echappe pour que ce soit bash (et non compose) qui le developpe.
+    command: >
+      bash -lc "cd /root/linorobot2_ws &&
+      colcon build --packages-select bamboo_interfaces bamboo_base --symlink-install &&
+      source install/setup.bash &&
+      (python3 -c 'import serial' 2>/dev/null || (apt-get update && apt-get install -y python3-serial)) &&
+      export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
+      ros2 launch bamboo_base driver.launch.py"
+
 #==== 2 - Creating MAP
 
 #--- in Simution 

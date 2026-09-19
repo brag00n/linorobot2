@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>bamboo_base</name>
+  <version>0.0.0</version>
+  <description>Pont MAVLink ESP32 &lt;-&gt; ROS2 du robot bamboo4WD_V4 (WSEsp32) : driver proprietaire du serie, telemetrie (odom/imu/batterie/rpm) et actuation cmd_vel gatee.</description>
+  <maintainer email="titi28011976@users.noreply.github.com">Titi28011976</maintainer>
+  <license>Apache 2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>bamboo_interfaces</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
