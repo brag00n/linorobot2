@@ -33,7 +33,8 @@ RUN echo "source /opt/ros/$ROS_DISTRO/setup.bash" >> /root/.bashrc
 RUN echo "source /root/linorobot2_ws/install/setup.bash" >> /root/.bashrc
 
 COPY docker/entrypoint.sh /
-RUN sed -i "s/rosdistro/$ROS_DISTRO/" /entrypoint.sh
+# La synchro Windows->RPi peut perdre le bit +x ; COPY preserve le mode source -> on le force.
+RUN sed -i "s/rosdistro/$ROS_DISTRO/" /entrypoint.sh && chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 
 FROM base AS simulation
@@ -128,6 +129,7 @@ RUN apt-get update && apt-get install -y ros-${ROS_DISTRO}-rosbridge-server
 
 # Set up the entrypoint
 COPY ./docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 ENTRYPOINT [ "/entrypoint.sh" ]
 
 FROM --platform=$BUILDPLATFORM ros:${ROS_DISTRO}-ros-base as foxglovebridge
@@ -137,5 +139,6 @@ RUN apt-get update && apt-get install -y ros-$ROS_DISTRO-foxglove-bridge
 
 # Set up the entrypoint
 COPY ./docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 ENTRYPOINT [ "/entrypoint.sh" ]
 

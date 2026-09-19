@@ -33,8 +33,8 @@ services:
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - $HOME/.Xauthority:/root/.Xauthority
-#      - ../linorobot2_navigation/maps:/root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps:rw)
-      - ..:/root/linorobot2_ws/src/linorobot2:rw)
+#      - ../linorobot2_navigation/maps:/root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps:rw
+      - ..:/root/linorobot2_ws/src/linorobot2:rw
       - /dev:/dev
 
   build:
@@ -67,7 +67,7 @@ services:
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - $HOME/.Xauthority:/root/.Xauthority
-      - ../linorobot2_navigation/maps:/root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps:rw)
+      - ../linorobot2_navigation/maps:/root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps:rw
       - /dev:/dev
 
 
@@ -102,7 +102,7 @@ services:
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - $HOME/.Xauthority:/root/.Xauthority
-      - ../linorobot2_navigation/maps:/root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps:rw)
+      - ../linorobot2_navigation/maps:/root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps:rw
       - /dev:/dev
     ports:
       - "9090:9090"
@@ -137,7 +137,7 @@ services:
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - $HOME/.Xauthority:/root/.Xauthority
-      - ../linorobot2_navigation/maps:/root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps:rw)
+      - ../linorobot2_navigation/maps:/root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps:rw
       - /dev:/dev
     ports:
       - "8765:8765"
@@ -235,8 +235,8 @@ services:
     extends: build
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:rw)
-      - ../../linorobot2_hardware_camera:/root/linorobot2_ws/src/linorobot2_hardware_camera:rw)
+      - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:rw
+      - ../../linorobot2_hardware_camera:/root/linorobot2_ws/src/linorobot2_hardware_camera:rw
     command: /bin/bash
 
   build.atmelavr:
@@ -250,8 +250,8 @@ services:
     extends: build
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:rw)
-      - ../../linorobot2_hardware_camera:/root/linorobot2_ws/src/linorobot2_hardware_camera:rw)
+      - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:rw
+      - ../../linorobot2_hardware_camera:/root/linorobot2_ws/src/linorobot2_hardware_camera:rw
     command: >
       cd /root/linorobot2_ws/src/linorobot2_hardware_camera
       ros2 run micro_ros_setup create_firmware_ws.sh raspbian buster_v7
