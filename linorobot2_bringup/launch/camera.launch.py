@@ -13,7 +13,8 @@
 # limitations under the License.
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -44,6 +45,11 @@ def generate_launch_description():
             default_value='8080',
             description='Port HTTP du web_video_server'
         ),
+        DeclareLaunchArgument(
+            name='enable_fps_metric',
+            default_value='true',
+            description='Publier /camera/capture_fps et /camera/stream_fps (metrique FPS)'
+        ),
 
         Node(
             package='v4l2_camera',
@@ -68,5 +74,19 @@ def generate_launch_description():
                 'port': LaunchConfiguration('port'),
                 'address': '0.0.0.0',
             }]
+        ),
+
+        # Metrique FPS : noeud rclpy autonome (fichier neuf sans symlink dans install ->
+        # lance par chemin absolu depuis le bind-mount, comme ce launch). Herite du port du
+        # web_video_server pour mesurer la vraie cadence de sortie du stream.
+        ExecuteProcess(
+            condition=IfCondition(LaunchConfiguration('enable_fps_metric')),
+            cmd=[
+                'python3',
+                '/root/linorobot2_ws/src/linorobot2/linorobot2_bringup/scripts/camera_fps_node.py',
+                '--ros-args',
+                '-p', ['stream_port:=', LaunchConfiguration('port')],
+            ],
+            output='screen',
         ),
     ])

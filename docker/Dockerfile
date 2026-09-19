@@ -107,6 +107,26 @@ RUN apt-get update && apt-get install -y \
     ros-$ROS_DISTRO-web-video-server \
     ros-$ROS_DISTRO-image-transport-plugins
 
+# --- Metrique FPS video (camera_fps_node.py) : AUCUNE dep a installer. Le noeud n'utilise que
+#     la stdlib Python (urllib, threading) + rclpy/std_msgs/sensor_msgs deja presents. Lance
+#     par CHEMIN ABSOLU depuis le bind-mount (fichier neuf, pas de symlink dans install/share)
+#     par camera.launch.py (arg enable_fps_metric, defaut true). Publie /camera/capture_fps et
+#     /camera/stream_fps (Float32, visibles via MCP). Voir docs/bamboo4WD_V4_WSEsp32.md.
+#
+# --- H.264 distant a 30 fps (etape 1, FAIT) : hors de cette image. Service compose camera.h264
+#     = image officielle bluenviron/mediamtx:latest-ffmpeg + docker/mediamtx.yml. ffmpeg recopie
+#     le H.264 materiel de la webcam (-c:v copy, zero re-encodage RPi) -> RTSP/HLS/WebRTC.
+#     Rien a ajouter ici (MediaMTX embarque son propre ffmpeg).
+#
+# --- MJPG->ROS a 30 fps (etape 2, A FAIRE) : publier le MJPG materiel en /image_raw/compressed
+#     sans decoder, via gscam2 (passthrough) -> web_video_server type=ros_compressed. Decommenter
+#     quand l'etape 2 sera buildee+validee (gscam2 n'est pas un paquet apt -> build colcon) :
+# RUN apt-get update && apt-get install -y \
+#     libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+#     gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-tools \
+#     ros-$ROS_DISTRO-camera-info-manager
+#     # puis cloner + colcon build gscam2 (clydemcqueen/gscam2) dans le workspace.
+
 # pyserial pour le driver ESP32 (pont MAVLink) : robot_control (codec) est du pur Python
 # monte via PYTHONPATH, sa seule dep runtime est pyserial. python3-serial = paquet Debian
 # (l'image n'a pas pip). Layer final -> rebuild rapide.

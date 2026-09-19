@@ -1,0 +1,25 @@
+# Configuration MediaMTX pour la diffusion H.264 distante de la webcam UVC.
+# La webcam encode le H.264 en MATERIEL (30 fps a 640x480) ; ffmpeg le recopie tel quel
+# (-c:v copy) vers MediaMTX -> AUCUN re-encodage sur le RPi (CPU ~ 0). MediaMTX ressert en
+# RTSP (VLC, faible latence), HLS (navigateur, simple) et WebRTC (navigateur, faible latence).
+#
+# Source A LA DEMANDE : ffmpeg ne demarre que lorsqu'un client se connecte, et s'arrete apres
+# runOnDemandCloseAfter. Ainsi /dev/video0 reste LIBRE quand personne ne regarde -> le pipeline
+# MJPG->ROS (gscam2) peut utiliser la camera (contrainte UVC : un seul format actif a la fois).
+
+logLevel: info
+
+# Ports par defaut : RTSP 8554, HLS 8888, WebRTC 8889 (+ ICE UDP 8189).
+rtspAddress: :8554
+hlsAddress: :8888
+webrtcAddress: :8889
+
+paths:
+  # Flux camera : rtsp://<rpi>:8554/cam | http://<rpi>:8888/cam (HLS) | http://<rpi>:8889/cam (WebRTC)
+  cam:
+    # ffmpeg lit le H.264 natif de la webcam et le RECOPIE (pas de re-encodage) vers MediaMTX.
+    runOnDemand: >
+      ffmpeg -f v4l2 -input_format h264 -video_size 640x480 -framerate 30
+      -i /dev/video0 -c:v copy -f rtsp rtsp://localhost:8554/$MTX_PATH
+    runOnDemandRestart: yes
+    runOnDemandCloseAfter: 15s

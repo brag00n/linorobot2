@@ -178,6 +178,27 @@ services:
     volumes:
       - /dev:/dev
 
+#--- Camera H.264 a distance (MediaMTX) : la webcam encode le H.264 en materiel, ffmpeg le
+#    recopie (-c:v copy, ZERO re-encodage RPi) et MediaMTX ressert en RTSP/HLS/WebRTC @30fps.
+#    Source A LA DEMANDE -> /dev/video0 libre quand personne ne regarde (contrainte UVC : un
+#    seul format a la fois, cohabite ainsi avec le MJPG->ROS). Image officielle avec ffmpeg,
+#    hors stack ROS (n'etend pas base). Voir docker/mediamtx.yml.
+  camera.h264:
+    image: bluenviron/mediamtx:latest-ffmpeg
+    hostname: mediamtx
+    restart: unless-stopped
+    networks:
+    - linorobot2.network
+    privileged: true
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+      - /dev:/dev
+    ports:
+      - "8554:8554"       # RTSP (VLC, faible latence)
+      - "8888:8888"       # HLS (navigateur)
+      - "8889:8889"       # WebRTC (navigateur, faible latence)
+      - "8189:8189/udp"   # WebRTC ICE
+
 #--- Driver ESP32 (pont MAVLink) : proprietaire du serie, telemetrie + cmd_vel gatee.
 #    LECTURE SEULE par defaut (enable_cmd_vel:=false du YAML) ; L6 : enable_cmd_vel:=true.
   driver.real:
