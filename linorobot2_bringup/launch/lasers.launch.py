@@ -52,27 +52,38 @@ def generate_launch_description():
             output='screen',
             emulate_tty=True,
             remappings=[('scan', LaunchConfiguration('topic_name'))],
-            parameters=[{ 
+            # Config YDLidar mono-canal type X4 : baud 128000 (NON-standard -> seul le SDK
+            # YDLidar sait le programmer via la requete vendeur CP210x ; un sniff termios/stty
+            # a un baud standard jette tout en erreur de trame, d'ou "0 octet"). Ce baud +
+            # sample_rate 5 correspond au X4 (le lidar deja utilise en points sur bamboo v2).
+            # isSingleChannel=true : pas de reponse au handshake health/device-info sur
+            # mono-canal. Moteur pilote par DTR. fixed_resolution=false. Portee ~10 m.
+            # (Ce dict inline fait foi : ydlidar.yaml n'est jamais charge par ce launch.)
+            parameters=[{
                 'port': '/dev/ydlidar',
                 'frame_id': LaunchConfiguration('frame_id'),
                 'ignore_array': '',
                 'baudrate': 128000,
                 'lidar_type': 1,
-                'device_type': 6,
+                'device_type': 0,
                 'sample_rate': 5,
                 'abnormal_check_count': 4,
-                'fixed_resolution': True,
+                'fixed_resolution': False,
                 'reversion': False,
                 'inverted': True,
                 'auto_reconnect': True,
-                'isSingleChannel': False,
+                'isSingleChannel': True,
                 'intensity': False,
+                # support_motor_dtr=True : le X2 a son moteur pilote par DTR (le SDK asserte
+                # DTR au demarrage du scan). Necessite une alim USB suffisante (hub
+                # auto-alimente) sinon l'inrush moteur declenche la protection sur-courant du
+                # RPi et coupe le port.
                 'support_motor_dtr': True,
                 'angle_max': 180.0,
                 'angle_min': -180.0,
-                'range_max': 10.0,
+                'range_max': 8.0,
                 'range_min': 0.12,
-                'frequency': 5.0,
+                'frequency': 7.0,
                 'invalid_range_is_inf': False
             }]
         ),
