@@ -167,6 +167,17 @@ services:
     volumes:
       - /dev:/dev
 
+#--- Camera (webcam USB : v4l2_camera -> /image_raw + web_video_server HTTP :8080)
+  camera.real:
+    extends: base
+    # Chemin absolu vers la source bind-montee : camera.launch.py est un fichier neuf, donc
+    # sans symlink dans install/share (le --symlink-install ne lie que l'existant au build).
+    command: ros2 launch /root/linorobot2_ws/src/linorobot2/linorobot2_bringup/launch/camera.launch.py
+    ports:
+      - "8080:8080"
+    volumes:
+      - /dev:/dev
+
 #==== 2 - Creating MAP
 
 #--- in Simution 

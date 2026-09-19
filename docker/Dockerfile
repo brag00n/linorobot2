@@ -98,6 +98,14 @@ RUN apt-get -y install udev
 RUN echo  'KERNEL=="ttyUSB*", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", MODE:="0666", GROUP:="dialout",  SYMLINK+="ydlidar"' >/etc/udev/rules.d/ydlidar.rules
 RUN echo  'KERNEL=="ttyACM*", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", MODE:="0666", GROUP:="dialout",  SYMLINK+="ydlidar"' >/etc/udev/rules.d/ydlidar-V2.rules
 RUN echo  'KERNEL=="ttyUSB*", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", MODE:="0666", GROUP:="dialout",  SYMLINK+="ydlidar"' >/etc/udev/rules.d/ydlidar-2303.rules
+
+# Camera USB (webcam UVC 05a3:9331, MJPG/YUYV/H264) : v4l2_camera publie /image_raw,
+# web_video_server diffuse en HTTP (:8080), image_transport_plugins fournit le transport
+# /image_raw/compressed (MJPEG). Layer final du stage hardware -> rebuild rapide.
+RUN apt-get update && apt-get install -y \
+    ros-$ROS_DISTRO-v4l2-camera \
+    ros-$ROS_DISTRO-web-video-server \
+    ros-$ROS_DISTRO-image-transport-plugins
 ENTRYPOINT ["/entrypoint.sh"]
 
 FROM hardware AS build
