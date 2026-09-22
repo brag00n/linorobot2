@@ -1,3 +1,7 @@
 log
 build
 install
+
+# caches Python (nodes rclpy, scripts de launch)
+__pycache__/
+*.pyc
