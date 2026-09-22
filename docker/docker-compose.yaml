@@ -178,6 +178,19 @@ services:
     volumes:
       - /dev:/dev
 
+#--- Camera MJPG->ROS a 30 fps (etape 2) : gscam2 publie le MJPG materiel en
+#    /image_raw/compressed SANS decodage, web_video_server le ressert en type=ros_compressed
+#    (ni decode ni re-encode -> ~30fps, CPU quasi nul, vs ~12fps du chemin v4l2 de camera.real).
+#    EXCLUSIF de camera.real et camera.h264 (contrainte UVC : un seul format sur /dev/video0) ->
+#    meme port 8080, l'orchestrateur en demarre un seul. Voir camera_mjpg.launch.py.
+  camera.mjpg:
+    extends: base
+    command: ros2 launch /root/linorobot2_ws/src/linorobot2/linorobot2_bringup/launch/camera_mjpg.launch.py
+    ports:
+      - "8080:8080"
+    volumes:
+      - /dev:/dev
+
 #--- Camera H.264 a distance (MediaMTX) : la webcam encode le H.264 en materiel, ffmpeg le
 #    recopie (-c:v copy, ZERO re-encodage RPi) et MediaMTX ressert en RTSP/HLS/WebRTC @30fps.
 #    Source A LA DEMANDE -> /dev/video0 libre quand personne ne regarde (contrainte UVC : un

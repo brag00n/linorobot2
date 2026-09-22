@@ -28,7 +28,7 @@ from collections import deque
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage, Image
 from std_msgs.msg import Float32
 
 
@@ -37,9 +37,16 @@ class CameraFps(Node):
         super().__init__('camera_fps')
 
         self.declare_parameter('image_topic', '/image_raw')
+        # Type du topic de capture : 'raw' (sensor_msgs/Image, v4l2_camera->rgb8) ou
+        # 'compressed' (sensor_msgs/CompressedImage, gscam2 passthrough MJPG qui ne publie
+        # QUE /image_raw/compressed, sans /image_raw brut). On ne fait que dater l'arrivee.
+        self.declare_parameter('capture_type', 'raw')
         self.declare_parameter('stream_host', '127.0.0.1')
         self.declare_parameter('stream_port', 8080)
         self.declare_parameter('stream_topic', '/image_raw')
+        # Type du flux web_video_server : 'mjpeg' (re-encode rgb8->JPEG, source v4l2) ou
+        # 'ros_compressed' (ressert le /image_raw/compressed tel quel, source gscam2 MJPG).
+        self.declare_parameter('stream_type', 'mjpeg')
         self.declare_parameter('window_s', 3.0)
         self.declare_parameter('publish_rate_hz', 1.0)
         # Echantillonnage periodique du stream (voir en-tete) : duree d'une mesure et periode.
@@ -47,9 +54,11 @@ class CameraFps(Node):
         self.declare_parameter('stream_sample_period_s', 30.0)
 
         image_topic = self.get_parameter('image_topic').value
+        capture_type = str(self.get_parameter('capture_type').value)
         host = self.get_parameter('stream_host').value
         port = int(self.get_parameter('stream_port').value)
         stream_topic = self.get_parameter('stream_topic').value
+        stream_type = str(self.get_parameter('stream_type').value)
         self._window = float(self.get_parameter('window_s').value)
         rate = float(self.get_parameter('publish_rate_hz').value)
         self._measure_s = float(self.get_parameter('stream_measure_s').value)
@@ -64,15 +73,18 @@ class CameraFps(Node):
 
         # Cote capture : souscription best-effort (sensor_data) -> compatible que le
         # publieur soit reliable ou best-effort. Le callback ne fait que dater, pas de
-        # traitement de l'image.
-        self.create_subscription(Image, image_topic, self._on_image, qos_profile_sensor_data)
+        # traitement de l'image. Type du message selon la source (raw vs compressed).
+        cap_msg = CompressedImage if capture_type == 'compressed' else Image
+        self.create_subscription(cap_msg, image_topic, self._on_image, qos_profile_sensor_data)
 
         self._pub_cap = self.create_publisher(Float32, 'camera/capture_fps', 10)
         self._pub_stream = self.create_publisher(Float32, 'camera/stream_fps', 10)
         self.create_timer(1.0 / rate if rate > 0 else 1.0, self._on_timer)
 
-        # Cote stream : echantillonnage periodique en thread daemon (voir en-tete).
-        self._url = f'http://{host}:{port}/stream?topic={stream_topic}&type=mjpeg'
+        # Cote stream : echantillonnage periodique en thread daemon (voir en-tete). Le comptage
+        # de SOI JPEG (0xFFD8) fonctionne aussi bien pour 'mjpeg' (re-encode) que pour
+        # 'ros_compressed' (frames JPEG resservies telles quelles) -> memes marqueurs.
+        self._url = f'http://{host}:{port}/stream?topic={stream_topic}&type={stream_type}'
         self._running = True
         self._stream_thread = threading.Thread(target=self._stream_loop, daemon=True)
         self._stream_thread.start()

@@ -118,14 +118,21 @@ RUN apt-get update && apt-get install -y \
 #     le H.264 materiel de la webcam (-c:v copy, zero re-encodage RPi) -> RTSP/HLS/WebRTC.
 #     Rien a ajouter ici (MediaMTX embarque son propre ffmpeg).
 #
-# --- MJPG->ROS a 30 fps (etape 2, A FAIRE) : publier le MJPG materiel en /image_raw/compressed
-#     sans decoder, via gscam2 (passthrough) -> web_video_server type=ros_compressed. Decommenter
-#     quand l'etape 2 sera buildee+validee (gscam2 n'est pas un paquet apt -> build colcon) :
-# RUN apt-get update && apt-get install -y \
-#     libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-#     gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-tools \
-#     ros-$ROS_DISTRO-camera-info-manager
-#     # puis cloner + colcon build gscam2 (clydemcqueen/gscam2) dans le workspace.
+# --- MJPG->ROS a 30 fps (etape 2, IMPLEMENTE - build+validation live sur RPi a faire) :
+#     publier le MJPG MATERIEL en /image_raw/compressed
+#     SANS le decoder, via gscam2 (pipeline GStreamer image_encoding=jpeg -> copie le buffer
+#     JPEG). web_video_server le ressert en type=ros_compressed (ni decode ni re-encode) ->
+#     ~30fps a coup CPU quasi nul, vs ~12fps du chemin v4l2 (camera.real). Service compose
+#     camera.mjpg + camera_mjpg.launch.py. gscam2 n'est pas un paquet apt -> build colcon.
+#     v4l2src (capture MJPG) vient de gstreamer1.0-plugins-good, absent des deps package.xml
+#     de gscam2 -> on l'apt-installe explicitement (rosdep ne le tirerait pas).
+RUN apt-get update && apt-get install -y \
+    gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-tools
+RUN git clone https://github.com/clydemcqueen/gscam2.git src/gscam2
+RUN apt-get update && rosdep install --from-path src/gscam2 --ignore-src -y
+RUN source /opt/ros/$ROS_DISTRO/setup.bash && \
+    source /root/linorobot2_ws/install/setup.bash && \
+    colcon build --packages-select gscam2
 
 # pyserial pour le driver ESP32 (pont MAVLink) : robot_control (codec) est du pur Python
 # monte via PYTHONPATH, sa seule dep runtime est pyserial. python3-serial = paquet Debian
