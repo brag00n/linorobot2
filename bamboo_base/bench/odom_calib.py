@@ -52,6 +52,7 @@ class Calib(Node):
         self.cur = None
         self.yaw_cum = 0.0        # yaw DEROULE (l'odom renvoie un angle module 2*pi)
         self._yaw_prec = None
+        self._yaw0 = None         # cap dans `odom` au debut de l'essai
         self.create_subscription(Odometry, "/odom/unfiltered", self._o, 20)
 
     def _o(self, msg):
@@ -74,6 +75,21 @@ class Calib(Node):
         if self.p0 is None or self.cur is None:
             return 0.0
         return math.hypot(self.cur[0] - self.p0[0], self.cur[1] - self.p0[1])
+
+    def ecart(self):
+        """Deplacement dans le repere du DEPART : (avant, lateral) en m.
+
+        `y - y0` brut ne veut rien dire : x et y sont dans le repere `odom`, dont
+        l'origine et le cap datent du demarrage du driver, pas de cet essai. Mesure
+        du 2026-09-23 : 0,78 m de "derive laterale" pour 3,85 deg de rotation reelle
+        sur 2,1 m -- geometriquement impossible, c'etait juste le cap initial du robot
+        dans `odom`. On projette donc le deplacement sur le cap de depart.
+        """
+        if self.p0 is None or self.cur is None or self._yaw0 is None:
+            return 0.0, 0.0
+        dx, dy = self.cur[0] - self.p0[0], self.cur[1] - self.p0[1]
+        c, s = math.cos(-self._yaw0), math.sin(-self._yaw0)
+        return dx * c - dy * s, dx * s + dy * c
 
     def rotation(self):
         """Angle deroule parcouru depuis le depart, en rad."""
@@ -107,6 +123,7 @@ def main():
             n.pub.publish(zero)
             rclpy.spin_once(n, timeout_sec=0.05)
         n.p0 = n.cur                            # origine APRES la phase nulle
+        n._yaw0 = n._yaw_prec                   # cap BRUT dans `odom` (pas le cumul)
         while mesure() < CIBLE:
             if time.time() - t0 > GARDE:
                 print("GARDE DE DUREE ATTEINTE (%.0f s) -- arret." % GARDE)
@@ -126,7 +143,8 @@ def main():
     if MODE == "ligne":
         print("=== ligne droite, %.2f m/s ===" % VIT)
         print("  distance ODOM      = %.4f m   (cible %.2f m)" % (n.avance(), CIBLE))
-        print("  derive laterale    = %.4f m" % abs(n.cur[1] - n.p0[1]))
+        av, lat = n.ecart()
+        print("  avance / lateral   = %.4f m / %.4f m  (repere du depart)" % (av, lat))
         print("  rotation parasite  = %.2f deg" % math.degrees(n.rotation()))
         print("  -> mesurer la distance REELLE, puis wheel_diameter_m *= reel / ODOM")
     else:
