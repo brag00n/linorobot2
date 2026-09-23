@@ -34,9 +34,27 @@ depuis l'ancienne stack, build de l'image Docker, vérification via le MCP.
   quatre articulations dans l'ordre M1..M4, `velocity` **en RPM** (écart assumé à la
   convention rad/s, pour comparer aux relevés de BambooV2) et `position` en radians.
   Comme le driver publie `/joint_states`, la description se lance avec
-  `publish_joints:=false`. Premier relevé (roues surélevées, `linear.x = 0,15` → consigne
-  35,81 RPM, cpr 2100) : mesure entre 34,7 et 36,7 RPM en régime, soit ± 2 % autour de la
-  consigne, sans oscillation entretenue.
+  `publish_joints:=false`.
+- **Critère « suit le PID », VALIDÉ le 2026-09-23** (roues surélevées, gains
+  `kp/ki/kd = 0,600 / 0,300 / 0,500` d'origine, **aucun réglage nécessaire**, cpr 2100,
+  Ø 0,080 m). Banc : `bamboo_base/bench/pid_step.py`.
+
+  | `linear.x` | consigne | `t_conv(± 10 %)` M1 / M2 | régime M1 / M2 | crête-à-crête | indice d'oscillation |
+  |---|---|---|---|---|---|
+  | 0,10 m/s | 23,87 RPM | 0,60 / 0,67 s | 24,03 ±0,53 (+0,6 %) / 23,85 ±0,63 (−0,1 %) | 2,3 / 3,5 | 0,43 / 0,60 |
+  | 0,15 m/s | 35,81 RPM | 0,67 / 0,57 s | 34,91 ±1,06 (−2,5 %) / 35,00 ±1,12 (−2,3 %) | 3,6 / 3,6 | 0,29 / 0,29 |
+  | 0,25 m/s | 59,68 RPM | 0,67 / 0,67 s | 59,62 ±0,54 (−0,1 %) / 59,63 ±0,49 (−0,1 %) | 2,1 / 2,1 | 0,50 / 0,38 |
+
+  Convergence à **0,6–0,7 s** partout, donc sous la seconde ; erreur statique ≤ 2,5 % ;
+  pas d'oscillation entretenue. **Piège de mesure à connaître** : un premier essai à
+  0,10 m/s sur une marche de 3 s a donné `t_conv` = 1,00 / 1,73 s. Ce n'était pas une rampe
+  lente mais **une excursion de bruit tardive** — à cette vitesse la bande ± 10 %
+  (± 2,39 RPM) est du même ordre que le bruit crête-à-crête du RPM encodeur, et le critère
+  (« dernier instant hors bande ») retient donc le dernier pic. La même marche allongée à
+  5 s retombe à 0,60 / 0,67 s. **Conséquence pratique** : sous 0,15 m/s, mesurer sur au
+  moins 5 s. L'indice d'oscillation élevé (0,4–0,8) à basse vitesse dit la même chose :
+  c'est du bruit de quantification, pas du pompage — le lire **avec** la crête-à-crête,
+  jamais seul.
 - **Souscrit** : `BAMBOO_CMD_VEL` (42004) → cinématique différentielle + PID **exécutés sur la
   carte**.
 - **Ne calcule PAS** la pose x, y, θ → à intégrer côté nœud ROS (odométrie encodeurs).

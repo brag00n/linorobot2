@@ -43,3 +43,16 @@ sudo docker exec bamboov4_humble-driver.real-1 bash -lc \
    dans un `finally`. La consigne nulle d'avant n'est pas décorative : l'intégrale du PID
    embarqué n'est remise à zéro que si consigne **et** erreur sont nulles, donc deux essais
    enchaînés sans ce passage par zéro traînent le résidu du précédent.
+
+## Fenêtre de mesure : au moins 5 s sous 0,15 m/s
+
+Le critère de convergence retenu est « le dernier instant où l'on est HORS de la bande
+± tol % ». À basse vitesse la bande est étroite (± 2,39 RPM à 0,10 m/s) et devient du même
+ordre que le bruit crête-à-crête du RPM encodeur : une seule excursion tardive suffit alors
+à repousser `t_conv`, et on lit une rampe lente là où il n'y a que du bruit. Mesuré le
+2026-09-23 : la même marche à 0,10 m/s donne `t_conv` = 1,00 / 1,73 s sur 3 s, et
+0,60 / 0,67 s sur 5 s. Donc **marche de 5 s minimum en dessous de 0,15 m/s**.
+
+Même raison pour l'indice d'oscillation : à basse vitesse il monte à 0,4-0,8 alors que la
+crête-à-crête reste sous la bande. Il compte les changements de signe, pas leur amplitude —
+le lire TOUJOURS avec la crête-à-crête, jamais seul.
