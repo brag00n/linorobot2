@@ -1,0 +1,8 @@
+# Fins de ligne : les scripts shell partent vers le RPi par COPIE D'OCTETS (tar/rsync,
+# cf. docker/sync_to_rpi.sh), pas par checkout git. Un fichier CRLF dans l'arbre de
+# travail Windows arrive donc tel quel dans le conteneur, ou bash echoue sur le \r :
+# « set: pipefail: invalid option name », « $'\r': command not found ». D'ou eol=lf,
+# qui impose LF DANS L'ARBRE DE TRAVAIL et pas seulement dans le depot.
+* text=auto
+*.sh text eol=lf
+*.bash text eol=lf
