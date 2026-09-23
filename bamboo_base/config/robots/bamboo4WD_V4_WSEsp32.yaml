@@ -62,10 +62,16 @@
 
     # --- motorisation ----------------------------------------------------
     # << NON MESURE >> plafond moteur utilise par la cinematique embarquee :
-    # max_rpm = motor_power_max_voltage / motor_operating_voltage
-    #           * motor_max_rpm * MAX_RPM_RATIO(0.85), soit 425 RPM ici.
-    # Les deux tensions sont celles du firmware (MOTOR_OPERATING_VOLTAGE 6,
-    # MOTOR_POWER_MAX_VOLTAGE 12) : les intervertir divise le plafond par 4.
+    # max_rpm = min(motor_power_max_voltage, motor_operating_voltage)
+    #           / motor_operating_voltage * motor_max_rpm * MAX_RPM_RATIO(0.85).
+    # ATTENTION au bornage : kinematics.cpp fait
+    #   supply = constrain(motor_power_max_voltage, 0, motor_operating_voltage)
+    # donc le rapport de tensions ne depasse JAMAIS 1 et une tension
+    # d'alimentation superieure n'augmente rien. Avec 12 et 6 le plafond vaut
+    # 250 * 0.85 = 212.5 RPM, pas 425. Pour depasser 212.5 il faut relever
+    # motor_max_rpm (caracteristique du moteur), pas les tensions.
+    # Les deux valeurs sont celles du firmware (MOTOR_OPERATING_VOLTAGE 6,
+    # MOTOR_POWER_MAX_VOLTAGE 12) : les intervertir divise le plafond par 2.
     motor_max_rpm: 250.0
     motor_operating_voltage: 6.0
     motor_power_max_voltage: 12.0
