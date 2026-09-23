@@ -14,6 +14,21 @@ parametre `enable_cmd_vel` :
 Odometrie : la carte ne calcule PAS la pose (x, y, theta) ; on l'integre ici a partir des
 2 voies encodeur (gauche/droite).
 
+REGLAGE DU PID -- /joint_states et /req_states (reprise de BambooV2) : deux JointState de
+4 articulations (M1..M4, ordre front_left, front_right, rear_left, rear_right) portant la
+vitesse MESUREE et la vitesse DEMANDEE telles que la boucle PID EMBARQUEE les voit. Elles
+viennent de la carte (message BAMBOO_MOTOR_RPM, microcode >= 0.3.0), pas d'un recalcul
+hote : la mesure est le RPM filtre que le PID compare, la consigne est la sortie de la
+cinematique embarquee. Tracer les deux dans Foxglove, c'est voir l'erreur que le PID voit.
+/!\ DEUX ECARTS ASSUMES :
+  1. `velocity` est en RPM et non en rad/s comme le veut sensor_msgs/JointState -- choix
+     utilisateur, pour comparer directement aux releves de BambooV2 ; `position`, elle,
+     reste en radians (convention respectee) pour que robot_state_publisher reste juste.
+  2. `velocity[2]`/`velocity[3]` (M3/M4) sont des RECOPIES de M1/M2 : cette carte n'a que
+     deux encodeurs. Les CONSIGNES /req_states, elles, sont bien quatre valeurs distinctes.
+Comme ce noeud publie /joint_states, lancer la description avec `publish_joints:=false`
+(sinon le joint_state_publisher amont publie des zeros sur le meme topic).
+
 Geometrie et motorisation : ce noeud n'en declare AUCUN defaut. Elles viennent de la source
 unique `config/robots/<robot>.yaml`, chargee par driver.launch.py. Un parametre physique
 absent est une ERREUR FATALE et non un repli silencieux : les defauts litteraux dupliques
@@ -38,13 +53,19 @@ from rclpy.qos import qos_profile_sensor_data
 from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import Imu, BatteryState, MagneticField
+from sensor_msgs.msg import Imu, BatteryState, MagneticField, JointState
 from geometry_msgs.msg import Twist, TransformStamped
 from tf2_ros import TransformBroadcaster
 
 from bamboo_interfaces.msg import WheelRpm, Esp32Status
 
 from robot_control.communication.Esp32ComSerial import Esp32ComSerial
+
+
+# Ordre des articulations = ordre des moteurs M1..M4 de la carte. Les noms sont ceux de
+# l'URDF 4wd (4wd.urdf.xacro) : M1/M3 = cote gauche, M2/M4 = cote droit.
+JOINT_NAMES = ("front_left_wheel_joint", "front_right_wheel_joint",
+               "rear_left_wheel_joint", "rear_right_wheel_joint")
 
 
 def _quat_from_euler(roll, pitch, yaw):
@@ -193,6 +214,10 @@ class Esp32MavlinkDriver(Node):
         self.pub_rpm = self.create_publisher(WheelRpm, "wheel_rpm", 10)
         self.pub_mag = self.create_publisher(MagneticField, "mag", _imu_qos)
         self.pub_status = self.create_publisher(Esp32Status, "esp32_status", 10)
+        # Reglage du PID : mesure et consigne par moteur (cf. entete). Deux topics de meme
+        # type, pour que Foxglove trace velocity[i] des deux cotes sur le meme graphe.
+        self.pub_joint = self.create_publisher(JointState, "joint_states", 10)
+        self.pub_joint_req = self.create_publisher(JointState, "req_states", 10)
         self.tf_broadcaster = TransformBroadcaster(self) if self.publish_odom_tf else None
 
         # --- souscription cmd_vel (GATE par enable_cmd_vel, commutable a chaud) ---
@@ -473,6 +498,29 @@ class Esp32MavlinkDriver(Node):
             rpm_msg.header.stamp = stamp
             rpm_msg.rpm = [s / cpr * 60.0 for s in sp]
             self.pub_rpm.publish(rpm_msg)
+
+        # /joint_states + /req_states : RPM mesure et demande VUS PAR LE PID DE LA CARTE.
+        # Silence si le microcode est anterieur a 0.3.0 (pas de BAMBOO_MOTOR_RPM) : mieux
+        # vaut un topic absent qu'un topic de zeros qu'on prendrait pour une mesure.
+        rpm_meas = snap.get("motor_rpm")
+        rpm_req = snap.get("motor_rpm_req")
+        if rpm_meas is not None and rpm_req is not None:
+            # position en RADIANS depuis les comptages bruts (convention respectee, c'est
+            # ce que lit robot_state_publisher) ; velocity en RPM (ecart assume, cf entete).
+            pos = ([c / cpr * 2.0 * math.pi for c in snap["encoders"]]
+                   if snap.get("encoders") else [])
+            js = JointState()
+            js.header.stamp = stamp
+            js.name = list(JOINT_NAMES)
+            js.position = pos
+            js.velocity = [float(v) for v in rpm_meas]
+            self.pub_joint.publish(js)
+
+            jr = JointState()
+            jr.header.stamp = stamp
+            jr.name = list(JOINT_NAMES)
+            jr.velocity = [float(v) for v in rpm_req]
+            self.pub_joint_req.publish(jr)
 
         # odom integree depuis les 2 voies encodeur.
         dt = (now - self._last_t).nanoseconds * 1e-9

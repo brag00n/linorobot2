@@ -167,7 +167,10 @@ services:
     extends: base
     profiles: ["boot"]          # publie /robot_description + les TF : utile des Foxglove
     restart: unless-stopped
-    command: ros2 launch linorobot2_description description.launch.py rviz:=false
+    # publish_joints:=false : c'est le driver (esp32_mavlink_driver) qui publie les
+    # VRAIS /joint_states depuis les encodeurs. Laisser le joint_state_publisher amont
+    # actif ferait deux publieurs sur le meme topic, dont un qui n'emet que des zeros.
+    command: ros2 launch linorobot2_description description.launch.py rviz:=false publish_joints:=false
 
 #--- Real robot
   bringup.real:
