@@ -23,3 +23,19 @@
     # true  = ACTUATION (L6) : requiert roues surelevees + geometrie calibree.
     enable_cmd_vel: false
     cmd_vel_timeout_s: 0.5
+
+    # --- fiabilite QoS des capteurs (fait d'hote : depend des consommateurs) ---
+    # `sensor_data` est BEST-EFFORT, donc INVISIBLE a travers rosbridge, qui souscrit en
+    # RELIABLE : c'est pour ca que imu/data n'etait pas diagnosticable depuis le MCP.
+    # `reliable` la rend lisible. Lu UNE FOIS au demarrage : un publisher ne change pas de
+    # fiabilite en marche (il faudrait le recreer, coupant les souscripteurs en place).
+    imu_qos: reliable
+
+    # --- journal de la carte ---
+    # Seuil ecrit DANS la carte (PARAM LOG_LEVEL, idx 19) : le firmware ne transmet pas ce
+    # qu'il filtre, ce reglage menage donc l'UART partage avec la telemetrie.
+    # MAV_SEVERITY : 0 EMERGENCY .. 3 ERROR, 4 WARNING, 6 INFO, 7 DEBUG.
+    board_log_level: 6
+    # Attente d'une RELECTURE de config (bloquante -> suspend brievement la publication).
+    # La carte repond d'ordinaire en ~50 ms ; 1 s laisse de la marge sans figer le noeud.
+    board_readback_timeout_s: 1.0
