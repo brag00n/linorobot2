@@ -235,6 +235,22 @@ services:
       export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
       ros2 launch bamboo_base driver.launch.py"
 
+#--- flash du microcode ESP32 : outil, JAMAIS demarre par `up` (profil `tools`).
+#    Tourne dans l'image ROS deja presente -> aucune image supplementaire a construire, et
+#    esptool s'installe dans la couche ephemere du conteneur, pas sur l'hote dietpi.
+#    Le port serie est tenu par driver.real : le STOPPER avant.
+#      docker compose stop driver.real
+#      docker compose --profile tools run --rm flash.esp32
+#      docker compose up -d driver.real
+  flash.esp32:
+    extends: base
+    profiles: ["tools"]
+    volumes:
+      - /dev:/dev
+      - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:rw
+    command: >
+      bash -lc "bash /root/linorobot2_ws/src/linorobot2/docker/flash_esp32.sh"
+
 #==== 2 - Creating MAP
 
 #--- in Simution 
