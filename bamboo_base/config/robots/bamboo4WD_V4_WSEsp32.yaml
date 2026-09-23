@@ -14,23 +14,32 @@
 #   ros2 param load /esp32_mavlink_driver <ce fichier>
 #
 # ---------------------------------------------------------------------------
-# PROVENANCE DES VALEURS GEOMETRIQUES : constructeur WaveShare.
+# PROVENANCE DES VALEURS GEOMETRIQUES : constructeur WaveShare, produit
+# IDENTIFIE PAR LA MESURE (2026-09-23).
 #   depot   waveshareteam/ugv_base_general (firmware d'origine de la MEME carte
 #           General Driver for Robots), fichier General_Driver/ugv_config.h
-#   produit mainType 02 = "UGV Rover" (kit de ce robot), soit
-#           WHEEL_D 0.0800 / ONE_CIRCLE_PLUSES 1650 / TRACK_WIDTH 0.172
-#   depot   waveshareteam/ugv_ws (branche ros2-humble-develop),
-#           src/ugv_main/ugv_description/urdf/ugv_rover.urdf + meshes : confirme
-#           independamment le rayon 0.04 et la demi-voie 0.08726.
-# Ces chiffres sont transposables tels quels parce que le comptage est identique
-# des deux cotes : memes broches encodeur (M1 35/34, M2 16/27) et meme mode
-# attachHalfQuad (leur movtion_module.h, notre lib/encoder/encoder.h:56).
+#   produit "RaspRover" (chassis 4WD a base de Raspberry Pi = ce robot), soit
+#           WHEEL_D 0.0800 / ONE_CIRCLE_PLUSES 2100 / TRACK_WIDTH 0.125
 #
-# CE QU'IL RESTE A FAIRE : ce sont des valeurs CONSTRUCTEUR, pas des mesures de
-# CE robot. La calibration du lot 4 (10 tours a la main pour cpr, 2 m au metre
-# ruban pour le diametre, 360 deg pour la voie) doit les confirmer ou les
-# corriger. Les lignes encore marquees << NON MESURE >> n'ont, elles, aucune
-# source du tout.
+# Ce fichier annoncait auparavant le produit "UGV Rover" (1650 / 0.172). C'est
+# la MESURE qui a tranche entre les deux variantes : tachymetre optique (camera
+# du banc, marque de papier sur la roue, angle integre sur la fenetre) compare
+# aux compteurs d'encodeur remontes dans Esp32Status, roues surelevees, deux
+# vitesses -- 640.7 counts/s pour 17.6 RPM optiques, puis 1317.2 pour 38.2, soit
+# 2028 a 2221 tics/tour. 1650 est exclu (l'odometrie surestimerait de 27 %),
+# 2100 tombe dans l'intervalle et reproduit les deux essais a +3 % / -2 %.
+# Detail de la methode : linorobot2_hardware/tools/robot_control/mcp/analysis.py
+# (outil `tacho_stats`) et tools/robot_controlv3/nodes/WheelTachoNode.py.
+#
+# Le comptage identifie le PRODUIT, donc la voie change avec lui : 0.172
+# appartient a la variante dont le comptage est refute. Le diametre, lui, est le
+# meme (0.0800) dans les deux variantes, donc il ne bouge pas.
+#
+# CE QU'IL RESTE A FAIRE : la voie 0.125 est une valeur CONSTRUCTEUR deduite de
+# l'identification, pas une mesure de CE robot -- a confirmer au metre ruban
+# (entraxe G/D) ou par le 360 deg du lot 4.4, ce qui vaut aussi pour le
+# diametre (2 m au metre ruban). Les lignes marquees << NON MESURE >> n'ont,
+# elles, aucune source du tout.
 # NE PAS reprendre les gains PID de WaveShare (kp 20 / ki 2000 / kd 0) : leur
 # regulateur travaille en m/s avec anti-windup a 255, formulation differente de
 # la notre (RPM) - ils ne sont pas comparables.
@@ -47,18 +56,21 @@
 
     # --- geometrie -------------------------------------------------------
     # Tics par tour de roue, en sortie de reducteur, sur une voie encodeur.
-    # Valeur constructeur ONE_CIRCLE_PLUSES (UGV Rover). Remplace l'amorcage
-    # 2114 du firmware, qui ne correspondait a aucun produit WaveShare.
-    # Verification : driver en lecture seule, 10 tours de roue a la main,
-    # cpr = dcounts / 10.
-    counts_per_rev: 1650.0
+    # MESURE (voir l'en-tete) : ONE_CIRCLE_PLUSES du RaspRover, confirme au
+    # tachymetre optique contre les compteurs d'encodeur a deux vitesses.
+    # Les 10 tours a la main du lot 4.1 sont donc devenus inutiles.
+    counts_per_rev: 2100.0
     # Diametre de roue au sol, en metres. Valeur constructeur WHEEL_D, confirmee
     # par le maillage de roue de leur URDF (diametre 0.0800, largeur 0.0425).
     wheel_diameter_m: 0.08
-    # Entraxe gauche/droite (voie), en metres. Valeur constructeur TRACK_WIDTH.
-    # Leur URDF place les roues a y = +/-0.08726, soit une voie de 0.1745 : on
-    # retient 0.172, la valeur que leur propre cinematique utilise.
-    wheel_separation_m: 0.172
+    # << A CONFIRMER >> entraxe gauche/droite (voie), en metres. Valeur
+    # constructeur TRACK_WIDTH du RaspRover, retenue parce que la mesure du
+    # comptage a identifie CETTE variante. La voie ne se deduit PAS d'une mesure
+    # de RPM : seul le metre ruban, ou l'erreur d'angle sur un 360 deg au sol
+    # (lot 4.4), peut la valider. Elle pilote la conversion angular.z -> RPM,
+    # donc une erreur ici fait tourner le robot trop ou pas assez, sans toucher
+    # a la vitesse en ligne droite.
+    wheel_separation_m: 0.125
 
     # --- motorisation ----------------------------------------------------
     # << NON MESURE >> plafond moteur utilise par la cinematique embarquee :
