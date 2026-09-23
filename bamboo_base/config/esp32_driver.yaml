@@ -1,22 +1,15 @@
+# Driver ESP32 MAVLink : FAITS D'HOTE ET DE TRANSPORT UNIQUEMENT.
+#
+# La geometrie et la motorisation NE SONT PLUS ICI : elles vivent dans la source
+# unique config/robots/bamboo4WD_V4_WSEsp32.yaml, chargee par driver.launch.py
+# APRES ce fichier. Redeclarer un parametre geometrique ici le ferait perdre
+# silencieusement face au fichier canonique -> ne pas le faire.
 /**:
   ros__parameters:
-    # --- lien serie ---
+    # --- lien serie (propre a la machine : /dev/esp32 sur le RPi, COMx sous Windows) ---
     port: /dev/esp32
     baud: 921600
     publish_rate_hz: 30.0
-
-    # --- geometrie (PLACEHOLDERS a calibrer au L6, roues surelevees puis mesure au sol) ---
-    # Les valeurs firmware sont absurdes (COUNTS_PER_REV=2114, WHEEL_DIAMETER=0.8,
-    # LR_WHEELS_DISTANCE=1.3) ; l'odom reste fausse d'echelle tant que non calibree ici.
-    counts_per_rev: 2114.0
-    wheel_diameter_m: 0.08
-    wheel_separation_m: 0.30
-
-    # --- mapping encodeurs (2 voies reelles : M1=gauche, M2=droite ; M3=M1, M4=M2) ---
-    encoder_left_index: 0
-    encoder_right_index: 1
-    invert_left: false
-    invert_right: false
 
     # --- frames ---
     odom_frame: odom

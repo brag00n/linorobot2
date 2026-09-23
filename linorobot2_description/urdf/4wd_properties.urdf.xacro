@@ -5,10 +5,18 @@
   <xacro:property name="base_height" value="0.129" />
   <xacro:property name="base_mass" value="10" />
 
-  <xacro:property name="wheel_radius" value="0.07162" />
+  <!-- Geometrie de roue : ARGUMENTS, pas des constantes. La verite physique vit dans
+       bamboo_base/config/robots/<robot>.yaml et est passee par description.launch.py
+       (wheel_radius = wheel_diameter_m / 2, wheel_pos_y = wheel_separation_m / 2).
+       Les defauts ci-dessous sont les valeurs de l'amont linorobot2 : ce ne sont PAS des
+       mesures de ce robot, elles ne servent qu'a garder le xacro utilisable seul. -->
+  <xacro:arg name="wheel_radius" default="0.07162" />
+  <xacro:arg name="wheel_pos_y" default="0.1355" />
+
+  <xacro:property name="wheel_radius" value="$(arg wheel_radius)" />
   <xacro:property name="wheel_width" value="0.05" />
   <xacro:property name="wheel_pos_x" value="0.120" />
-  <xacro:property name="wheel_pos_y" value="0.1355" />
+  <xacro:property name="wheel_pos_y" value="$(arg wheel_pos_y)" />
   <xacro:property name="wheel_pos_z" value="-0.04788" />
   <xacro:property name="wheel_mass" value=".6" />
   <xacro:property name="wheel_torque" value="20" />

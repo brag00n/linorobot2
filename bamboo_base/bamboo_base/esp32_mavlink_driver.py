@@ -12,13 +12,19 @@ parametre `enable_cmd_vel` :
   - true  (lot L6) : actuation, apres calibration geometrie + roues surelevees.
 
 Odometrie : la carte ne calcule PAS la pose (x, y, theta) ; on l'integre ici a partir des
-2 voies encodeur (gauche/droite). Les parametres geometriques sont des PLACEHOLDERS a
-calibrer au L6 -> l'echelle de l'odom est fausse tant que non calibre (isole au L6).
+2 voies encodeur (gauche/droite).
+
+Geometrie et motorisation : ce noeud n'en declare AUCUN defaut. Elles viennent de la source
+unique `config/robots/<robot>.yaml`, chargee par driver.launch.py. Un parametre physique
+absent est une ERREUR FATALE et non un repli silencieux : les defauts litteraux dupliques
+sont exactement ce qui a produit quatre diametres de roue contradictoires dans le depot.
+Ces valeurs ne sont pas encore mesurees (lot 4) -> l'echelle de l'odom reste fausse.
 """
 import math
 
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data
 
 from nav_msgs.msg import Odometry
@@ -45,24 +51,51 @@ def _quat_from_euler(roll, pitch, yaw):
 
 
 class Esp32MavlinkDriver(Node):
+    # Parametres physiques attendus de la source unique config/robots/<robot>.yaml.
+    # Aucun n'a de defaut : voir _req().
+    _PHYS_DOUBLES = ("car_type", "counts_per_rev", "wheel_diameter_m", "wheel_separation_m",
+                     "motor_max_rpm", "motor_operating_voltage", "motor_power_max_voltage",
+                     "pid_kp", "pid_ki", "pid_kd")
+    _PHYS_INTS = ("encoder_left_index", "encoder_right_index")
+    _PHYS_BOOLS = ("invert_left", "invert_right")
+
+    def _req(self, name):
+        """Lit un parametre physique OBLIGATOIRE ; leve si la source unique ne l'a pas fourni.
+
+        Selon la version de rclpy, un parametre declare sans valeur leve a la lecture ou
+        renvoie une valeur None : les deux cas menent au meme echec explicite.
+        """
+        try:
+            value = self.get_parameter(name).value
+        except Exception:
+            value = None
+        if value is None:
+            raise RuntimeError(
+                f"parametre physique obligatoire absent : '{name}'. Il doit venir du fichier "
+                "canonique bamboo_base/config/robots/<robot>.yaml (charge par "
+                "driver.launch.py) ; ce noeud ne porte volontairement aucun defaut geometrique.")
+        return value
+
     def __init__(self):
         super().__init__("esp32_mavlink_driver")
 
-        # --- parametres ---
+        # --- parametres de transport et de frames (faits d'hote : un defaut est licite) ---
         self.declare_parameter("port", "/dev/esp32")
         self.declare_parameter("baud", 921600)
         self.declare_parameter("publish_rate_hz", 30.0)
-        # Geometrie : PLACEHOLDERS absurdes cote firmware -> calibrer au L6 (roues surelevees
-        # puis deplacement mesure au sol). Tant que non calibre, l'odom est fausse d'echelle.
-        self.declare_parameter("counts_per_rev", 2114.0)
-        self.declare_parameter("wheel_diameter_m", 0.08)
-        self.declare_parameter("wheel_separation_m", 0.30)
+        # --- parametres PHYSIQUES : declares SANS DEFAUT ---
+        # Ils appartiennent a la source unique config/robots/<robot>.yaml. Declarer un type
+        # sans valeur rend l'absence detectable : _req() leve alors une erreur nommant le
+        # parametre, au lieu de laisser tourner l'odometrie sur un placeholder muet.
+        for _name in self._PHYS_DOUBLES:
+            self.declare_parameter(_name, Parameter.Type.DOUBLE)
         # encSpeed() renvoie [M1..M4] ; 2 voies physiques seulement (M3=M1, M4=M2 cote
         # encodeur). On mappe la voie gauche/droite par index.
-        self.declare_parameter("encoder_left_index", 0)
-        self.declare_parameter("encoder_right_index", 1)
-        self.declare_parameter("invert_left", False)
-        self.declare_parameter("invert_right", False)
+        for _name in self._PHYS_INTS:
+            self.declare_parameter(_name, Parameter.Type.INTEGER)
+        for _name in self._PHYS_BOOLS:
+            self.declare_parameter(_name, Parameter.Type.BOOL)
+        self.declare_parameter("robot_base", Parameter.Type.STRING)
         self.declare_parameter("odom_frame", "odom")
         self.declare_parameter("base_frame", "base_footprint")
         self.declare_parameter("imu_frame", "imu_link")
@@ -76,13 +109,22 @@ class Esp32MavlinkDriver(Node):
         self.port = g("port")
         self.baud = int(g("baud"))
         rate = float(g("publish_rate_hz"))
-        self.cpr = float(g("counts_per_rev"))
-        self.wheel_diameter = float(g("wheel_diameter_m"))
-        self.wheel_sep = float(g("wheel_separation_m"))
-        self.left_idx = int(g("encoder_left_index"))
-        self.right_idx = int(g("encoder_right_index"))
-        self.inv_left = bool(g("invert_left"))
-        self.inv_right = bool(g("invert_right"))
+        self.robot_base = str(self._req("robot_base"))
+        self.car_type = float(self._req("car_type"))
+        self.cpr = float(self._req("counts_per_rev"))
+        self.wheel_diameter = float(self._req("wheel_diameter_m"))
+        self.wheel_sep = float(self._req("wheel_separation_m"))
+        # Motorisation et gains : lus ici pour echouer tot si la source est incomplete ;
+        # leur diffusion vers la SRAM de la carte est le sujet du lot 2.
+        self.motor_max_rpm = float(self._req("motor_max_rpm"))
+        self.motor_voltage = float(self._req("motor_operating_voltage"))
+        self.motor_max_voltage = float(self._req("motor_power_max_voltage"))
+        self.pid = (float(self._req("pid_kp")), float(self._req("pid_ki")),
+                    float(self._req("pid_kd")))
+        self.left_idx = int(self._req("encoder_left_index"))
+        self.right_idx = int(self._req("encoder_right_index"))
+        self.inv_left = bool(self._req("invert_left"))
+        self.inv_right = bool(self._req("invert_right"))
         self.odom_frame = g("odom_frame")
         self.base_frame = g("base_frame")
         self.imu_frame = g("imu_frame")

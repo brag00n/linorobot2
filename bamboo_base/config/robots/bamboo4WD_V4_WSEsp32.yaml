@@ -1,0 +1,70 @@
+# ============================================================================
+# bamboo4WD_V4_WSEsp32 (BambooWS) - SOURCE UNIQUE DE VERITE PHYSIQUE
+# ============================================================================
+# Ce fichier porte la geometrie et la motorisation du robot, et RIEN D'AUTRE.
+# Tous les consommateurs s'y referent : le driver ROS (bamboo_base), les
+# arguments xacro de l'URDF (linorobot2_description) et les outils hote
+# (linorobot2_hardware/tools/robot_control/robot_profile.py).
+#
+# N'Y ENTRENT PAS les faits d'hote, legitimement differents d'une machine a
+# l'autre : port serie, baud, VID:PID. Ils restent dans config/esp32_driver.yaml
+# et dans les profils robots/*.json du depot firmware.
+#
+# Format ROS natif (`/**: ros__parameters:`) pour etre utilisable tel quel :
+#   ros2 param load /esp32_mavlink_driver <ce fichier>
+#
+# +------------------------------------------------------------------------+
+# | AVERTISSEMENT : AUCUNE de ces valeurs n'est MESUREE a ce jour.          |
+# | Ce sont des valeurs d'AMORCAGE, heritees du firmware et de l'amont      |
+# | linorobot2. L'odometrie est donc fausse d'echelle, et l'actuation reste |
+# | interdite tant que la calibration (lot 4, roues surelevees puis mesure  |
+# | au sol) n'a pas remplace les lignes marquees << NON MESURE >>.          |
+# +------------------------------------------------------------------------+
+/**:
+  ros__parameters:
+
+    # --- identite cinematique -------------------------------------------
+    # 4 roues fixes, entrainement differentiel par cote (skid steer).
+    robot_base: "4wd"
+    # Type de chassis attendu par la carte (FOURWHEEL). Enumere cote firmware :
+    # 1 MECANUM, 2 MECANUM_MAX, 3 MECANUM_MINI, 4 FOURWHEEL, 5 ACKERMAN, 6 SUNRISE.
+    car_type: 4.0
+
+    # --- geometrie -------------------------------------------------------
+    # << NON MESURE >> tics par tour en sortie de reducteur, voie encodeur.
+    # Valeur d'amorcage du firmware (COUNTS_PER_REV1). Procedure de mesure :
+    # driver en lecture seule, 10 tours de roue a la main, cpr = dcounts / 10.
+    counts_per_rev: 2114.0
+    # << NON MESURE >> diametre de roue au sol, en metres (pied a coulisse).
+    # L'amont linorobot2 declare 0.14324 dans l'URDF et le firmware 0.8 (absurde) :
+    # on retient ici la valeur du driver, la seule qui ait tourne.
+    wheel_diameter_m: 0.08
+    # << NON MESURE >> entraxe gauche/droite (voie), en metres.
+    # L'amont linorobot2 declare 0.271 dans l'URDF, le firmware 1.3 (absurde).
+    wheel_separation_m: 0.30
+
+    # --- motorisation ----------------------------------------------------
+    # << NON MESURE >> plafond moteur utilise par la cinematique embarquee
+    # (max_rpm = tension / tension_nominale * motor_max_rpm * 0.85).
+    motor_max_rpm: 250.0
+    motor_operating_voltage: 12.0
+    motor_power_max_voltage: 6.0
+
+    # --- PID de vitesse roue --------------------------------------------
+    # ATTENTION : sur cette carte les 4 moteurs PARTAGENT un seul triplet
+    # (repliement d'index idx % 3 cote ESP32), contrairement au STM32.
+    # K_I eleve pour une integrale non bornee a 10 Hz -> premier suspect en cas
+    # de depassement lors du reglage (lot 4).
+    pid_kp: 0.6
+    pid_ki: 0.3
+    pid_kd: 0.5
+
+    # --- mapping des voies encodeur -------------------------------------
+    # encSpeed() renvoie [M1..M4] mais il n'y a que 2 voies PHYSIQUES :
+    # M3 recopie M1 et M4 recopie M2 (un seul encodeur par cote).
+    # << A VERIFIER >> que le groupe A du TB6612FNG entraine bien le cote gauche
+    # (observation roues surelevees, lot 4).
+    encoder_left_index: 0
+    encoder_right_index: 1
+    invert_left: false
+    invert_right: false
