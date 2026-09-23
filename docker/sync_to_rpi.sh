@@ -23,8 +23,10 @@
 # phase), `tools/.venv/` (venv Windows, client MCP — jamais sur ARM), `data/faces/`
 # (non versionne, sensible), artefacts de build.
 #
-# Prerequis : rsync + ssh dans CE shell (Git Bash+rsync, WSL, ou MSYS2). Depuis PowerShell :
-#   bash ./sync_to_rpi.sh    ou    wsl ./sync_to_rpi.sh
+# Prerequis : ssh, plus rsync SI DISPONIBLE -- a defaut le script se replie sur tar (voir
+# sync_repo_tar plus bas). Le Git Bash de Git for Windows n'a pas rsync : exiger rsync, c'est
+# ce qui a fait qu'aucune synchro ne partait et que le RPi tournait sur du code perime.
+# Depuis PowerShell :   bash ./sync_to_rpi.sh    ou    wsl ./sync_to_rpi.sh
 set -euo pipefail
 
 # ---------- a adapter (ou surcharger via variables d'environnement) ----------
@@ -50,6 +52,9 @@ EXCLUDES=(
   --exclude='.pio/'            # PlatformIO
   --exclude='build/' --exclude='install/' --exclude='log/'   # colcon
   --exclude='*.stackdump'
+  # .env porte des faits PROPRES AU RPi (chemins de peripheriques, options d'hote) et il y est
+  # modifie a la main : l'ecraser depuis Windows casserait le demarrage des conteneurs.
+  --exclude='docker/.env'
 )
 
 # -rlt (pas -a) + no-perms/owner : evite le churn de permissions Windows->Linux.
@@ -57,10 +62,49 @@ EXCLUDES=(
 RSYNC_OPTS=(-rlt --no-perms --no-owner --no-group --chmod=ugo=rwX \
             -e "$SSH_CMD" --info=stats1,progress2 "${EXCLUDES[@]}")
 
+# Repli tar si rsync manque, et ce n'est PAS un luxe : le Git Bash livre avec Git for
+# Windows n'embarque pas rsync. Sans ce repli, le script echouait sur la PREMIERE ligne de
+# la boucle, et le depot du RPi restait silencieusement en arriere -- constat du 2026-09-23 :
+# le fichier canonique du lot 0 n'etait jamais arrive, le driver a demarre sur la geometrie
+# d'un commit de septembre 2025. Une synchro qui echoue est visible ; une synchro jamais
+# lancee ne l'est pas, d'ou l'exigence : ce script doit marcher dans le shell qu'on a.
+# tar est present partout (Git Bash, WSL, MSYS2) et ne demande rien au RPi.
+# Difference assumee : tar POUSSE TOUT l'arbre a chaque fois (pas de delta) et n'a pas
+# --delete non plus -- plus lent, meme resultat pour un depot de cette taille.
+sync_repo_tar() {
+  local repo="$1"
+  # On REECRIT les motifs de rsync pour tar, car les deux ne les lisent pas pareil :
+  #   - tar ignore un / final ("--exclude=.git/" ne matche rien) -> on le retire ;
+  #   - tar exclut en mode --no-anchored, donc un motif nu matche n'importe quel suffixe de
+  #     chemin : "__pycache__" couvre deja tout l'arbre -> le prefixe "**/" de rsync devient
+  #     inutile, et le garder risquerait d'exiger un / la ou il n'y en a pas.
+  local tar_excl=()
+  local e pat
+  for e in "${EXCLUDES[@]}"; do
+    pat="${e#--exclude=}"
+    pat="${pat%/}"
+    pat="${pat#\*\*/}"
+    tar_excl+=("--exclude=$pat")
+  done
+  tar czf - -C "$WIN_ROOT/$repo" "${tar_excl[@]}" . \
+    | $SSH_CMD "$RPI_HOST" "tar xzf - -C '$RPI_BASE/$repo'"
+}
+
+if command -v rsync >/dev/null 2>&1; then
+  TRANSPORT="rsync"
+else
+  TRANSPORT="tar"
+  echo "!! rsync absent de ce shell -> repli sur tar (arbre complet, pas de delta)."
+fi
+
 for repo in linorobot2 linorobot2_hardware; do
-  echo "==> rsync $repo -> $RPI_HOST:$RPI_BASE/$repo"
+  echo "==> $TRANSPORT $repo -> $RPI_HOST:$RPI_BASE/$repo"
   $SSH_CMD "$RPI_HOST" "mkdir -p '$RPI_BASE/$repo'"
-  rsync "${RSYNC_OPTS[@]}" "$WIN_ROOT/$repo/" "$RPI_HOST:$RPI_BASE/$repo/"
+  if [ "$TRANSPORT" = "rsync" ]; then
+    rsync "${RSYNC_OPTS[@]}" "$WIN_ROOT/$repo/" "$RPI_HOST:$RPI_BASE/$repo/"
+  else
+    sync_repo_tar "$repo"
+  fi
 done
 
 echo "OK — sync termine (branche cible : $BRANCH)."
