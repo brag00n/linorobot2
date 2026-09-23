@@ -1,4 +1,35 @@
 # linorobot2
+> ## About this fork - the BambooWS robot
+>
+> This repository is **not** upstream [linorobot2](https://github.com/linorobot/linorobot2). It is a
+> fork that carries **BambooWS** (full identifier `bamboo4WD_V4_WSEsp32`), a robot that is a **deep
+> adaptation** of the linorobot2 lineage rather than one more configuration of it. The upstream text
+> below is kept as-is; wherever BambooWS departs from it, a **`For the robot BambooWS:`** block says
+> how - the surrounding paragraphs are never rewritten.
+>
+> The structural departures, stated here once:
+>
+> - **One control board**: WaveShare **General Driver for Robots** (ESP32-WROOM-32UE), whose
+>   **TB6612FNG drives 4 motors but exposes only 2 odometers** - one encoder per side, not per wheel.
+> - **MAVLink v2 (`bamboo` dialect) as the main transport**, in place of micro-ROS. Hence a
+>   purpose-built ROS driver (`bamboo_base`) instead of `linorobot2_base`. The board reports its own
+>   microcode revision (see *Hardware and Robot Firmware*).
+> - **Docker containers on a Raspberry Pi 4 / DietPi**, not a native install by
+>   `install_linorobot2.bash`.
+> - **Centralised configuration, changeable at runtime**, where linorobot2 freezes the geometry into
+>   the firmware at compile time.
+> - **MCP tooling** for diagnosis and actuation, absent upstream.
+> - **UPS Module 3S power** (3x 18650, 5 V / 5 A out, INA219 monitoring) instead of a direct supply.
+> - **Bluetooth gamepad teleoperation** paired on the Pi, not `teleop_twist_keyboard` over SSH.
+> - **No lidar yet**: SLAM and navigation stay out of scope until the sensor is chosen.
+>
+> Scope note: BambooWS is built **only** from the WaveShare kit - UPS Module 3S, General Driver
+> board, Raspberry Pi 4, Bluetooth gamepad. Other boards and devices present in these repositories
+> (Yahboom STM32F103RCT6, Teensy, GrovePi+, motorised camera, UnitV2) are **code kept for future
+> use**: they are not documented here and are not variants of BambooWS.
+>
+> Full detail: [`docs/bamboo4WD_V4_WSEsp32.md`](docs/bamboo4WD_V4_WSEsp32.md).
+
 ![linorobot2](docs/linorobot2.gif)
 
 linorobot2 is a ROS2 port of the [linorobot](https://github.com/linorobot/linorobot) package. If you're planning to build your own custom ROS2 robot (2WD, 4WD, Mecanum Drive) using accessible parts, then this package is for you. This repository contains launch files to easily integrate your DIY robot with Nav2 and a simulation pipeline to run and verify your experiments on a virtual robot in Gazebo. 
@@ -15,9 +46,20 @@ The image below summarizes the topics available after running **bringup.launch.p
 An in-depth tutorial on how to build the robot is available in [linorobot2_hardware](https://github.com/linorobot/linorobot2_hardware).
 
 ## Installation 
+> **For the robot BambooWS:** nothing is installed on the robot's own filesystem beyond Docker and
+> one systemd unit. The ROS 2 Humble stack ships as **containers** built from
+> [`docker/`](docker/); `install_linorobot2.bash` is **not used**. The development machine runs
+> Windows and talks to the robot over SSH, rosbridge and MCP.
+
 This package requires ros-foxy or ros-galactic. If you haven't installed ROS2 yet, you can use this [installer](https://github.com/linorobot/ros2me) script that has been tested to work on x86 and ARM based dev boards ie. Raspberry Pi4/Nvidia Jetson Series. 
 
 ### 1. Robot Computer - linorobot2 Package
+> **For the robot BambooWS:** bring services up with `docker compose` from [`docker/`](docker/) on
+> the Pi. In scope today: `rosbridge` (port 9090), `foxglovebridge` (8765), `camera.h264`, and
+> `driver.real` - the MAVLink board driver, which starts **read-only** (`enable_cmd_vel: false`).
+> `drive.real` adds gamepad teleoperation. `slam.real` and `navigation.real` exist in the compose
+> file but **wait for a lidar to be chosen**; they are not documented here.
+
 The easiest way to install this package on the robot computer is to run the bash script found in this package's root directory. It will install all the dependencies, set the ENV variables for the robot base and sensors, and create a linorobot2_ws (robot_computer_ws) on the robot computer's `$HOME` directory. If you're using a ZED camera with a Jetson Nano, you must create a custom Ubuntu 20.04 image for CUDA and the GPU driver to work. Here's a quick [guide](./ROBOT_INSTALLATION.md#1-creating-jetson-nano-image) on how to create a custom image for Jetson Nano.
 
     source /opt/ros/<ros_distro>/setup.bash
@@ -59,6 +101,9 @@ depth_sensor:
 Alternatively, follow this [guide](./ROBOT_INSTALLATION.md) to do the installation manually.
 
 ### 2. Host Machine / Development Computer - Gazebo Simulation (Optional)
+> **For the robot BambooWS:** the Gazebo simulation is not used. Verification happens on the real
+> robot, wheels raised, through MCP readings.
+
 This step is only required if you plan to use Gazebo later. This comes in handy if you want to fine-tune parameters (ie. SLAM Toolbox, AMCL, Nav2) or test your applications on a virtual robot. 
 
 #### 2.1 Install linorobot2 Package
@@ -81,6 +126,10 @@ Set LINOROBOT2_BASE env variable to the type of robot base used. Available env v
 You can skip the next step (Host Machine - RVIZ Configurations) since this package already contains the same RVIZ configurations to visualize the robot. 
 
 ### 3. Host Machine - RVIZ Configurations
+> **For the robot BambooWS:** visualisation goes through **Foxglove** (`foxglove_bridge`, port
+> 8765) and through the MCP servers, not RVIZ on a host machine - the development machine is
+> Windows and has no native ROS 2 install.
+
 Install [linorobot2_viz](https://github.com/linorobot/linorobot2_viz) package to visualize the robot remotely specifically when creating a map or initializing/sending goal poses to the robot. The package has been separated to minimize the installation required if you're not using the simulation tools on the host machine.
 
     cd <host_machine_ws>
@@ -90,9 +139,29 @@ Install [linorobot2_viz](https://github.com/linorobot/linorobot2_viz) package to
     source install/setup.bash
 
 ## Hardware and Robot Firmware
+> **For the robot BambooWS:** a single control board, the WaveShare **General Driver for Robots**
+> (ESP32-WROOM-32UE), speaking **MAVLink v2** rather than micro-ROS. The board returns its own
+> microcode identity, and that string is what pins the firmware revision this robot runs:
+>
+> | | |
+> |---|---|
+> | Microcode | **`ESP32-WROOM-32UE_bamboo v0.1.0`** |
+> | Returned as | `STATUSTEXT` (#253) once after the first heartbeat, and `AUTOPILOT_VERSION` (#148) on `MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES` |
+>
+> Board and microcode reference:
+> [`linorobot2_hardware/firmware/esp32_bamboo/README.md`](../linorobot2_hardware/firmware/esp32_bamboo/README.md)
+> - connectors, motor ports M1..M4, LIDAR port H7, ST3215 servo bus, and what the microcode does
+> *not* use. Power:
+> [`linorobot2_hardware/docs/hardware_waveshare_ups_module_3s.md`](../linorobot2_hardware/docs/hardware_waveshare_ups_module_3s.md).
+
 All the hardware documentation and robot microcontroller's firmware can be found [here](https://github.com/linorobot/linorobot2_hardware).
 
 ## URDF
+> **For the robot BambooWS:** wheel radius and track come from the robot's **single canonical
+> configuration file** and are passed to the URDF as xacro arguments. Do not hand-edit
+> `linorobot2_description/urdf/4wd_properties.urdf.xacro`: its values are upstream defaults, not
+> measurements of this robot, and editing them there desynchronises TF from odometry.
+
 ### 1. Define robot properties
 [linorobot2_description](./linorobot2_description) package has parameterized xacro files that can help you kickstart writing the robot's URDF. Open <robot_type>.properties.urdf.xacro in [linorobot2_description/urdf](./linorobot2_description/urdf) directory and change the values according to the robot's specification/dimensions. All pose definitions must be measured from the `base_link` (center of base) and wheel positions (ie `wheel_pos_x`) are referring to wheel 1.
 
@@ -135,9 +204,17 @@ The `rviz` argument on description.launch.py won't work on headless setup but yo
     ros2 launch linorobot2_viz robot_model.launch.py
 
 ## Quickstart
+> **For the robot BambooWS:** there is no `bringup.launch.py` on the host. Everything starts as
+> containers, and actuation is always an explicit act - `enable_cmd_vel` defaults to `false`.
+
 All commands below are to be run on the robot computer unless you're running a simulation or rviz2 to visualize the robot remotely from the host machine. SLAM and Navigation launch files are the same for both real and simulated robots in Gazebo.
 
 ### 1. Booting up the robot
+> **For the robot BambooWS:** the robot brings itself up at power-on through a **systemd unit**
+> running `docker compose --profile boot up -d`. Nothing needs to be typed on the Pi. Check it with
+> `systemctl status bamboo4wd` and `journalctl -u bamboo4wd`, or through the `ros2-orchestrator` MCP
+> server.
+
 
 #### 1.1a Using a real robot:
 
@@ -165,6 +242,16 @@ The agent needs a few seconds to get reconnected (less than 30 seconds). Unplug 
 linorobot2_bringup.launch.py or gazebo.launch.py must always be run on a separate terminal before creating a map or robot navigation when working on a real robot or gazebo simulation respectively.
 
 ### 2. Controlling the robot
+> **For the robot BambooWS:** two ways in, both bounded.
+>
+> - **Bluetooth gamepad** (`joy_linux` + `teleop_twist_joy`), with a **deadman button**: release it
+>   and `/cmd_vel` goes to zero. Losing the gamepad stops the robot in under 0.5 s.
+> - **MCP `cmd_vel`**, bounded in speed and duration, with a guaranteed STOP on exit - the path used
+>   for bench tests with the wheels raised.
+>
+> `teleop_twist_keyboard` over SSH is not the intended path. Arming is explicit: `enable_cmd_vel`
+> defaults to `false` everywhere.
+
 #### 2.1  Keyboard Teleop
 Run [teleop_twist_keyboard](https://index.ros.org/r/teleop_twist_keyboard/) to control the robot using your keyboard:
 
@@ -193,6 +280,10 @@ Press Button/Move Joystick:
 - **Right Joystick Left/Right** - To rotate the robot CW/CCW.
 
 ### 3. Creating a map
+> **For the robot BambooWS:** **out of scope for now** - no lidar has been chosen. The
+> `slam.real` service exists in the compose file and waits for that sensor; no mapping procedure is
+> documented here, because none has been verified on this robot.
+
 
 #### 3.1 Run [SLAM Toolbox](https://github.com/SteveMacenski/slam_toolbox):
 
@@ -223,6 +314,10 @@ Drive the robot manually until the robot has fully covered its area of operation
     ros2 run nav2_map_server map_saver_cli -f <map_name> --ros-args -p save_map_timeout:=10000.
 
 ### 4. Autonomous Navigation
+> **For the robot BambooWS:** **out of scope for now**, same reason - the `navigation.real`
+> service exists and waits for the lidar. Note also that this robot has **no `twist_mux`** yet: the
+> day Nav2 runs, it and the gamepad would publish to the same `/cmd_vel` with no arbitration.
+
 
 #### 4.1 Load the map you created:
 
@@ -258,6 +353,16 @@ navigation.launch.py will continue to throw this error `Timed out waiting for tr
 
 
 ## Troubleshooting Guide
+> **For the robot BambooWS:** diagnose through **MCP first** - `ros2-analysis` for the graph,
+> topics and rates, `ros2-orchestrator` for service state and logs. Traps specific to this robot:
+>
+> - topics published **best-effort** (`imu/data`, `mag`, `/scan`) are **invisible to rosbridge**,
+>   so they read as absent when they are merely unreliable-QoS;
+> - **udev symlink collisions** between CP2102 adapters - disambiguate by serial number, never by
+>   VID:PID alone;
+> - **USB brown-out** when the Pi is powered from the motor rail; the UPS Module 3S exists to avoid
+>   exactly that.
+
 
 #### 1. The changes I made on a file are not taking effect on the package configuration/robot's behavior.
 - You need to build your workspace every time you modify a file:
@@ -283,6 +388,13 @@ navigation.launch.py will continue to throw this error `Timed out waiting for tr
     ```
 
 ## Useful Resources:
+> **For the robot BambooWS:** [`docs/bamboo4WD_V4_WSEsp32.md`](docs/bamboo4WD_V4_WSEsp32.md)
+> first, then, in the sibling repository,
+> [`firmware/esp32_bamboo/README.md`](../linorobot2_hardware/firmware/esp32_bamboo/README.md) for
+> the board and its microcode and
+> [`docs/hardware_waveshare_ups_module_3s.md`](../linorobot2_hardware/docs/hardware_waveshare_ups_module_3s.md)
+> for power.
+
 
 https://navigation.ros.org/setup_guides/index.html
 

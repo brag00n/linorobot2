@@ -1,3 +1,34 @@
+> ## About this fork - the BambooWS robot
+>
+> This repository is **not** upstream [linorobot2](https://github.com/linorobot/linorobot2). It is a
+> fork that carries **BambooWS** (full identifier `bamboo4WD_V4_WSEsp32`), a robot that is a **deep
+> adaptation** of the linorobot2 lineage rather than one more configuration of it. The manual native
+> installation described below is **not** how BambooWS is deployed: this robot runs the ROS 2 stack
+> in **Docker containers**, so the document is kept for reference only.
+>
+> The structural departures, stated here once:
+>
+> - **One control board**: WaveShare **General Driver for Robots** (ESP32-WROOM-32UE), whose
+>   **TB6612FNG drives 4 motors but exposes only 2 odometers** - one encoder per side, not per wheel.
+> - **MAVLink v2 (`bamboo` dialect) as the main transport**, in place of micro-ROS. Hence a
+>   purpose-built ROS driver (`bamboo_base`) instead of `linorobot2_base`. The board reports its own
+>   microcode revision (see *Hardware and Robot Firmware*).
+> - **Docker containers on a Raspberry Pi 4 / DietPi**, not a native install by
+>   `install_linorobot2.bash`.
+> - **Centralised configuration, changeable at runtime**, where linorobot2 freezes the geometry into
+>   the firmware at compile time.
+> - **MCP tooling** for diagnosis and actuation, absent upstream.
+> - **UPS Module 3S power** (3x 18650, 5 V / 5 A out, INA219 monitoring) instead of a direct supply.
+> - **Bluetooth gamepad teleoperation** paired on the Pi, not `teleop_twist_keyboard` over SSH.
+> - **No lidar yet**: SLAM and navigation stay out of scope until the sensor is chosen.
+>
+> Scope note: BambooWS is built **only** from the WaveShare kit - UPS Module 3S, General Driver
+> board, Raspberry Pi 4, Bluetooth gamepad. Other boards and devices present in these repositories
+> (Yahboom STM32F103RCT6, Teensy, GrovePi+, motorised camera, UnitV2) are **code kept for future
+> use**: they are not documented here and are not variants of BambooWS.
+>
+> Full detail: [`docs/bamboo4WD_V4_WSEsp32.md`](docs/bamboo4WD_V4_WSEsp32.md).
+
 ## Manual installation of linorobot2 package on robot computer
 
 ### 1. Install micro-ROS and its dependencies
