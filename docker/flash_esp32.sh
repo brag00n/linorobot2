@@ -39,20 +39,38 @@ die() { echo "ERREUR: $*" >&2; exit 1; }
     scp .pio/build/bamboov3-wirshare_bamboo_mavlink/firmware.bin \
         dietpi@<rpi>:<base>/linorobot2_hardware/firmware/esp32_bamboo/flash/"
 
-# --- esptool : dans le conteneur uniquement, apt d'abord (pas de pip dans l'image) ---
+# --- esptool : dans le conteneur uniquement, en PREFERANT une version >= 4.x -----------
+# Pourquoi ce soin : l'esptool 2.8 que fournit apt (focal/jammy) ne sait pas diagnostiquer.
+# Face a une carte qui n'ecoute pas, elle ne dit que "Timed out waiting for packet header",
+# alors que la 4.x nomme la panne ("Download mode successfully detected, but getting no sync
+# reply: The serial TX path seems to be down."). C'est ce message qui a permis d'isoler une
+# coupure materielle de la voie TX ; on ne se prive pas de ce diagnostic.
 ESPTOOL=""
-for c in esptool.py esptool; do command -v "$c" >/dev/null 2>&1 && { ESPTOOL="$c"; break; }; done
-if [ -z "$ESPTOOL" ]; then
-    echo "--- installation d'esptool DANS LE CONTENEUR (rien sur l'hote) ---"
-    apt-get update -qq && apt-get install -y -qq esptool \
-        || pip3 install --no-cache-dir esptool \
-        || die "installation d'esptool impossible (reseau ?)"
-    for c in esptool.py esptool; do command -v "$c" >/dev/null 2>&1 && { ESPTOOL="$c"; break; }; done
-    [ -n "$ESPTOOL" ] || die "esptool installe mais introuvable dans le PATH"
+resolveEsptool() {
+    for c in esptool.py esptool; do command -v "$c" >/dev/null 2>&1 && { ESPTOOL="$c"; return 0; }; done
+    python3 -c 'import esptool' >/dev/null 2>&1 && { ESPTOOL="python3 -m esptool"; return 0; }
+    return 1
+}
+# la 2.8 dit "esptool.py v2.8", la 4.x "esptool.py v4.7.0" : on prend le premier numero
+# de version rencontre, d'ou qu'il vienne dans la sortie.
+esptoolMajor() { $ESPTOOL version 2>/dev/null | grep -oE '[0-9]+[.][0-9]+' | head -n1 | cut -d. -f1; }
+
+resolveEsptool || true
+MAJ="$(esptoolMajor)"
+# pas de version lisible = outil trop vieux ou casse : on installe.
+if [ -z "$ESPTOOL" ] || [ -z "$MAJ" ] || [ "$MAJ" -lt 4 ]; then
+    echo "--- installation d'esptool >= 4 DANS LE CONTENEUR (rien sur l'hote) ---"
+    (command -v pip3 >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq python3-pip; }) \
+        && python3 -m pip install --no-cache-dir --upgrade esptool >/dev/null \
+        && ESPTOOL="" && resolveEsptool \
+        || { echo "AVERTISSEMENT: pip indisponible, repli sur l'esptool d'apt (diagnostic pauvre)"
+             [ -n "$ESPTOOL" ] || { apt-get update -qq && apt-get install -y -qq esptool; resolveEsptool; }; }
+    [ -n "$ESPTOOL" ] || die "installation d'esptool impossible (reseau ?)"
 fi
+echo "--- esptool utilise : $($ESPTOOL version 2>/dev/null | head -n1) ---"
 
 echo "=== carte sur $PORT, image $(basename "$BIN") ($(stat -c%s "$BIN") octets) ==="
-"$ESPTOOL" --port "$PORT" --baud 115200 chip_id || die "la carte ne repond pas sur $PORT"
+$ESPTOOL --port "$PORT" --baud 115200 chip_id || die "la carte ne repond pas sur $PORT"
 
 # --- sauvegarde AVANT ecriture : c'est le seul chemin de retour arriere ---
 if [ "${NO_BACKUP:-0}" != "1" ]; then
@@ -60,17 +78,17 @@ if [ "${NO_BACKUP:-0}" != "1" ]; then
     OUT="$BACKUP_DIR/firmware_$(date +%Y%m%d_%H%M%S).bin"
     echo "=== sauvegarde de la flash actuelle -> $OUT ==="
     # 4 MiB = taille de la flash du WROOM-32 ; on relit tout, pas seulement 0x10000.
-    "$ESPTOOL" --port "$PORT" --baud "$BAUD" read_flash 0 0x400000 "$OUT" \
+    $ESPTOOL --port "$PORT" --baud "$BAUD" read_flash 0 0x400000 "$OUT" \
         || die "sauvegarde echouee : on n'ecrit PAS sans filet"
 fi
 
 echo "=== ecriture ==="
-"$ESPTOOL" --port "$PORT" --baud "$BAUD" write_flash -z 0x10000 "$BIN" \
+$ESPTOOL --port "$PORT" --baud "$BAUD" write_flash -z 0x10000 "$BIN" \
     || die "ecriture echouee — reflasher la sauvegarde :
   $ESPTOOL --port $PORT --baud 115200 write_flash 0 $BACKUP_DIR/<sauvegarde>.bin"
 
 echo "=== verification ==="
-"$ESPTOOL" --port "$PORT" --baud "$BAUD" verify_flash 0x10000 "$BIN" \
+$ESPTOOL --port "$PORT" --baud "$BAUD" verify_flash 0x10000 "$BIN" \
     || echo "AVERTISSEMENT: verify_flash a echoue (a confirmer par la banniere STATUSTEXT)"
 
 echo "=== fait. Relancer le driver : docker compose up -d driver.real ==="
