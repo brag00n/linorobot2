@@ -67,10 +67,16 @@ depuis l'ancienne stack, build de l'image Docker, vérification via le MCP.
   | flux coupé (watchdog) | 0,15 s | 0,70 s | 4,7 cm |
 
   Le critère du plan (« freinage < 0,5 s ») **n'est pas tenu, et ne peut pas l'être sans
-  reflash** : même avec un watchdog quasi nul le plancher est la **roue libre, ~0,7 s**.
-  L'ESP32 met la PWM à zéro, il ne **court-circuite pas** le TB6612FNG, donc il n'y a aucun
-  frein actif. Candidat firmware si besoin : frein par court-circuit (les deux entrées du
-  pont au même niveau) sur consigne nulle.
+  reflash** : le plancher est une **queue de freinage de ~0,7 s**, même avec un watchdog
+  quasi nul. ⚠️ Ce n'est **pas** une roue libre, contrairement à ce que ce document affirmait
+  avant T18 (2026-09-23) : consigne nulle et roue encore en mouvement, le PID embarqué
+  **contre-pilote** — `spin()` appelle `forward()`/`reverse()` avec une PWM réelle, et
+  l'intégrale amplifie l'effort tant que l'erreur persiste. Il est exact que l'ESP32 ne
+  **court-circuite pas** le TB6612FNG (`USE_SHORT_BRAKE` n'est défini nulle part), mais il
+  freine bel et bien par le moteur. La queue s'explique donc par l'autorité du PID à bas RPM,
+  la bande morte `PWM_MIN` et la résolution du RPM en fin de course. Candidat firmware si
+  besoin : frein par court-circuit (les deux entrées du pont au même niveau) sur consigne
+  nulle, qui s'ajouterait au freinage PID au lieu de le remplacer.
 
   En revanche le critère en **temps** est trompeur ici : la queue de freinage est à 3-6 RPM,
   donc elle coûte des **centimètres**. La grandeur à retenir est la distance : **6,8 cm**

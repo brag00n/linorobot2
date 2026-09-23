@@ -26,8 +26,12 @@
     # coute detection watchdog + roue libre : 0,5 s -> 10,5 cm, 0,25 s -> 6,8 cm,
     # 0,15 s -> 4,7 cm. On garde 0,25 s : c'est 6 trames /joy manquees tolerees a
     # 25 Hz, donc robuste au jitter du bridge Docker, pour 3,7 cm gagnes sur 0,5 s.
-    # La roue libre seule (~0,7 s) est le plancher : l'ESP32 met la PWM a zero, il
-    # ne COURT-CIRCUITE pas le TB6612FNG, donc pas de frein actif sans reflash.
+    # Le plancher de ~0,7 s n'est PAS une roue libre : consigne a zero et roue encore
+    # en mouvement, le PID embarque contre-pilote (spin() appelle forward()/reverse()
+    # avec une PWM reelle -- T18 du 2026-09-23). L'ESP32 ne court-circuite pas le
+    # TB6612FNG, c'est exact, mais il freine quand meme par le moteur. La queue vient
+    # donc de l'autorite du PID a bas RPM, de la bande morte PWM_MIN et de la
+    # resolution du RPM en fin de course, pas d'une absence de frein.
     cmd_vel_timeout_s: 0.25
 
     # --- fiabilite QoS des capteurs (fait d'hote : depend des consommateurs) ---
