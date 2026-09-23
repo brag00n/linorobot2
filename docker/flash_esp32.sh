@@ -18,6 +18,9 @@
 #   ESP32_BIN     image a ecrire (defaut $HW/firmware/esp32_bamboo/flash/firmware.bin)
 #   ESP32_BAUD    debit de flash (defaut 460800 ; baisser a 115200 si echecs)
 #   NO_BACKUP=1   saute la sauvegarde (deconseille : un mauvais flash immobilise le robot)
+#   CHECK_ONLY=1  DIAGNOSTIC SEUL : identifie la puce puis s'arrete, sans rien ecrire ni
+#                 sauvegarder, et sans exiger de binaire. C'est le test le moins couteux de
+#                 la voie TX hote -> carte : si `chip_id` repond, l'ecriture est possible.
 #
 # PREALABLE : arreter le service qui tient le port, sinon esptool ne l'ouvrira pas :
 #   docker compose stop driver.real
@@ -34,7 +37,8 @@ die() { echo "ERREUR: $*" >&2; exit 1; }
 # --- port : le symlink udev est preferable mais pas garanti (regles non consolidees) ---
 [ -e "$PORT" ] || { echo "AVERTISSEMENT: $PORT absent, repli sur /dev/ttyUSB0"; PORT=/dev/ttyUSB0; }
 [ -e "$PORT" ] || die "aucun port serie ($PORT) : la carte est-elle branchee ?"
-[ -r "$BIN" ]  || die "image introuvable : $BIN
+# En diagnostic seul on n'ecrit rien, donc l'absence de binaire n'est pas une erreur.
+[ "${CHECK_ONLY:-0}" = "1" ] || [ -r "$BIN" ]  || die "image introuvable : $BIN
   Pousser le binaire depuis le poste de developpement (il n'est PAS versionne) :
     scp .pio/build/bamboov3-wirshare_bamboo_mavlink/firmware.bin \
         dietpi@<rpi>:<base>/linorobot2_hardware/firmware/esp32_bamboo/flash/"
@@ -84,8 +88,17 @@ if [ -z "$ESPTOOL" ] || [ -z "$MAJ" ] || [ "$MAJ" -lt 4 ]; then
 fi
 echo "--- esptool utilise : $($ESPTOOL version 2>/dev/null | head -n1) ---"
 
-echo "=== carte sur $PORT, image $(basename "$BIN") ($(stat -c%s "$BIN") octets) ==="
+if [ -r "$BIN" ]; then
+    echo "=== carte sur $PORT, image $(basename "$BIN") ($(stat -c%s "$BIN") octets) ==="
+else
+    echo "=== carte sur $PORT (diagnostic seul, aucune image) ==="
+fi
 $ESPTOOL --port "$PORT" --baud 115200 chip_id || die "la carte ne repond pas sur $PORT"
+
+if [ "${CHECK_ONLY:-0}" = "1" ]; then
+    echo "=== diagnostic seul : la voie TX repond, rien n'a ete ecrit ==="
+    exit 0
+fi
 
 # --- sauvegarde AVANT ecriture : c'est le seul chemin de retour arriere ---
 if [ "${NO_BACKUP:-0}" != "1" ]; then
