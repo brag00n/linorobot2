@@ -113,11 +113,18 @@ else
     # Exporter GPIO14 en entree la retire de la fonction UART tout de suite. NON PERSISTANT
     # (perdu au reboot), mais c'est ce qui permet de flasher la carte dans la minute sans
     # redemarrer le robot. Apres un reboot avec enable_uart=0, cette etape est inutile.
-    # Le reglage de config.txt ne vaut qu'au boot suivant : on confirme donc l'etat REEL par
-    # la presence des noeuds du peripherique. S'ils ont disparu, le brochage est libre et il
-    # n'y a rien a soulager.
-    if [ "$uart_at_rest" = "1" ] && [ ! -e /dev/ttyAMA0 ] && [ ! -e /dev/serial0 ]; then
-        ok "peripherique UART absent (/dev/ttyAMA0, /dev/serial0) : GPIO14 est libre, rien a soulager"
+    # Le reglage de config.txt ne vaut qu'au boot suivant : on confirme donc l'etat REEL par la
+    # presence du noeud. On teste /dev/serial0 et LUI SEUL, car c'est l'alias firmware du port
+    # expose sur le header -- la seule chose qui puisse contester GPIO14.
+    # NE PAS y ajouter /dev/ttyAMA0 : piege verifie le 2026-09-23, en activant la radio BT du
+    # § 2. ttyAMA0 est le PL011, que le firmware route vers le MODEM BT (alias /dev/serial1)
+    # des que `disable-bt` tombe -- il reapparait donc, sans rapport avec le header. Le tester
+    # faisait reclamer la liberation de GPIO14 sur un hote pourtant conforme. Le noyau le dit
+    # d'ailleurs lui-meme au boot : "uart-pl011 fe201000.serial: there is not valid maps for
+    # state default", c'est-a-dire aucune broche assignee cote header.
+    if [ "$uart_at_rest" = "1" ] && [ ! -e /dev/serial0 ]; then
+        ok "aucun UART sur le header (/dev/serial0 absent) : GPIO14 est libre, rien a soulager"
+        [ -e /dev/ttyAMA0 ] && say "  (/dev/ttyAMA0 present = PL011 pris par le modem BT, cf. § 2 : sans effet ici)"
     elif [ -d /sys/class/gpio ]; then
         cur=""
         [ -r /sys/class/gpio/gpio14/direction ] && cur="$(cat /sys/class/gpio/gpio14/direction 2>/dev/null)"
@@ -155,6 +162,22 @@ say ""
 # changera rien : l'overlay est applique avant l'espace utilisateur, d'ou la presence de ce
 # reglage ici et non dans install_bambooWS.sh.
 #
+# MAIS L'OVERLAY N'EST QUE LA PREMIERE DE TROIS COUCHES, constat du 2026-09-23 : l'avoir
+# neutralise puis redemarre ne donnait TOUJOURS aucun `hci0`. DietPi empile en effet
+#   1. `dtoverlay=disable-bt` dans config.txt (firmware) ;
+#   2. `/etc/modprobe.d/dietpi-disable_bluetooth.conf`, qui blackliste six modules
+#      (bluetooth, hci_uart, btbcm, bnep, rfcomm, hidp) -- donc meme overlay retire, rien ne
+#      se charge ;
+#   3. l'absence de `pi-bluetooth`, qui fournit `hciuart.service` : sans lui PERSONNE n'attache
+#      le modem BCM au PL011, donc pas d'adaptateur meme modules charges.
+# D'ou la DELEGATION a la routine DietPi ci-dessous plutot qu'un demontage couche par couche :
+# elle traite les trois, et surtout elle laisse DietPi COHERENT avec lui-meme -- un
+# `dietpi-config` ou une mise a jour ulterieure ne rejouera pas la desactivation par-dessus
+# notre bricolage. Elle n'exige pas de reboot (modprobe + `systemctl start hciuart` suffisent),
+# mais elle installe deux paquets sur l'hote : seule exception a la regle "on n'installe rien
+# sur le RPi", inevitable puisque l'appairage est hote et que le conteneur ne voit qu'un
+# /dev/input/js* deja appaire.
+#
 # INTERACTION AVEC LE § 1, contre-intuitive : sur un Pi 4 la BT integree est branchee sur
 # l'UART materiel PL011 (ttyAMA0), et `disable-bt` sert justement a liberer ce PL011. Le
 # reactiver ne rend donc PAS l'UART au header : avec la BT active, le port expose sur
@@ -187,33 +210,51 @@ if [ "$IS_RPI" != "1" ]; then
 elif [ -z "$CONFIG_TXT" ]; then
     warn "aucun config.txt trouve : verifier manuellement que la radio BT est active"
 else
-    bt_line="$(grep -nE '^[[:blank:]]*dtoverlay=disable-bt' "$CONFIG_TXT" | tail -n1)"
-    if [ -z "$bt_line" ]; then
-        ok "radio BT non desactivee dans $CONFIG_TXT"
-    else
-        say "  radio BT coupee par overlay : $CONFIG_TXT:$bt_line"
-        if [ "$APPLY" = "1" ]; then
-            [ -f "$CONFIG_TXT.bamboo.bak" ] || cp -p "$CONFIG_TXT" "$CONFIG_TXT.bamboo.bak"
-            # On COMMENTE au lieu de supprimer : la ligne reste visible, et le retour en
-            # arriere se fait en retirant un '#'. DietPi peut la reinjecter lors d'un
-            # `dietpi-config > Bluetooth` ou d'une mise a jour -- ce diagnostic le reverra.
-            sed -i -E 's/^[[:blank:]]*(dtoverlay=disable-bt.*)$/# \1   # BambooWS: radio BT requise pour la manette (cf. install_host_prereq.sh)/' "$CONFIG_TXT"
-            if ! grep -qE '^[[:blank:]]*dtoverlay=disable-bt' "$CONFIG_TXT"; then
-                act "overlay disable-bt commente dans $CONFIG_TXT (original : $CONFIG_TXT.bamboo.bak)"
-                reboot_required=1
-            else
-                warn "la mise hors service de l'overlay a echoue : editer $CONFIG_TXT a la main"
-            fi
-        else
-            warn "dtoverlay=disable-bt : relancer avec --apply, ou dietpi-config > Advanced Options > Bluetooth"
-        fi
-    fi
+    DIETPI_HW=/boot/dietpi/func/dietpi-set_hardware
+    BT_BLACKLIST=/etc/modprobe.d/dietpi-disable_bluetooth.conf
 
-    # Etat REEL de la radio, seul juge : un adaptateur enumere ou non.
+    # ETAT REEL, seul juge : un adaptateur enumere, ou non. Tout le reste n'est qu'une cause.
     if [ -d /sys/class/bluetooth ] && [ -n "$(ls -A /sys/class/bluetooth 2>/dev/null)" ]; then
         ok "adaptateur BT present : $(ls /sys/class/bluetooth | tr '\n' ' ')"
     else
-        warn "aucun adaptateur BT enumere (/sys/class/bluetooth vide) : reboot necessaire"
+        # Les trois couches, enoncees pour que le diagnostic explique la panne au lieu de la
+        # constater. Aucune ne suffit seule.
+        grep -qE '^[[:blank:]]*dtoverlay=disable-bt' "$CONFIG_TXT" \
+            && say "  couche 1/3 : dtoverlay=disable-bt actif dans $CONFIG_TXT (firmware)"
+        [ -f "$BT_BLACKLIST" ] \
+            && say "  couche 2/3 : modules blacklistes par $BT_BLACKLIST"
+        dpkg-query -s pi-bluetooth >/dev/null 2>&1 \
+            || say "  couche 3/3 : pi-bluetooth absent -> pas de hciuart, modem BCM non attache"
+
+        if [ "$APPLY" != "1" ]; then
+            warn "radio BT inactive : relancer avec --apply (delegue a dietpi-set_hardware)"
+        elif [ -x "$DIETPI_HW" ]; then
+            act "activation par la routine DietPi ($DIETPI_HW bluetooth enable)"
+            if "$DIETPI_HW" bluetooth enable >/dev/null 2>&1; then
+                # La routine ne fait qu'`enable hciuart` (sans --now) : au premier passage
+                # l'unite attend /dev/serial1, qui n'apparait qu'avec les regles udev du
+                # paquet fraichement installe. Un `start` explicite evite d'exiger un reboot.
+                systemctl start hciuart >/dev/null 2>&1
+                # bluetoothd a demarre AVANT que bthelper ne corrige l'adresse du controleur :
+                # `bluetoothctl show` annonce alors AA:AA:AA:AA:AA:AA alors que le noyau lit la
+                # vraie adresse. Un redemarrage du demon les raccorde (constat 2026-09-23).
+                systemctl start "bthelper@hci0" >/dev/null 2>&1
+                systemctl restart bluetooth    >/dev/null 2>&1
+                if [ -n "$(ls -A /sys/class/bluetooth 2>/dev/null)" ]; then
+                    act "adaptateur BT en service : $(ls /sys/class/bluetooth | tr '\n' ' ')"
+                else
+                    warn "toujours aucun adaptateur : un reboot devrait finir de l'attacher"
+                    reboot_required=1
+                fi
+            else
+                warn "la routine DietPi a echoue : rejouer dietpi-config > Advanced Options > Bluetooth"
+            fi
+        else
+            # Hors DietPi : on ne recree pas sa routine, on dit quoi faire. L'installation de
+            # paquets a l'aveugle sur un hote inconnu ferait plus de degats que de service.
+            warn "hote sans dietpi-set_hardware : retirer dtoverlay=disable-bt, $BT_BLACKLIST,"
+            say  "       installer pi-bluetooth, puis 'systemctl enable --now hciuart bluetooth'"
+        fi
     fi
 
     # Coexistence 2,4 GHz (cf. point 2 ci-dessus). Informatif : on ne reconfigure pas l'AP du
