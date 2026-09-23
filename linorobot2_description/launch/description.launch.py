@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import sys
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, Command, PathJoinSubstitution, EnvironmentVariable
@@ -29,18 +30,41 @@ def _canonical_geometry():
     linorobot2 : le xacro retombe alors sur ses propres defauts. Import et recherche de
     paquet sont volontairement tolerants : ce paquet ne DEPEND pas de bamboo_base, il
     l'utilise s'il est la.
+
+    DEUX chemins de recherche, et le second n'est pas du zele : constate le 2026-09-23,
+    le conteneur `robotdesc` ne construit PAS bamboo_base (seul `driver.real` le fait, dans
+    sa propre couche), donc l'index ament n'y connait pas ce paquet. Le xacro retombait
+    alors sur ses defauts constructeur -- identiques par chance aux valeurs canoniques,
+    donc le repli etait INVISIBLE. On cherche donc aussi le paquet frere dans l'arbre
+    SOURCE, atteint depuis ce fichier (l'install etant en --symlink-install, __file__
+    resout dans src/).
     """
     robot = os.getenv('BAMBOO_ROBOT', 'bamboo4WD_V4_WSEsp32')
+    rel = os.path.join('config', 'robots', f'{robot}.yaml')
+    candidates = []
     try:
-        import yaml
         from ament_index_python.packages import get_package_share_directory
-        path = os.path.join(get_package_share_directory('bamboo_base'),
-                            'config', 'robots', f'{robot}.yaml')
-        with open(path) as fh:
-            params = yaml.safe_load(fh)['/**']['ros__parameters']
-        return float(params['wheel_diameter_m']) / 2.0, float(params['wheel_separation_m']) / 2.0
+        candidates.append(os.path.join(get_package_share_directory('bamboo_base'), rel))
     except Exception:
-        return None, None
+        pass
+    # <depot>/linorobot2_description/launch/ -> <depot>/bamboo_base/
+    here = os.path.dirname(os.path.realpath(__file__))
+    candidates.append(os.path.join(here, '..', '..', 'bamboo_base', rel))
+
+    for path in candidates:
+        try:
+            import yaml
+            with open(path) as fh:
+                params = yaml.safe_load(fh)['/**']['ros__parameters']
+            return (float(params['wheel_diameter_m']) / 2.0,
+                    float(params['wheel_separation_m']) / 2.0)
+        except Exception:
+            continue
+    # Repli BRUYANT : un URDF sur valeurs constructeur fausse la TF, les costmaps Nav2 et
+    # le plugin skid-steer sans rien casser de visible -- il faut donc le dire.
+    print('[description.launch] ATTENTION : geometrie canonique introuvable '
+          f'({robot}.yaml) -> le xacro utilise ses defauts constructeur.', file=sys.stderr)
+    return None, None
 
 
 def generate_launch_description():
