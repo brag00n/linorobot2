@@ -55,6 +55,28 @@ depuis l'ancienne stack, build de l'image Docker, vérification via le MCP.
   moins 5 s. L'indice d'oscillation élevé (0,4–0,8) à basse vitesse dit la même chose :
   c'est du bruit de quantification, pas du pompage — le lire **avec** la crête-à-crête,
   jamais seul.
+- **Freinage, MESURE AU SOL le 2026-09-23** (`linear.x = 0,15` → ~35 RPM, banc
+  `bamboo_base/bench/brake_stop.py`). Deux chemins d'arrêt, qui ne coûtent pas la même
+  chose et qu'il faut mesurer séparément :
+
+  | chemin | `cmd_vel_timeout_s` | t₁₀₀ % arrêt | distance après coupure |
+  |---|---|---|---|
+  | `Twist(0,0)` explicite | — | 0,77 s | **3,9 cm** |
+  | flux coupé (watchdog) | 0,50 s | 1,14 s | 10,5 cm |
+  | flux coupé (watchdog) | **0,25 s** | 1,13 s | **6,8 cm** |
+  | flux coupé (watchdog) | 0,15 s | 0,70 s | 4,7 cm |
+
+  Le critère du plan (« freinage < 0,5 s ») **n'est pas tenu, et ne peut pas l'être sans
+  reflash** : même avec un watchdog quasi nul le plancher est la **roue libre, ~0,7 s**.
+  L'ESP32 met la PWM à zéro, il ne **court-circuite pas** le TB6612FNG, donc il n'y a aucun
+  frein actif. Candidat firmware si besoin : frein par court-circuit (les deux entrées du
+  pont au même niveau) sur consigne nulle.
+
+  En revanche le critère en **temps** est trompeur ici : la queue de freinage est à 3-6 RPM,
+  donc elle coûte des **centimètres**. La grandeur à retenir est la distance : **6,8 cm**
+  avec le réglage retenu. D'où `cmd_vel_timeout_s` passé de 0,50 à **0,25 s** : à 25 Hz de
+  `/joy` cela tolère encore 6 trames manquées (robuste au jitter du bridge Docker) et gagne
+  3,7 cm. 0,15 s gagnerait 2,1 cm de plus pour 3 trames de marge seulement — non retenu.
 - **Souscrit** : `BAMBOO_CMD_VEL` (42004) → cinématique différentielle + PID **exécutés sur la
   carte**.
 - **Ne calcule PAS** la pose x, y, θ → à intégrer côté nœud ROS (odométrie encodeurs).

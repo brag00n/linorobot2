@@ -144,7 +144,7 @@ class Esp32MavlinkDriver(Node):
         # Verrou d'actuation : false = lecture seule (L5), true = actuation (L6).
         # Commutable A CHAUD (cf. _apply_actuation) : c'est le canal d'armement depuis MCP.
         self.declare_parameter("enable_cmd_vel", False)
-        self.declare_parameter("cmd_vel_timeout_s", 0.5)
+        self.declare_parameter("cmd_vel_timeout_s", 0.25)
 
         # --- fiabilite QoS des capteurs ---------------------------------------
         # `sensor_data` (defaut ROS pour un capteur) est BEST-EFFORT, donc INVISIBLE a
