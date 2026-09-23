@@ -24,10 +24,20 @@
 # Ce fichier annoncait auparavant le produit "UGV Rover" (1650 / 0.172). C'est
 # la MESURE qui a tranche entre les deux variantes : tachymetre optique (camera
 # du banc, marque de papier sur la roue, angle integre sur la fenetre) compare
-# aux compteurs d'encodeur remontes dans Esp32Status, roues surelevees, deux
-# vitesses -- 640.7 counts/s pour 17.6 RPM optiques, puis 1317.2 pour 38.2, soit
-# 2028 a 2221 tics/tour. 1650 est exclu (l'odometrie surestimerait de 27 %),
-# 2100 tombe dans l'intervalle et reproduit les deux essais a +3 % / -2 %.
+# aux compteurs d'encodeur remontes dans Esp32Status, roues surelevees.
+# ATTENTION A L'ATTRIBUTION DES VOIES : la camera cadre les DEUX roues du COTE
+# DROIT (M2 a l'avant, M4 a l'arriere) -- c'est de la que vient la deformation
+# de perspective qui les fait paraitre de tailles differentes. La voie encodeur
+# a comparer est donc l'index 1 (M2) SEULE ; M4 n'a pas d'encodeur (sa valeur
+# est une recopie de M2 cote firmware), et le tachymetre optique est le seul
+# temoin independant que cette deuxieme roue tourne vraiment. Essais retenus,
+# RPM optique = moyenne des deux roues cadrees :
+#    640.7 counts/s  <->  17.6 RPM  ->  2185 tics/tour
+#   1183.7 counts/s  <->  34.9 RPM  ->  2034
+#   1205.3 counts/s  <->  35.2 RPM  ->  2052
+# soit 2030 a 2190 selon l'essai : dispersion +-4 % d'un essai a l'autre,
+# centre ~2090. 1650 est exclu (l'odometrie surestimerait de 27 %) ; 2100 est la
+# seule valeur du catalogue dans l'intervalle, a -0.5 % du centre mesure.
 # Detail de la methode : linorobot2_hardware/tools/robot_control/mcp/analysis.py
 # (outil `tacho_stats`) et tools/robot_controlv3/nodes/WheelTachoNode.py.
 #
