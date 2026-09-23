@@ -2,6 +2,10 @@ version: "3.9"
 networks:
   linorobot2.network:
     external: false
+volumes:
+  # cache d'esptool pour le service flash.esp32 (voir son commentaire)
+  esptool_cache:
+
 services:   
   base:
     image: ${COMPOSE_PROJECT_NAME}-linorobot2-${DEPLOY}:${ROS_DISTRO}
@@ -248,6 +252,11 @@ services:
     volumes:
       - /dev:/dev
       - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:rw
+      # esptool survit d'un flash a l'autre : `run --rm` jette la couche ephemere, donc
+      # sans ce volume chaque flash reinstallerait pip puis esptool (1 a 2 min et du
+      # reseau). Volume NOMME, donc rien sur le systeme de fichiers de l'hote et rien
+      # dans le depot ; a jeter par `docker volume rm bamboov4_humble_esptool_cache`.
+      - esptool_cache:/opt/esptool
     command: >
       bash -lc "bash /root/linorobot2_ws/src/linorobot2/docker/flash_esp32.sh"
 

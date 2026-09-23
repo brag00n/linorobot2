@@ -45,6 +45,20 @@ die() { echo "ERREUR: $*" >&2; exit 1; }
 # alors que la 4.x nomme la panne ("Download mode successfully detected, but getting no sync
 # reply: The serial TX path seems to be down."). C'est ce message qui a permis d'isoler une
 # coupure materielle de la voie TX ; on ne se prive pas de ce diagnostic.
+# Cache persistant : le volume nomme `esptool_cache` est monte ici (cf. docker-compose.yaml).
+# `run --rm` jette la couche ephemere du conteneur, donc sans ce cache CHAQUE flash
+# reinstallerait pip puis esptool (1 a 2 min et du reseau). On installe avec `pip --target`
+# dans le volume et on l expose par PYTHONPATH : le premier flash paie l installation, les
+# suivants demarrent aussitot. Rien sur le systeme de fichiers de l hote, rien dans le depot.
+ESPTOOL_CACHE="${ESPTOOL_CACHE:-/opt/esptool}"
+if mkdir -p "$ESPTOOL_CACHE" 2>/dev/null; then
+    export PYTHONPATH="$ESPTOOL_CACHE${PYTHONPATH:+:$PYTHONPATH}"
+    export PATH="$ESPTOOL_CACHE/bin:$PATH"
+else
+    echo "AVERTISSEMENT: $ESPTOOL_CACHE indisponible, installation non persistante"
+    ESPTOOL_CACHE=""
+fi
+
 ESPTOOL=""
 resolveEsptool() {
     for c in esptool.py esptool; do command -v "$c" >/dev/null 2>&1 && { ESPTOOL="$c"; return 0; }; done
@@ -61,7 +75,8 @@ MAJ="$(esptoolMajor)"
 if [ -z "$ESPTOOL" ] || [ -z "$MAJ" ] || [ "$MAJ" -lt 4 ]; then
     echo "--- installation d'esptool >= 4 DANS LE CONTENEUR (rien sur l'hote) ---"
     (command -v pip3 >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq python3-pip; }) \
-        && python3 -m pip install --no-cache-dir --upgrade esptool >/dev/null \
+        && python3 -m pip install --no-cache-dir --upgrade \
+             ${ESPTOOL_CACHE:+--target "$ESPTOOL_CACHE"} esptool >/dev/null \
         && ESPTOOL="" && resolveEsptool \
         || { echo "AVERTISSEMENT: pip indisponible, repli sur l'esptool d'apt (diagnostic pauvre)"
              [ -n "$ESPTOOL" ] || { apt-get update -qq && apt-get install -y -qq esptool; resolveEsptool; }; }
