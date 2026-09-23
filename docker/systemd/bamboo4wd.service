@@ -1,0 +1,55 @@
+# bamboo4wd.service — met l'etat du robot en conformite avec docker-compose.yaml au boot.
+#
+# ROLE EXACT, et il est plus etroit qu'il n'y parait : ce n'est PAS cette unite qui demarre
+# les conteneurs au boot. C'est le demon Docker, via le `restart: unless-stopped` porte par
+# les services du profil `boot` dans docker-compose.yaml -- mecanisme natif, qui marche meme
+# si cette unite est desactivee. Le compose est donc la source de verite ; cette unite ne
+# fait que le RATTRAPAGE, et elle est utile dans les cas ou le demon ne peut rien relancer :
+#   - premier demarrage apres provisionnement (les conteneurs n'existent pas encore) ;
+#   - apres un `docker compose down` (conteneurs supprimes, donc plus rien a relancer) ;
+#   - apres une modification du compose (`up -d` recree ce qui a change).
+# D'ou `Type=oneshot` : elle converge puis rend la main, elle ne surveille rien.
+#
+# Deliberement ABSENT de la liste : le service d'actuation (manette, `drive.real`).
+# Un robot qui demarre deja arme n'est acceptable qu'apres validation de l'homme-mort.
+#
+# CE FICHIER EST UN GABARIT : docker/install_bambooWS.sh y substitue __COMPOSE_DIR__ et
+# __BOOT_SERVICES__ avant de le poser dans /etc/systemd/system/ (seul ecrit de ce chantier
+# sur le systeme du RPi).
+#   systemctl status bamboo4wd     journalctl -u bamboo4wd
+
+[Unit]
+Description=BambooWS (bamboo4WD_V4_WSEsp32) ROS2 stack
+# Chemin derive du repertoire du compose (docs/ est frere de docker/) : le depot ne vit pas
+# au meme endroit selon la machine -- l'ancien /root/... etait faux sur ce RPi (/home/dietpi).
+Documentation=file://__COMPOSE_DIR__/../docs/bamboo4WD_V4_WSEsp32.md
+# docker.service suffit a la socket, mais `up` publie des ports : sans network-online, un
+# premier demarrage sur reseau pas encore monte echoue sans raison claire.
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Repertoire du compose, injecte a l'installation par install_bambooWS.sh.
+WorkingDirectory=__COMPOSE_DIR__
+# Les services sont NOMMES, pas selectionnes par `--profile`. Piege verifie le 2026-09-22 :
+# `--profile boot` est ADDITIF, pas restrictif -- il ajoute le profil `boot` au profil
+# `default`, auquel appartiennent tous les services sans `profiles:`. Un
+# `--profile boot up -d` demarrait donc aussi les 19 autres services du fichier, dont
+# `build.bash`, qui a tente de compiler le firmware Teensy au boot puis a fait echouer
+# l'unite. Nommer un service active implicitement son profil : la liste suffit, et elle est
+# derivee du compose (`profiles: ["boot"]`) par l'installateur -- une seule source.
+# `--no-build` est une securite, pas une optimisation : un boot ne construit JAMAIS d'image
+# (dizaines de minutes, et un echec de build devient un echec de demarrage du robot). Une
+# image manquante doit echouer vite et clairement, et se construire a l'etape 7 du
+# provisionnement.
+ExecStart=/usr/bin/docker compose up -d --no-build __BOOT_SERVICES__
+# A l'arret, on STOPPE sans supprimer : les conteneurs restent, donc le demon pourra les
+# relancer au prochain boot meme si cette unite est desactivee. `down` casserait ca.
+ExecStop=/usr/bin/docker compose stop __BOOT_SERVICES__
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

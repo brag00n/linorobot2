@@ -80,6 +80,19 @@ services:
 #--- rosbridge
   rosbridge:
     image: linorobot2-rosbridge:${ROS_DISTRO}
+    # Profil `boot` : marque les services qui demarrent au boot du RPi. C'est le DEMON DOCKER
+    # qui les relance, via `restart: unless-stopped` -- pas systemd. L'unite
+    # `bamboo4wd.service` ne fait que le rattrapage (creer les conteneurs absents pour qu'ils
+    # collent au compose), cf. docker/systemd/bamboo4wd.service, et elle NOMME ces services.
+    # ⚠️ NE PAS lancer `docker compose --profile boot up -d` : `--profile` est ADDITIF, pas
+    # restrictif. Il ajoute `boot` au profil `default`, auquel appartient tout service sans
+    # `profiles:` -- donc cette commande demarre AUSSI les 19 autres services, jusqu'aux
+    # services de build (constat du 2026-09-22 : compilation du firmware Teensy declenchee au
+    # boot). Utiliser la liste nommee de l'unite, ou `install_bambooWS.sh`.
+    # Nommer un service active son profil implicitement, donc `up -d rosbridge` et
+    # l'orchestrateur MCP marchent toujours.
+    profiles: ["boot"]
+    restart: unless-stopped
     build:
       context: ../
       dockerfile: docker/Dockerfile
@@ -115,6 +128,8 @@ services:
 #--- foxglovebridge
   foxglovebridge:
     image: linorobot2-foxglovebridge:${ROS_DISTRO}
+    profiles: ["boot"]          # cf. rosbridge
+    restart: unless-stopped
     build:
       context: ../
       dockerfile: docker/Dockerfile
@@ -150,6 +165,8 @@ services:
 #--- Publish Robot description
   robotdesc:
     extends: base
+    profiles: ["boot"]          # publie /robot_description + les TF : utile des Foxglove
+    restart: unless-stopped
     command: ros2 launch linorobot2_description description.launch.py rviz:=false
 
 #--- Real robot
@@ -203,6 +220,7 @@ services:
   camera.h264:
     image: bluenviron/mediamtx:latest-ffmpeg
     hostname: mediamtx
+    profiles: ["boot"]          # cf. rosbridge ; source a la demande, donc gratuit au repos
     restart: unless-stopped
     networks:
     - linorobot2.network
@@ -220,6 +238,11 @@ services:
 #    LECTURE SEULE par defaut (enable_cmd_vel:=false du YAML) ; L6 : enable_cmd_vel:=true.
   driver.real:
     extends: base
+    # Au boot, mais en LECTURE SEULE (enable_cmd_vel:=false du YAML) : un robot qui demarre
+    # deja arme n'est acceptable qu'avec un homme-mort valide. Le service d'actuation
+    # (`drive.real`, manette) restera donc HORS du profil `boot` jusqu'a cette validation.
+    profiles: ["boot"]
+    restart: unless-stopped
     # Monte linorobot2_hardware pour importer tools/ (codec Esp32ComSerial) + firmware/
     # (hacks sys.path du codec resolus via __file__ -> l'arbre firmware doit etre present).
     volumes:

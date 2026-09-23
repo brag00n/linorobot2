@@ -1,0 +1,25 @@
+# 99-bambooWS.rules — ports serie STABLES du robot BambooWS.
+# Pose par docker/install_bambooWS.sh dans /etc/udev/rules.d/. NE PAS editer sur l'hote :
+# ces regles n'existaient que sur la machine, versionnees nulle part, et une reinstallation
+# du RPi les perdait -- ce qui cassait le driver sans rien indiquer de la cause.
+#
+# POURQUOI par NUMERO DE SERIE et non par VID:PID : le CP2102 10c4:ea60 est porte par
+# PLUSIEURS peripheriques de ce parc. Une regle sur le seul VID:PID leur donne a tous le
+# meme symlink, et c'est le dernier enumere qui gagne -- le driver lidar ouvrirait alors
+# l'ESP32 a 921600 en MAVLink, ou l'inverse. L'ordre d'enumeration USB n'etant pas garanti,
+# la panne est intermittente, donc penible a diagnostiquer.
+#
+# Relever le numero de serie d'une carte branchee :
+#   udevadm info -a -n /dev/ttyUSB0 | grep -E 'ATTRS\{(serial|idVendor|idProduct)\}'
+# La casse compte : udev compare litteralement (ici en minuscules).
+
+# --- Carte de controle : WaveShare General Driver (ESP32-WROOM-32), CP2102N -------------
+# Proprietaire du port : le driver ROS `bamboo_base` (MAVLink v2, 921600 bauds), et l'outil
+# de flash `flash.esp32`. Les deux referencent /dev/esp32, jamais /dev/ttyUSB*.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="d6607067ef3fed11996190b80a86e0b4", MODE:="0666", GROUP:="dialout", SYMLINK+="esp32"
+
+# --- Lidar : AUCUNE regle, volontairement ----------------------------------------------
+# Le capteur n'est pas encore choisi (phase navigation). Quand il le sera, ajouter ici une
+# ligne sur SON numero de serie -- surtout s'il embarque un CP2102, sinon la collision
+# decrite plus haut revient. Gabarit a completer, laisse inactif :
+# SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="<a_relever>", MODE:="0666", GROUP:="dialout", SYMLINK+="lidar"
