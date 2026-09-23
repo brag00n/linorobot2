@@ -31,8 +31,14 @@ depuis l'ancienne stack, build de l'image Docker, vérification via le MCP.
   carte**.
 - **Ne calcule PAS** la pose x, y, θ → à intégrer côté nœud ROS (odométrie encodeurs).
 - `WHEEL_CPR/CIRC/APB` et `CAR_TYPE` sont **read-only / echo** (cinématique figée à la
-  compilation) ; les placeholders firmware sont absurdes (`COUNTS_PER_REV=2114`,
-  `WHEEL_DIAMETER=0.8`, `LR_WHEELS_DISTANCE=1.3`) → **calibration obligatoire côté ROS**.
+  compilation) ; les valeurs d'amorçage du firmware sont absurdes (`WHEEL_DIAMETER=0.8`,
+  `LR_WHEELS_DISTANCE=1.3`) ou sans source (`COUNTS_PER_REV=2114`, qui ne correspond à aucun
+  produit WaveShare) → **calibration obligatoire côté ROS**.
+- La géométrie de référence vit désormais dans **un seul fichier**,
+  `bamboo_base/config/robots/bamboo4WD_V4_WSEsp32.yaml`, aux valeurs constructeur du kit
+  *UGV Rover* (`WHEEL_D 0.0800`, `ONE_CIRCLE_PLUSES 1650`, `TRACK_WIDTH 0.172`, relevées dans
+  `waveshareteam/ugv_base_general` → `General_Driver/ugv_config.h`, mainType 02). Elles restent
+  **à confirmer par la mesure**.
 - `MOTOR3_ENCODER == MOTOR1`, `MOTOR4 == MOTOR2` : `counts[4]` ne porte que **2 infos** (G/D).
 
 > ⚠️ **Ambiguïté CP2102** : l'ESP32 (carte Waveshare) **et** le YDLidar sont tous deux des

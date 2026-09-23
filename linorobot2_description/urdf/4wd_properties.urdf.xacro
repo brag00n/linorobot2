@@ -1,26 +1,40 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://ros.org/wiki/xacro">
-  <xacro:property name="base_length" value="0.445" />
-  <xacro:property name="base_width" value="0.200" />
-  <xacro:property name="base_height" value="0.129" />
-  <xacro:property name="base_mass" value="10" />
+  <!-- Chassis du robot BambooWS (kit WaveShare "UGV Rover", mainType 02).
+       Dimensions relevees sur la description constructeur : depot
+       waveshareteam/ugv_ws (branche ros2-humble-develop),
+       src/ugv_main/ugv_description/urdf/ugv_rover.urdf et ses maillages STL.
+       Le maillage de caisse mesure 0.2452 x 0.2304 x 0.1211 m (largeur mesuree
+       au plus large, garde-boue compris : c'est ce qu'il faut pour l'empreinte
+       Nav2). La boite etant centree sur base_link, on lui donne la hauteur
+       utile au-dessus de l'axe des roues plutot que la hauteur totale. -->
+  <xacro:property name="base_length" value="0.245" />
+  <xacro:property name="base_width" value="0.230" />
+  <xacro:property name="base_height" value="0.080" />
+  <xacro:property name="base_mass" value="2.78" />
 
   <!-- Geometrie de roue : ARGUMENTS, pas des constantes. La verite physique vit dans
        bamboo_base/config/robots/<robot>.yaml et est passee par description.launch.py
        (wheel_radius = wheel_diameter_m / 2, wheel_pos_y = wheel_separation_m / 2).
-       Les defauts ci-dessous sont les valeurs de l'amont linorobot2 : ce ne sont PAS des
-       mesures de ce robot, elles ne servent qu'a garder le xacro utilisable seul. -->
-  <xacro:arg name="wheel_radius" default="0.07162" />
-  <xacro:arg name="wheel_pos_y" default="0.1355" />
+       Les defauts ci-dessous sont les valeurs constructeur du meme kit, pour que le
+       xacro reste utilisable seul ; ce ne sont PAS des mesures de ce robot. -->
+  <xacro:arg name="wheel_radius" default="0.04" />
+  <xacro:arg name="wheel_pos_y" default="0.086" />
 
   <xacro:property name="wheel_radius" value="$(arg wheel_radius)" />
-  <xacro:property name="wheel_width" value="0.05" />
-  <xacro:property name="wheel_pos_x" value="0.120" />
+  <xacro:property name="wheel_width" value="0.0425" />
+  <!-- demi-empattement et hauteur d'axe, releves sur les joints du constructeur
+       (roues a x = +/-0.0855, z = -0.041212 sous base_link). -->
+  <xacro:property name="wheel_pos_x" value="0.0855" />
   <xacro:property name="wheel_pos_y" value="$(arg wheel_pos_y)" />
-  <xacro:property name="wheel_pos_z" value="-0.04788" />
-  <xacro:property name="wheel_mass" value=".6" />
+  <xacro:property name="wheel_pos_z" value="-0.041212" />
+  <xacro:property name="wheel_mass" value="0.21" />
   <xacro:property name="wheel_torque" value="20" />
 
+  <!-- Poses de capteurs heritees de l'amont linorobot2 : le lidar de BambooWS
+       n'est PAS encore choisi (phase navigation suivante) et il n'y a pas de
+       camera de profondeur. Ces deux poses sont donc des valeurs d'attente, a
+       reprendre au montage du capteur reel. -->
   <xacro:property name="laser_pose">
     <origin xyz="-0.0475 0 0.125" rpy="0 0 0"/>
   </xacro:property>
