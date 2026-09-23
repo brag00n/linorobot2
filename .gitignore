@@ -5,3 +5,6 @@ install
 # caches Python (nodes rclpy, scripts de launch)
 __pycache__/
 *.pyc
+
+# reglages locaux de l editeur (VS Code) : propres a un poste, pas au robot
+.vscode/
