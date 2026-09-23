@@ -26,7 +26,17 @@ depuis l'ancienne stack, build de l'image Docker, vérification via le MCP.
 
 - **Publie** : `BAMBOO_WHEEL_STATE` (42001, vx/vy/wz SI), `ATTITUDE` (#30, roll/pitch/yaw),
   `SYS_STATUS` (#1, tension), `BAMBOO_ENCODERS` (42003, `counts[4]`), `BAMBOO_MAG` (42005),
-  `HEARTBEAT`.
+  `BAMBOO_MOTOR_RPM` (42006, `rpm[4]` + `rpm_req[4]`, microcode ≥ 0.3.0), `HEARTBEAT`.
+- **Réglage du PID** : `BAMBOO_MOTOR_RPM` porte les deux nombres que la boucle embarquée
+  compare réellement — le RPM mesuré (encodeur, après filtrage carte) et le RPM demandé
+  (sortie de la cinématique embarquée). Le driver les republie en
+  `sensor_msgs/JointState` sur **`/joint_states`** (mesure) et **`/req_states`** (consigne),
+  quatre articulations dans l'ordre M1..M4, `velocity` **en RPM** (écart assumé à la
+  convention rad/s, pour comparer aux relevés de BambooV2) et `position` en radians.
+  Comme le driver publie `/joint_states`, la description se lance avec
+  `publish_joints:=false`. Premier relevé (roues surélevées, `linear.x = 0,15` → consigne
+  35,81 RPM, cpr 2100) : mesure entre 34,7 et 36,7 RPM en régime, soit ± 2 % autour de la
+  consigne, sans oscillation entretenue.
 - **Souscrit** : `BAMBOO_CMD_VEL` (42004) → cinématique différentielle + PID **exécutés sur la
   carte**.
 - **Ne calcule PAS** la pose x, y, θ → à intégrer côté nœud ROS (odométrie encodeurs).
