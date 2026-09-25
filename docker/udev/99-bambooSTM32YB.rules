@@ -1,0 +1,46 @@
+# 99-bambooSTM32YB.rules - ports STABLES du robot bambooSTM32YB
+# (identifiant complet bamboo4WD_V4_YBStm32).
+#
+# Pose par docker/install_bambooWS.sh dans /etc/udev/rules.d/. NE PAS editer sur l'hote :
+# des regles qui ne vivent que sur la machine disparaissent a la reinstallation du RPi et
+# cassent le driver sans rien indiquer de la cause.
+#
+# FICHIER SEPARE DE 99-bambooWS.rules, DELIBEREMENT. La carte STM32 Yahboom et la camera
+# motorisee appartiennent a CE robot et ne sont pas des variantes de BambooWS : les melanger
+# dans un fichier qui porte l'autre nom brouillerait le perimetre documentaire, et surtout
+# rendrait impossible de retirer le materiel d'un robot sans toucher a l'autre.
+#
+# POURQUOI par VID:PID ici, alors que le fichier de BambooWS insiste sur le NUMERO DE SERIE :
+# la raison de cette insistance est la collision du CP2102 10c4:ea60, porte par plusieurs
+# peripheriques du parc (ESP32 WaveShare ET adaptateur lidar). Les deux peripheriques
+# ci-dessous ne sont dans ce cas NI l'un NI l'autre -- le CH340 1a86:7523 et la webcam UVC
+# 05a3:9331 sont chacun seuls de leur espece sur ce banc. Le VID:PID suffit donc, et il a un
+# avantage reel : il survit au remplacement de la carte par une autre du meme modele, ce que
+# le numero de serie ne fait pas.
+# Ce raisonnement CESSE DE TENIR des qu'un second CH340 apparait (ils sont courants). A ce
+# moment-la, basculer ces lignes sur ATTRS{serial} comme le fait le fichier de BambooWS.
+#
+# Relever les identifiants d'un peripherique branche :
+#   udevadm info -a -n /dev/ttyUSB0 | grep -E 'ATTRS\{(serial|idVendor|idProduct)\}'
+#   udevadm info -a -n /dev/video0  | grep -E 'ATTRS\{(serial|idVendor|idProduct)\}'
+# La casse compte : udev compare litteralement (ici en minuscules).
+
+# --- Carte de controle : Yahboom ROS Control Board V3.0 (STM32F103RCT6), CH340 ----------
+# Proprietaire du port : le driver ROS du module bamboo_controler_YBStm32v3
+# (MAVLink v2, sysid 1, 115200 bauds). Il reference /dev/stm32, jamais /dev/ttyUSB*.
+# LE PORT EST MONO-PROPRIETAIRE : ce driver, l'application robot_controlv3 et le serveur
+# MCP robot-action sont MUTUELLEMENT EXCLUSIFS. Un symlink stable ne protege pas de ca,
+# il rend seulement la faute lisible dans le journal.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE:="0666", GROUP:="dialout", SYMLINK+="stm32"
+
+# --- Camera : webcam UVC 05a3:9331 -----------------------------------------------------
+# Proprietaire du noeud : le groupe bamboo_video, et LUI SEUL. /dev/video0 ne sert qu'UN
+# SEUL format a la fois : on ne peut pas ouvrir cette camera deux fois pour servir en
+# parallele un flux propre et un flux annote. D'ou le stream_mux_node.
+#
+# ATTENTION, LE PIEGE DE CETTE REGLE : un peripherique UVC enumere PLUSIEURS noeuds
+# /dev/videoN (capture + metadonnees depuis le noyau 4.16). Sans le garde ci-dessous, le
+# symlink atterrit sur le noeud de metadonnees une fois sur deux, et l'ouverture echoue avec
+# un message qui ne parle pas de metadonnees. Le test sur capability retient le noeud de
+# capture : 0x...1 = VIDEO_CAPTURE, tandis que le noeud metadata porte 0x00a00000.
+KERNEL=="video[0-9]*", SUBSYSTEM=="video4linux", ATTRS{idVendor}=="05a3", ATTRS{idProduct}=="9331", ATTR{index}=="0", MODE:="0666", SYMLINK+="bamboocam"

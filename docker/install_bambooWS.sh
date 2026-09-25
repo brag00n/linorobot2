@@ -200,29 +200,48 @@ echo ""
 # ========================================================================================
 run_step 4 && {
 echo "=== 4. Regles udev ==="
-SRC_RULES="$HERE/udev/99-bambooWS.rules"
-DST_RULES="/etc/udev/rules.d/99-bambooWS.rules"
-if [ ! -r "$SRC_RULES" ]; then
-    warn "$SRC_RULES introuvable"
-elif cmp -s "$SRC_RULES" "$DST_RULES" 2>/dev/null; then
-    ok "$DST_RULES a jour"
-elif [ "$APPLY" = "1" ]; then
-    install -m 0644 "$SRC_RULES" "$DST_RULES" \
-        && act "$DST_RULES pose" \
-        && udevadm control --reload-rules && udevadm trigger --subsystem-match=tty \
+# BOUCLE sur TOUS les .rules du depot, un fichier par robot. Ce pas etait cable sur le seul
+# 99-bambooWS.rules ; il en existe desormais un second (99-bambooSTM32YB.rules) et la carte
+# STM32 comme la camera motorisee appartiennent a un AUTRE robot -- les fondre dans le fichier
+# qui porte le nom de BambooWS aurait brouille le perimetre et interdit de retirer le materiel
+# d un robot sans toucher a l autre. Un fichier ajoute au depot est donc pose sans retoucher
+# ce script.
+rules_seen=0
+for SRC_RULES in "$HERE"/udev/*.rules; do
+    [ -r "$SRC_RULES" ] || continue
+    rules_seen=$((rules_seen + 1))
+    DST_RULES="/etc/udev/rules.d/$(basename "$SRC_RULES")"
+    if cmp -s "$SRC_RULES" "$DST_RULES" 2>/dev/null; then
+        ok "$DST_RULES a jour"
+    elif [ "$APPLY" = "1" ]; then
+        install -m 0644 "$SRC_RULES" "$DST_RULES" \
+            && act "$DST_RULES pose" \
+            && rules_changed=1
+    else
+        warn "$DST_RULES absent ou obsolete : les symlinks qu il porte ne sont pas garantis"
+    fi
+done
+[ "$rules_seen" = "0" ] && warn "aucun $HERE/udev/*.rules lisible"
+# Un SEUL rechargement, apres la boucle : udevadm trigger est couteux et le declencher par
+# fichier ne changerait rien au resultat.
+if [ "${rules_changed:-0}" = "1" ]; then
+    udevadm control --reload-rules && udevadm trigger --subsystem-match=tty \
+        && udevadm trigger --subsystem-match=video4linux \
         && act "udev recharge"
-else
-    warn "$DST_RULES absent ou obsolete : /dev/esp32 n'est pas garanti"
 fi
 # Des regles heritees se disputent les symlinks (dette connue, hors perimetre BambooWS) : on
 # les signale sans y toucher -- les supprimer est une decision, pas un effet de bord.
 stale="$(ls /etc/udev/rules.d/ 2>/dev/null | grep -E 'ydlidar|teensy' | tr '\n' ' ')"
 [ -n "$stale" ] && skip "regles heritees presentes, non modifiees : $stale"
-if [ -e /dev/esp32 ]; then
-    ok "/dev/esp32 -> $(readlink -f /dev/esp32)"
-else
-    warn "/dev/esp32 absent : carte debranchee, ou numero de serie a relever (voir le .rules)"
-fi
+# Etat des symlinks attendus. ABSENT N EST PAS UNE FAUTE : chaque robot n a que SON materiel
+# branche, et ce script sert les deux. On informe, on n alarme pas.
+for lnk in esp32 stm32 bamboocam; do
+    if [ -e "/dev/$lnk" ]; then
+        ok "/dev/$lnk -> $(readlink -f "/dev/$lnk")"
+    else
+        skip "/dev/$lnk absent (materiel debranche, ou identifiants a relever dans le .rules)"
+    fi
+done
 echo ""
 }
 

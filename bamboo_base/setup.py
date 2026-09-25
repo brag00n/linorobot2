@@ -27,6 +27,9 @@ setup(
     entry_points={
         "console_scripts": [
             "esp32_mavlink_driver = bamboo_base.esp32_mavlink_driver:main",
+            # Resolveur materiel (VID:PID -> /dev/...), utile en verification :
+            #   ros2 run bamboo_base hw_resolve
+            "hw_resolve = bamboo_base.hw_resolve:main",
         ],
     },
 )
