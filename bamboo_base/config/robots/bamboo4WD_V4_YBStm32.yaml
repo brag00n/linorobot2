@@ -43,19 +43,26 @@
 # valeur plus fine ecrite ici serait arrondie par la carte, pas conservee.
 #
 # ---------------------------------------------------------------------------
-# ETAT MATERIEL DE CETTE MACHINE-CI, a ne pas confondre avec les capacites de
-# la carte. La Yahboom ROS Control Board V3.0 a QUATRE voies encodeur reelles
-# (c'est ce qui la distingue de l'ESP32 WaveShare, qui n'en a que deux) mais sur
-# CE robot :
-#   - l'encodeur de M2 est MORT (moteur sain, forte friction de decollage) ;
-#     son PID est donc desactive par la sentinelle F_PID_SLAVED_MARK et M2 est
-#     cale en RECOPIE INVERSEE sur M4, son voisin de meme cote ;
-#   - M1 presente une friction elevee, M3 tourne correctement en marche arriere.
-# Consequence directe sur ce fichier : la voie encodeur representative du cote
-# de M2 est M4 (index 3), PAS M2 (index 1). Un lecteur qui prendrait "4 voies
-# reelles" pour "4 mesures utilisables sur ce robot" se tromperait.
-# Cf. la fiche memoire bamboo-v4-hardware-faults et
-# docs/hardware_yahboom_ros_control_board_v3.md.
+# ETAT MATERIEL DE CETTE MACHINE-CI : NOMINAL depuis le remplacement de la
+# carte (2026-09-25). La Yahboom ROS Control Board V3.0 a QUATRE voies encodeur
+# reelles -- c'est ce qui la distingue de l'ESP32 WaveShare, qui n'en a que deux
+# et recopie 3/4 depuis 1/2 -- et sur ce robot les QUATRE SONT SAINES. Les
+# quatre moteurs sont sains eux aussi.
+#
+# HISTORIQUE, parce qu'il explique des valeurs qu'on pourrait croire arbitraires
+# en lisant l'historique git ou les outils hote : sur la carte PRECEDENTE la
+# voie encodeur de M2 etait morte, son PID etait desactive par la sentinelle
+# F_PID_SLAVED_MARK et M2 tournait en recopie inversee de M4. Ce fichier portait
+# donc encoder_right_index: 3 (M4) au lieu de 1 (M2), et les gains de M2 etaient
+# decrits comme inertes. RIEN DE TOUT CELA N'EST PLUS VRAI : aucun contournement
+# de panne moteur ou encodeur ne subsiste dans la chaine ROS, et il ne doit pas
+# en etre reintroduit. La sentinelle reste une CAPACITE du firmware
+# (app_flash.h:57), elle n'est plus un ETAT de ce robot.
+#
+# ATTENTION, dette de verification creee par le remplacement : le releve de sens
+# de rotation ci-dessous a ete fait sur l'ANCIENNE carte. Le harnais moteur n'a
+# pas bouge, donc les polarites devraient tenir, mais c'est une DEDUCTION et non
+# une mesure -- a reconfirmer roues surelevees avant tout deplacement.
 #
 # ---------------------------------------------------------------------------
 # SENS DE ROTATION, tel que CABLE sur ce robot (releve aux essais MCP, roues
@@ -128,13 +135,11 @@
     # valeurs d'AMORCAGE coherentes avec ce que la carte prend au premier boot,
     # pas un reglage mesure sur ce chassis.
     #
-    # M2 (index 1) : PID DESACTIVE sur ce robot, encodeur mort -> la carte le
-    # cale en recopie inversee sur M4. Les gains ci-dessous pour M2 sont donc
-    # INERTES tant que la sentinelle est posee ; on les laisse renseignes pour
-    # que le jour ou l'encodeur est repare il n'y ait qu'un mot a retirer, et
-    # surtout pour qu'un tableau a trois lignes ne laisse pas croire a une
-    # carte a trois moteurs. L'ecriture de la sentinelle est un acte EXPLICITE
-    # (set_motor_pid disable=true), jamais un effet de bord d'un param set.
+    # LES QUATRE TRIPLETS SONT ACTIFS. Sur la carte precedente celui de M2
+    # etait inerte (encodeur mort, sentinelle posee) ; ce n'est plus le cas et
+    # aucun index n'est a traiter a part. L'ecriture de la sentinelle reste un
+    # acte EXPLICITE (set_motor_pid disable=true) si une voie tombe un jour,
+    # jamais un effet de bord d'un param set -- mais elle n'est pas posee.
     pid_kp: [0.8, 0.8, 0.8, 0.8]
     pid_ki: [0.06, 0.06, 0.06, 0.06]
     pid_kd: [0.5, 0.5, 0.5, 0.5]
@@ -145,13 +150,15 @@
     yaw_pid_kd: 0.1
 
     # --- mapping des voies encodeur -------------------------------------
-    # La carte expose 4 voies REELLES (encoders[0..3] = M1..M4), mais sur CE
-    # robot la voie 1 (M2) est morte. Le representant de ce cote est donc M4.
+    # La carte expose 4 voies REELLES (encoders[0..3] = M1..M4) et les quatre
+    # sont saines : on prend donc UN REPRESENTANT PAR COTE dans l'ordre naturel,
+    # M1 et M2, sans detour. L'index 3 qui figurait ici etait un contournement
+    # de la voie M2 morte de l'ancienne carte, il n'a plus de raison d'etre.
     # << A VERIFIER >> l'attribution gauche/droite elle-meme : le releve de sens
     # etablit les PAIRES ({M1,M3} et {M2,M4}) mais pas laquelle est a gauche.
     # Se constate roues surelevees, robot pose sur le flanc, en une observation.
     encoder_left_index: 0
-    encoder_right_index: 3
+    encoder_right_index: 1
     invert_left: false
     invert_right: false
 

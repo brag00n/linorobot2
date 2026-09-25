@@ -39,12 +39,17 @@ QUATRE ECARTS DE FOND avec le patron ESP32, tous dictes par la carte :
      tout, le trafic reste entier. Pour menager le lien il faudrait ajouter l'index 19 au
      firmware (reflash par IAP, possible sans BOOT0/RESET).
 
-  4. LA SENTINELLE DE M2 N'EST PAS ECRIVABLE D'ICI. Sur CE robot l'encodeur de M2 est mort :
-     son PID est desactive par F_PID_SLAVED_MARK (app_flash.h:57) et M2 est cale en recopie
-     inversee sur M4. Or setMotorPid(disable=True) n'existe QUE dans le protocole Yahboom --
-     le codec MAVLink l'ignore. Ce driver ne peut donc PAS poser ni retirer la sentinelle ;
-     elle vit en flash, posee par l'outillage MCP `robot-action`. Les gains de M2 pousses
-     d'ici sont INERTES tant qu'elle est en place, et c'est le comportement voulu.
+  4. LA SENTINELLE D'ESCLAVAGE N'EST PAS ECRIVABLE D'ICI, et c'est une LIMITE DE LA VOIE
+     MAVLINK, pas un etat de ce robot. Le firmware sait desactiver le PID d'un moteur et le
+     caler en recopie sur son voisin de meme cote (F_PID_SLAVED_MARK, app_flash.h:57) -- c'est
+     la reponse a une voie encodeur morte. Mais setMotorPid(disable=True) n'existe QUE dans le
+     protocole Yahboom : le codec MAVLink l'ignore. Ce driver ne peut donc ni poser ni retirer
+     la sentinelle ; il faudrait passer par l'outillage MCP `robot-action`.
+     ETAT ACTUEL : elle n'est PAS posee. La carte a ete remplacee (2026-09-25), les quatre
+     voies encodeur sont saines et les quatre moteurs aussi -- les quatre triplets de gains
+     pousses d'ici sont donc tous ACTIFS. Aucun contournement de panne ne subsiste ici, et il
+     ne doit pas en etre reintroduit : si une voie tombe un jour, c'est un acte explicite et
+     journalise, pas un index traite a part en silence.
 
 VERROU D'ACTUATION : `enable_cmd_vel` est FALSE par defaut, et ce n'est pas de la prudence de
 principe. Les constantes PWM du firmware ne sont pas mises a l'echelle -- le pack 12,6 V
@@ -437,9 +442,9 @@ class Stm32MavlinkDriver(Node):
             self.link.cpr = self.cpr
         if pid:
             # UN APPEL PAR MOTEUR (motor_id 1..4), pas un appel global : cette carte adresse
-            # chaque moteur. Les gains de M2 sont INERTES sur ce robot tant que la sentinelle
-            # F_PID_SLAVED_MARK est posee (encodeur mort) -- on les pousse quand meme, pour que
-            # la reparation de l'encodeur ne demande aucun changement ici.
+            # chaque moteur, contrairement a l'ESP32 qui replie les 4 sur un triplet unique.
+            # Les quatre triplets portent reellement : aucune sentinelle d'esclavage n'est
+            # posee sur ce robot, donc aucun index n'est a traiter a part.
             for i in range(4):
                 if not self.link.setMotorPid(self.pid_kp[i], self.pid_ki[i], self.pid_kd[i],
                                              save=save, motor_id=i + 1):
