@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>bamboo_controler_YBStm32v3</name>
+  <version>0.1.0</version>
+  <description>Module de controleur Yahboom ROS Control Board V3.0 (STM32F103RCT6, MAVLink v2 sysid 1) : driver ROS2 COMPLET -- motorisation, odometrie, IMU+magnetometre, batterie, encodeurs 4 voies reelles, servos PWM -- et diffusion des parametres vers la SRAM de la carte avec relecture de verification. Proprietaire UNIQUE du CH340 1A86:7523.</description>
+  <maintainer email="titi28011976@users.noreply.github.com">Titi28011976</maintainer>
+  <license>Apache 2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>bamboo_interfaces</exec_depend>
+  <!-- La geometrie physique vit dans bamboo_base/config/robots/<robot>.yaml : le launch
+       de ce module y va chercher la source unique, d'ou la dependance d'execution. -->
+  <exec_depend>bamboo_base</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

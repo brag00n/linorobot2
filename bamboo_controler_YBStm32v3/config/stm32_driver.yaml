@@ -1,0 +1,53 @@
+# Carte Yahboom ROS Control Board V3.0 : FAITS D'HOTE ET DE TRANSPORT UNIQUEMENT.
+#
+# La geometrie, la motorisation et la table servo_axes NE SONT PAS ICI : elles vivent
+# dans la source unique bamboo_base/config/robots/bamboo4WD_V4_YBStm32.yaml, chargee par
+# driver.launch.py APRES ce fichier. Redeclarer un parametre physique ici le ferait
+# perdre silencieusement face au fichier canonique -> ne pas le faire.
+/**:
+  ros__parameters:
+    # --- lien serie ---------------------------------------------------------
+    # CH340 1A86:7523 a 115200 bauds. /dev/stm32 est pose par la regle udev
+    # docker/udev/99-bambooSTM32YB.rules ; sous Windows c'est COM4.
+    # LE PORT EST MONO-PROPRIETAIRE : ce noeud, l'application robot_controlv3 et le
+    # serveur MCP robot-action sont MUTUELLEMENT EXCLUSIFS.
+    port: /dev/stm32
+    baud: 115200
+    publish_rate_hz: 30.0
+
+    # --- frames -------------------------------------------------------------
+    odom_frame: odom
+    base_frame: base_footprint
+    imu_frame: imu_link
+    # L'EKF (robot_localization) possede le TF odom->base_footprint -> pas ici.
+    publish_odom_tf: false
+
+    # --- VERROU D'ACTUATION MOTEUR ------------------------------------------
+    # Repete ici ET dans le fichier canonique, deliberement : le canonique gagne, mais
+    # un lecteur de ce fichier doit voir l'etat du verrou sans ouvrir l'autre.
+    # false = LECTURE SEULE : aucune commande moteur emise. LES SERVOS, EUX, REPONDENT.
+    enable_cmd_vel: false
+    # 0,25 s : valeur MESUREE sur BambooWS (bench/brake_stop.py, 2026-09-23). Elle est
+    # reprise ici comme amorcage raisonnable -- << A CONFIRMER >> sur ce chassis-ci, dont
+    # les constantes PWM ne sont pas mises a l'echelle (essai T2 de bambooSTM32YB).
+    cmd_vel_timeout_s: 0.25
+
+    # --- fiabilite QoS des capteurs ----------------------------------------
+    # `sensor_data` est BEST-EFFORT, donc INVISIBLE a travers rosbridge, qui souscrit en
+    # RELIABLE : c'est ce qui rendait imu/data non diagnosticable depuis le MCP.
+    # Lu UNE FOIS au demarrage : un publisher ne change pas de fiabilite en marche.
+    imu_qos: reliable
+
+    # --- journal de la carte ------------------------------------------------
+    # << TRANCHE >> CE SEUIL EST APPLIQUE COTE HOTE, PAS ECRIT DANS LA CARTE, et c'est
+    # l'ecart le plus discret avec l'ESP32 : la table PARAM du STM32 s'arrete a l'index
+    # 18 (P_CAR_TYPE, PARAM_COUNT 19) et n'a donc PAS le LOG_LEVEL idx 19 de l'ESP32. Un
+    # PARAM_SET sur 19 serait ignore SANS ERREUR par cette carte -- exactement le genre
+    # de reglage qu'on croit applique. On filtre donc a la consommation (drainLogs), ce
+    # qui menage le journal ROS mais PAS l'UART : la carte emet tout, la bande passante
+    # serie est depensee de toute facon. Pour la menager il faudrait ajouter l'index 19
+    # au microcode STM32 (reflash par IAP, sans BOOT0 ni RESET).
+    # MAV_SEVERITY : 0 EMERGENCY .. 3 ERROR, 4 WARNING, 6 INFO, 7 DEBUG.
+    board_log_level: 6
+    # Attente d'une RELECTURE de config (bloquante -> suspend brievement la publication).
+    board_readback_timeout_s: 1.0
