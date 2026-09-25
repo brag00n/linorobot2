@@ -1,0 +1,9 @@
+# Acquisition (detection + alignement + sauvegarde crop) d'une image sur disque.
+# Promu tel quel du squelette. Remplace RecognitionConfig.command == "acquire_file".
+
+string  path          # chemin de l'image a acquerir
+string  id_lot        # lot cible (meme personne) ; vide => genere
+---
+bool    success
+string  id_lot        # lot effectivement utilise
+uint32  saved         # nombre de crops ecrits (0 = aucun visage exploitable)

@@ -1,0 +1,21 @@
+# Apprentissage (enrolement SFace) : tache LONGUE avec avancement -> Action ROS2.
+# Promu tel quel du squelette. Remplace le couple FaceTrainNode (worker thread) +
+# topic /recognition/train_state (touche G / MCP `train`). Un seul goal a la fois : le
+# concurrent est REJETE, ce qui preserve la semantique du worker unique du prototype.
+#
+# Hors chemin temps reel -> le noeud qui sert cette action reste en PYTHON (rclpy),
+# recopie du prototype : l'apprentissage n'est pas temps reel et le reecrire en C++
+# serait lourd pour zero gain.
+
+# --- Goal : lancer un batch d'enrolement ---
+# (aucun parametre : scanne faces_dir/unknown/, enrole, valide, regroupe)
+---
+# --- Result ---
+bool    success
+string  summary       # synthese du batch (JSON serialise)
+uint32  done_seq      # incremente a chaque fin -> signal de rechargement galerie
+---
+# --- Feedback (flux d'avancement, remplace TrainState.lines) ---
+string  line          # ligne de log courante
+uint32  step          # etape en cours
+uint32  total         # nombre total d'etapes (0 si inconnu)

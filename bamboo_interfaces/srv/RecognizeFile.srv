@@ -1,0 +1,10 @@
+# Reconnaissance d'une image sur disque (commande ponctuelle). Promu tel quel du
+# squelette. Remplace RecognitionConfig.command == "recognize_file" (motif `seq` sur
+# topic -> service req/rep).
+
+string  path          # chemin de l'image a reconnaitre
+---
+bool    success       # false si detection/lecture impossible
+int32   id_pred       # id personne, -1 si inconnu / echec
+string  name          # nom (ou "unknown")
+float32 score         # cosinus

@@ -3,7 +3,7 @@
 <package format="3">
   <name>bamboo_interfaces</name>
   <version>0.0.0</version>
-  <description>Messages du robot bamboo4WD_V4 (WSEsp32) : telemetrie brute de la carte ESP32 et rpm par roue.</description>
+  <description>Messages du robot bamboo4WD_V4 : telemetrie des cartes de controle (ESP32, STM32), contrat servo par axes nommes, suivi video et reconnaissance de visage.</description>
   <maintainer email="titi28011976@users.noreply.github.com">Titi28011976</maintainer>
   <license>Apache 2.0</license>
 
@@ -11,6 +11,7 @@
   <buildtool_depend>rosidl_default_generators</buildtool_depend>
 
   <depend>std_msgs</depend>
+  <depend>action_msgs</depend>
 
   <exec_depend>rosidl_default_runtime</exec_depend>
 

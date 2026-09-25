@@ -1,0 +1,17 @@
+# Deplacement RELATIF d'un ou plusieurs axes de servo (deg). Complement de /servo/cmd
+# (consigne absolue) : le stick droit de la manette produit des increments, pas des
+# positions. center et switch_camera n'ont pas d'argument -> std_srvs/Trigger.
+#
+# Promu du squelette tools/robot_controlv3/docs/ros2_interfaces/srv/Nudge.srv avec UN
+# ECART ASSUME : le squelette portait `pan_delta` / `tilt_delta` en dur, ce qui
+# contredit le contrat d'axes NOMMES de ServoCmd -- un troisieme axe (zoom, roll d'une
+# nacelle, articulation de bras) aurait exige de changer le type, donc de recompiler
+# tous les clients. On passe en LISTES PARALLELES, ce qui garde en plus l'atomicite
+# que deux appels successifs perdraient : le stick droit bouge pan ET tilt d'un coup.
+
+string[]  axis        # noms d'axes, resolus par `servo_axes` (cf. ServoCmd)
+float64[] delta       # pas relatif par axe, deg ; MEME longueur que `axis`
+---
+bool      success     # false si un axe est inconnu ou les deux listes discordent
+string    reason      # motif de l'echec, ou "" en cas de succes
+float64[] angle_deg   # angle resultant par axe APRES bornage (ombre d'hote, cf. ServoCmd)

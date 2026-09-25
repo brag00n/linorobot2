@@ -1,0 +1,19 @@
+# Enregistrement d'une source enrichie aupres du stream_mux_node de bamboo_video.
+#
+# C'est le mecanisme qui tient l'exigence "bamboo_videotracking doit utiliser
+# bamboo_video en s'enregistrant dessus pour recuperer le flux video et le renvoyer
+# enrichi a bamboo_video" -- et, en creux, celle de "bamboo_video utilisable SANS
+# bamboo_videotracking" : registre vide => le mux sert le flux BRUT, donc le groupe
+# video n'a aucune dependance, ni de code ni de service, envers le groupe tracking.
+#
+# Le benefice non evident est cote consommateur : UNE SEULE URL stable. Le navigateur
+# ne change jamais d'adresse selon que le tracking tourne ou non, c'est le mux qui
+# commute la source.
+
+string  node_name     # nom du noeud client, pour le journal et le refus motive
+string  topic         # topic CompressedImage sur lequel le client rendra l'enrichi
+float32 timeout_s     # 0 = valeur par defaut du mux (overlay_timeout_s)
+bool    deregister    # true = desenregistrement explicite -> retour au brut
+---
+bool    accepted
+string  reason        # motif du refus, ou source retenue en cas d'acceptation
