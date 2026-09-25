@@ -1,0 +1,219 @@
+# ============================================================================
+# bamboo4WD_V4_YBStm32 (bambooSTM32YB) - SOURCE UNIQUE DE VERITE PHYSIQUE
+# ============================================================================
+# Ce fichier porte la geometrie, la motorisation et la MOTORISATION CAMERA de ce
+# robot, et rien d'autre. Tous les consommateurs s'y referent : le driver ROS du
+# module bamboo_controler_YBStm32v3, les arguments xacro de l'URDF
+# (linorobot2_description), le groupe bamboo_videotracking (par la table
+# servo_axes) et les outils hote (robot_profile.py).
+#
+# N'Y ENTRENT PAS les faits d'hote, legitimement differents d'une machine a
+# l'autre : port serie, baud, VID:PID, /dev/videoN, ports TCP. Ils restent dans
+# config/stm32_driver.yaml, dans les YAML de groupe (bamboo_video,
+# bamboo_videotracking) et dans les profils robots/*.json du depot firmware.
+#
+# Format ROS natif (`/**: ros__parameters:`) pour etre utilisable tel quel :
+#   ros2 param load /stm32_mavlink_driver <ce fichier>
+#
+# ---------------------------------------------------------------------------
+# PROVENANCE DES VALEURS GEOMETRIQUES : microcode de CETTE carte, pas un
+# catalogue. Contrairement au fichier de BambooWS (ou il a fallu identifier le
+# produit par la mesure), la geometrie est ici ECRITE DANS LE FIRMWARE que nous
+# compilons nous-memes, et la carte fait sa cinematique elle-meme :
+#   firmware/stm32_bamboo/src/app_motion.h:25-27  (defauts reglables a chaud)
+#   firmware/stm32_bamboo/src/app_fourwheel.h:9,13 (constantes du chassis 4WD)
+#
+#   WHEEL_GEOM_DEF_CPR    = 1320   = ENCODER_CIRCLE_330 = 30 * 11 * 4
+#                                    (reducteur 30:1, disque 11 fentes,
+#                                     quadrature x4) -> moteur 330 RPM nominal
+#   FOURWHEEL_CIRCLE_MM   = 215.2  -> diametre = 215.2 / pi = 68.50 mm
+#   FOURWHEEL_APB         = 164.555 = (voie + empattement) / 2
+#
+# ATTENTION, c'est le piege de conversion de ce robot : la carte ne connait
+# ni la voie ni l'empattement separement, elle ne connait que leur DEMI-SOMME
+# (APB), parce que c'est la seule combinaison dont sa cinematique a besoin.
+# On ne peut donc PAS deduire wheel_separation_m de la valeur firmware :
+# 164.555 mm de demi-somme vaut pour une voie de 0.165 et un empattement de
+# 0.164 comme pour 0.200 et 0.129. Il faut le metre ruban, ou l'erreur d'angle
+# sur un 360 deg au sol. D'ou le << NON MESURE >> plus bas, qui n'est pas de la
+# prudence de facade : c'est une valeur reellement indeterminee a ce stade.
+#
+# Le stockage flash quantifie circonference et APB en DIXIEMES de mm (circ10,
+# apb10, entiers 16 bits) : 215.2 et 164.6 sont donc exacts au dixieme, et une
+# valeur plus fine ecrite ici serait arrondie par la carte, pas conservee.
+#
+# ---------------------------------------------------------------------------
+# ETAT MATERIEL DE CETTE MACHINE-CI, a ne pas confondre avec les capacites de
+# la carte. La Yahboom ROS Control Board V3.0 a QUATRE voies encodeur reelles
+# (c'est ce qui la distingue de l'ESP32 WaveShare, qui n'en a que deux) mais sur
+# CE robot :
+#   - l'encodeur de M2 est MORT (moteur sain, forte friction de decollage) ;
+#     son PID est donc desactive par la sentinelle F_PID_SLAVED_MARK et M2 est
+#     cale en RECOPIE INVERSEE sur M4, son voisin de meme cote ;
+#   - M1 presente une friction elevee, M3 tourne correctement en marche arriere.
+# Consequence directe sur ce fichier : la voie encodeur representative du cote
+# de M2 est M4 (index 3), PAS M2 (index 1). Un lecteur qui prendrait "4 voies
+# reelles" pour "4 mesures utilisables sur ce robot" se tromperait.
+# Cf. la fiche memoire bamboo-v4-hardware-faults et
+# docs/hardware_yahboom_ros_control_board_v3.md.
+#
+# ---------------------------------------------------------------------------
+# SENS DE ROTATION, tel que CABLE sur ce robot (releve aux essais MCP, roues
+# surelevees) : la marche avant demande M1+ M2- M3- M4+. Les deux moteurs d'un
+# meme cote sont donc cables en OPPOSITION, et c'est le cablage qui l'impose,
+# pas un choix logiciel : {M1, M3} forment un cote et {M2, M4} l'autre, chaque
+# paire ayant un moteur inverse. Ne PAS "corriger" ca cote ROS : une inversion
+# cote hote desynchroniserait le PID embarque et l'odometrie.
+# ============================================================================
+
+/**:
+  ros__parameters:
+
+    # --- identite cinematique -------------------------------------------
+    # 4 roues fixes, entrainement differentiel par cote (skid steer).
+    robot_base: "4wd"
+    # Type de chassis attendu par la carte (FOURWHEEL). Enumere cote firmware
+    # (app_motion.h, car_type_t) : 1 MECANUM, 2 MECANUM_MAX, 3 MECANUM_MINI,
+    # 4 FOURWHEEL, 5 ACKERMAN, 6 SUNRISE.
+    car_type: 4.0
+
+    # --- geometrie -------------------------------------------------------
+    # Tics par tour de roue, en sortie de reducteur, sur une voie encodeur.
+    # Valeur FIRMWARE, decomposee : 30 (reducteur) * 11 (fentes) * 4
+    # (quadrature) = 1320. Ce n'est pas une mesure, c'est une definition -- mais
+    # une definition VERIFIABLE : 10 tours a la main doivent donner 13200 tics.
+    counts_per_rev: 1320.0
+    # Diametre de roue au sol, en metres, deduit de FOURWHEEL_CIRCLE_MM :
+    # 215.2 / pi = 68.50 mm. << A CONFIRMER >> au pied a coulisse : la
+    # circonference firmware est une valeur de catalogue Yahboom, et l'usure ou
+    # un pneu different la decale. Une erreur ici fausse la distance parcourue
+    # proportionnellement, sans toucher aux rotations.
+    wheel_diameter_m: 0.0685
+    # << NON MESURE >> entraxe gauche/droite (voie), en metres. NE SE DEDUIT PAS
+    # de l'APB firmware (voir l'en-tete) : 0.165 est l'hypothese voie ~
+    # empattement, qui satisfait (voie + empattement) / 2 = 164.555 mm, et rien
+    # de plus. A valider au metre ruban ou par l'erreur d'angle sur un 360 deg
+    # au sol. Elle pilote la conversion angular.z -> RPM, donc une erreur ici
+    # fait tourner le robot trop ou pas assez, sans toucher a la ligne droite.
+    wheel_separation_m: 0.165
+
+    # --- motorisation ----------------------------------------------------
+    # Regime nominal du moteur, deduit du cpr : ENCODER_CIRCLE_330 -> 330 RPM.
+    motor_max_rpm: 330.0
+    # ATTENTION, DIFFERENCE DE FOND AVEC L'ESP32 : sur cette carte ces deux
+    # tensions ne sont CONSOMMEES PAR RIEN. La cinematique et le PID sont
+    # embarques et travaillent en mm/s et en tics/s ; il n'y a aucun
+    # equivalent du `supply = constrain(...)` de kinematics.cpp, donc aucun
+    # plafond calcule a partir d'un rapport de tensions. Elles sont declarees
+    # ici parce qu'elles sont des faits PHYSIQUES du robot et que la place d'un
+    # fait physique est ce fichier -- pas parce qu'un noeud les lit.
+    #
+    # Et c'est precisement la ou le bat blesse : les constantes PWM du firmware
+    # ne sont PAS mises a l'echelle. Le pack arrive BRUT sur des moteurs 7.4 V
+    # nominaux (cf. docs/hardware_yahboom_ros_control_board_v3.md, section 4)
+    # -> MOTOR_MAX_PULSE 3600 doit descendre a 2114 et MOTOR_IGNORE_PULSE 1600
+    # a ~940 (ce dernier etant un OFFSET ADDITIF, pas un plafond : le borner
+    # seul laisserait 44 % de rapport cyclique minimum). C'est un reflash, et
+    # c'est la raison pour laquelle enable_cmd_vel reste false.
+    motor_operating_voltage: 7.4
+    motor_power_max_voltage: 12.6
+
+    # --- PID de vitesse roue --------------------------------------------
+    # DIFFERENCE DE FOND AVEC L'ESP32 : cette carte adresse CHAQUE moteur
+    # (repliement d'index idx / 3, mav_protocol.c:143-153), la ou l'ESP32
+    # replie les 4 moteurs sur un triplet unique (idx % 3). D'ou QUATRE
+    # triplets ici, et non un. set_motor_pid accepte motor_id 0 (les 4) ou 1..4.
+    #
+    # Valeurs = defauts firmware (app_pid.h:10-12 : 0.8 / 0.06 / 0.5), donc des
+    # valeurs d'AMORCAGE coherentes avec ce que la carte prend au premier boot,
+    # pas un reglage mesure sur ce chassis.
+    #
+    # M2 (index 1) : PID DESACTIVE sur ce robot, encodeur mort -> la carte le
+    # cale en recopie inversee sur M4. Les gains ci-dessous pour M2 sont donc
+    # INERTES tant que la sentinelle est posee ; on les laisse renseignes pour
+    # que le jour ou l'encodeur est repare il n'y ait qu'un mot a retirer, et
+    # surtout pour qu'un tableau a trois lignes ne laisse pas croire a une
+    # carte a trois moteurs. L'ecriture de la sentinelle est un acte EXPLICITE
+    # (set_motor_pid disable=true), jamais un effet de bord d'un param set.
+    pid_kp: [0.8, 0.8, 0.8, 0.8]
+    pid_ki: [0.06, 0.06, 0.06, 0.06]
+    pid_kd: [0.5, 0.5, 0.5, 0.5]
+    # PID de cap (yaw), asservissement distinct du PID roue.
+    # Defauts firmware app_pid.h:14-16.
+    yaw_pid_kp: 0.4
+    yaw_pid_ki: 0.0
+    yaw_pid_kd: 0.1
+
+    # --- mapping des voies encodeur -------------------------------------
+    # La carte expose 4 voies REELLES (encoders[0..3] = M1..M4), mais sur CE
+    # robot la voie 1 (M2) est morte. Le representant de ce cote est donc M4.
+    # << A VERIFIER >> l'attribution gauche/droite elle-meme : le releve de sens
+    # etablit les PAIRES ({M1,M3} et {M2,M4}) mais pas laquelle est a gauche.
+    # Se constate roues surelevees, robot pose sur le flanc, en une observation.
+    encoder_left_index: 0
+    encoder_right_index: 3
+    invert_left: false
+    invert_right: false
+
+    # --- motorisation camera : axes de servo -----------------------------
+    # SEUL ENDROIT DU DEPOT QUI LIE UN AXE A UNE CARTE. Les producteurs de
+    # consignes (servocam_node, bamboo_teleop, MCP) adressent un axe PAR SON
+    # NOM et ignorent qui l'execute ; c'est l'executeur -- le module de
+    # controleur qui DECLARE la capacite servo -- qui resout nom -> voie
+    # materielle via cette table. Deplacer les SG90 sur une autre carte ne
+    # change que les `controller:` ci-dessous, aucune ligne du groupe tracking.
+    #
+    # Un axe dont le controleur cible n'annonce pas la capacite servo doit
+    # FAIRE ECHOUER LE BRINGUP EN NOMMANT L'AXE, jamais avaler les consignes en
+    # silence : l'ESP32 WaveShare repond MAV_RESULT_UNSUPPORTED a DO_SET_SERVO
+    # sans que personne le voie, piege deja paye une fois.
+    #
+    # BORNES : 8-172 deg, et le 172 n'est pas une marge de confort. La loi
+    # d'impulsion du firmware est (angle * 11 + 500) / 10 us, donc 172 -> 2392 us
+    # (dernier angle sain) et 180 -> 2480 us, soit 80 us AU-DELA de la butee du
+    # SG90 : bourdonnement, ~700 mA continus, pignons plastique. Le prototype
+    # bornait pan a 178 (RobotServoMotor.py:9-12) -- c'est corrige ici, une
+    # camera qui reste des minutes en position est le cas d'usage normal.
+    # Le bornage vit COTE HOTE et il est la seule protection reelle : le
+    # firmware, lui, JETTE EN SILENCE au-dela de 180 (bsp_pwmServo.c:153) et le
+    # COMMAND_ACK renvoie ACCEPTED quand meme -- un ACK ne prouve donc PAS que
+    # l'angle a ete applique.
+    #
+    # channel = header PWM S1..S4 de la carte (id MAVLink 1..4). NE PAS
+    # confondre avec les servos de BUS serie (app_uart_servo.c, FUNC 0x20-0x24),
+    # qui sont la chaine du bras robotise Yahboom : lisibles, mais sans objet
+    # pour des SG90 sur les headers PWM.
+    servo_axes:
+      pan:
+        controller: "YBStm32v3"
+        channel: 1
+        rest_deg: 88.0
+        min_deg: 8.0
+        max_deg: 172.0
+      tilt:
+        controller: "YBStm32v3"
+        channel: 2
+        rest_deg: 42.0
+        min_deg: 20.0
+        max_deg: 70.0
+
+    # --- camera ----------------------------------------------------------
+    # Faits PHYSIQUES du capteur : ce qu'il sait produire. Le /dev/videoN, le
+    # format retenu et les ports de diffusion sont des faits d'HOTE et vivent
+    # dans le YAML du groupe bamboo_video.
+    # << A CONFIRMER >> le champ de vision : valeur de catalogue de la webcam
+    # UVC 05a3:9331, jamais mesuree. Elle ne sert qu'a convertir une erreur
+    # normalisee en degres pour le journal ; la loi de commande pan/tilt
+    # travaille en normalise et n'en depend pas.
+    camera_width: 640
+    camera_height: 480
+    camera_fov_h_deg: 60.0
+    camera_fov_v_deg: 45.0
+
+    # --- verrou d'actuation moteur ---------------------------------------
+    # NON NEGOCIABLE ICI, et c'est un fait physique, pas une preference : les
+    # constantes PWM ne sont pas mises a l'echelle (voir motorisation) et les
+    # essais T2/T3/T5 de bambooSTM32YB ne sont pas passes. La capacite moteur
+    # est implementee ; son ARMEMENT attend la calibration.
+    # LES SERVOS OUI, LES MOTEURS NON.
+    enable_cmd_vel: false
