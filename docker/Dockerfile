@@ -138,6 +138,48 @@ RUN source /opt/ros/$ROS_DISTRO/setup.bash && \
 # monte via PYTHONPATH, sa seule dep runtime est pyserial. python3-serial = paquet Debian
 # (l'image n'a pas pip). Layer final -> rebuild rapide.
 RUN apt-get update && apt-get install -y python3-serial
+
+# --- Vision pour bambooSTM32YB (groupe bamboo_videotracking) --------------------------
+# Trois besoins distincts, d'ou trois familles de paquets et NON un seul "opencv" :
+#   - libopencv-dev : les EN-TETES C++. Le chemin chaud (detection YuNet, suivi MIL,
+#     reconnaissance SFace, Kalman) est du C++ rclcpp, parce que le zero-copy
+#     intra-processus n'existe QUE dans rclcpp : une trame rgb8 640x480 pese 921 Ko et
+#     l'entrypoint coupe la memoire partagee DDS (shm_off.xml), donc chaque saut de
+#     processus se paie plein tarif. Le portage est bon marche : YuNet, SFace, MIL, ViT et
+#     Kalman SONT des classes OpenCV C++ (cv::FaceDetectorYN, cv::FaceRecognizerSF,
+#     cv::TrackerMIL, cv::TrackerVit, cv::KalmanFilter) -- le prototype Python n'est qu'un
+#     binding par-dessus, et les .onnx sont les memes.
+#   - cv-bridge / vision-opencv : conversion sensor_msgs <-> cv::Mat, cote C++ ET Python.
+#   - python3-opencv : pour le SEUL noeud d'apprentissage (enrolement SFace), qui n'est pas
+#     temps reel et reste en rclpy, recopie du prototype.
+# image-transport est deja tire par image-transport-plugins ci-dessus ; on le declare quand
+# meme, une dependance implicite qui disparait en amont est une panne difficile a lire.
+#
+# ATTENTION, A VERIFIER DANS LE CONTENEUR AVANT D'ECRIRE LE C++ :
+#     pkg-config --modversion opencv4
+# Humble/Jammy livre OpenCV 4.5.4. cv::FaceDetectorYN, cv::FaceRecognizerSF et
+# cv::TrackerMIL y sont, mais cv::TrackerVit n'est apparu qu'en 4.7. Si 4.5.4 est confirme :
+# le suivi se limite a MIL (le prototype sait deja retomber) et le mode vit reste DECLARE
+# mais repond "indisponible" -- recompiler OpenCV sur un RPi4 coute des heures pour un gain
+# non demontre. Pas de pip : l'image n'en a pas et on n'en ajoute pas.
+RUN apt-get update && apt-get install -y \
+    libopencv-dev \
+    python3-opencv \
+    ros-$ROS_DISTRO-cv-bridge \
+    ros-$ROS_DISTRO-vision-opencv \
+    ros-$ROS_DISTRO-image-transport
+
+# --- Manette (groupe bamboo_control) -------------------------------------------------
+# Installe ICI et pas au lot V5 : un apt-get dans cette image coute un rebuild complet sur
+# RPi4, autant n'en payer qu'un. Ces paquets ne sont declares qu'en exec_depend de
+# linorobot2_bringup/package.xml, et rosdep tourne contre un clone DISTANT, pas contre
+# l'arbre de travail -> il ne les tire pas. joystick fournit jstest, qui sert a relever les
+# index d'axes : ils CHANGENT entre le mode XInput et le mode DirectInput de la manette.
+RUN apt-get update && apt-get install -y \
+    ros-$ROS_DISTRO-joy-linux \
+    ros-$ROS_DISTRO-teleop-twist-joy \
+    joystick
+
 ENTRYPOINT ["/entrypoint.sh"]
 
 FROM hardware AS build
