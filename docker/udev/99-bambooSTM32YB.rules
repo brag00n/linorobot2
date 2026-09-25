@@ -41,6 +41,11 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE:="0666
 # ATTENTION, LE PIEGE DE CETTE REGLE : un peripherique UVC enumere PLUSIEURS noeuds
 # /dev/videoN (capture + metadonnees depuis le noyau 4.16). Sans le garde ci-dessous, le
 # symlink atterrit sur le noeud de metadonnees une fois sur deux, et l'ouverture echoue avec
-# un message qui ne parle pas de metadonnees. Le test sur capability retient le noeud de
-# capture : 0x...1 = VIDEO_CAPTURE, tandis que le noeud metadata porte 0x00a00000.
+# un message qui ne parle pas de metadonnees. Le garde retenu est ATTR{index}=="0" : udev
+# expose l'index de noeud du peripherique, et le noeud de CAPTURE porte toujours l'index 0,
+# les noeuds de metadonnees venant apres. On aurait pu tester la capability du noeud
+# (0x...1 = VIDEO_CAPTURE contre 0x00a00000 pour le metadata) mais udev ne l'expose PAS en
+# attribut : il faudrait un programme externe, donc une regle plus fragile pour rien.
+# Meme critere que bamboo_base/hw_resolve.py, deliberement : les deux voies de resolution
+# doivent designer le MEME noeud, sinon le repli ne vaut rien.
 KERNEL=="video[0-9]*", SUBSYSTEM=="video4linux", ATTRS{idVendor}=="05a3", ATTRS{idProduct}=="9331", ATTR{index}=="0", MODE:="0666", SYMLINK+="bamboocam"
