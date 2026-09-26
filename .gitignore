@@ -8,3 +8,7 @@ __pycache__/
 
 # reglages locaux de l editeur (VS Code) : propres a un poste, pas au robot
 .vscode/
+
+# environnement Python des serveurs MCP ROS (tools/) : dependances d hote, pas du robot.
+# Le contenu est reconstructible par tools/requirements.txt -- c est lui qui est versionne.
+tools/.venv/
