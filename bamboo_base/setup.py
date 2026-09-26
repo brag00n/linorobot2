@@ -21,7 +21,7 @@ setup(
     zip_safe=True,
     maintainer="Titi28011976",
     maintainer_email="titi28011976@users.noreply.github.com",
-    description="Pont MAVLink ESP32 <-> ROS2 du robot bamboo4WD_V4 (WSEsp32).",
+    description="Socle commun des modules de controleur bamboo : squelette de driver MAVLink, resolution materielle VID:PID, controle des capacites et source unique de verite physique (config/robots/).",
     license="Apache 2.0",
     tests_require=["pytest"],
     entry_points={
