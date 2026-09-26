@@ -30,6 +30,10 @@ setup(
             # Resolveur materiel (VID:PID -> /dev/...), utile en verification :
             #   ros2 run bamboo_base hw_resolve
             "hw_resolve = bamboo_base.hw_resolve:main",
+            # Confronte servo_axes aux capacites declarees par les modules de
+            # controleur, AVANT toute actuation :
+            #   ros2 run bamboo_base capability_check bamboo4WD_V4_YBStm32
+            "capability_check = bamboo_base.capability_check:main",
         ],
     },
 )

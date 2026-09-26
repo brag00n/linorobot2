@@ -1,0 +1,37 @@
+# DECLARATION DE CAPACITES de la GrovePi+ detournee en CARTE CAPTEURS.
+# Contrat et raison d'etre : voir bamboo_controler_YBStm32v3/config/capabilities.yaml.
+#
+# DEUX PIEGES MATERIELS QUI NE PARDONNENT PAS ([[grovepi-sensor-board]]) :
+#  1. NE JAMAIS l'enficher sur le header du RPi : son RESET est sur BCM8, la carte se
+#     bloque. Liaison UART SEULEMENT, par le port Grove SERIAL (validee par un PL2303
+#     067b:2303 -> /dev/ttyUSB0).
+#  2. Son BAUD CAPTEURS DIFFERE du baud de controle des autres cartes -- confusion deja
+#     commise une fois ([[robot-config-profiles]]).
+controller: DSGrovePiP
+board: "Dexter Industries / Seeed Studio GrovePi+ (ATmega328P)"
+sysid: 4
+package: bamboo_controler_DSGrovePiP
+node: ""
+launch: driver.launch.py
+status: declared
+usb: "067b:2303 (PL2303) -- port Grove SERIAL uniquement, JAMAIS le header RPi"
+
+capabilities:
+  # CAPTEURS SEULS. Aucun moteur, aucun encodeur : un robot qui ne composerait que cette
+  # carte ne doit PAS avoir de souscripteur /cmd_vel du tout.
+  motors: 0
+  encoders: 0
+  encoders_real: 0
+  imu: true                   # MPU6050
+  magnetometer: false         # => yaw IMPOSSIBLE, seuls roll/pitch ont un sens
+  servo_pwm: 0
+  servo_bus: false
+  battery_voltage: false
+  battery_current: false
+  pid_per_motor: false
+  flash_persistence: false
+  buzzer: false
+  log_level_param: false
+  # Specifique a cette carte : 4 x HC-SR04 + Sharp IR -> 5 DISTANCE_SENSOR @18 Hz,
+  # plus ATTITUDE. C'est tout ce qu'elle apporte, et c'est mesure.
+  distance_sensors: 5

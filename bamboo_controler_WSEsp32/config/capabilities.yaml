@@ -1,0 +1,33 @@
+# DECLARATION DE CAPACITES de la WaveShare General Driver (ESP32-WROOM-32).
+# Contrat et raison d'etre : voir bamboo_controler_YBStm32v3/config/capabilities.yaml.
+controller: WSEsp32
+board: "WaveShare General Driver for Robots (ESP32-WROOM-32)"
+sysid: 2
+# ENVELOPPE : le driver n'est PAS dans ce paquet, il reste `esp32_mavlink_driver` de
+# bamboo_base. Le deplacer casserait un plan approuve et partiellement execute (chantier 1
+# en pause) -- dette assumee, a resorber quand BambooWS reprendra.
+package: bamboo_base
+node: esp32_mavlink_driver
+launch: driver.launch.py
+status: validated
+usb: "10c4:ea60 (CP2102) -- VID:PID PARTAGE avec le lidar, desambiguiser par numero de serie"
+
+capabilities:
+  motors: 4
+  encoders: 2
+  # 4 voies sont PUBLIEES mais 3/4 sont des RECOPIES de 1/2 (firmware.cpp:356-357,363-364)
+  # : ne jamais les calibrer, ne jamais y lire une seconde roue. C'est precisement ce
+  # mensonge silencieux que le tachymetre optique a servi a contourner.
+  encoders_real: 2
+  imu: true
+  magnetometer: true          # AK09918C + QMI8658C
+  # ZERO servo PWM : DO_SET_SERVO repond MAV_RESULT_UNSUPPORTED (ConnectorMavlink.cpp:450).
+  # Un axe de servo_axes qui viserait ce controleur DOIT faire echouer le bringup.
+  servo_pwm: 0
+  servo_bus: true             # ST3215 sur bus serie
+  battery_voltage: true
+  battery_current: true       # INA219 : seule carte du parc a mesurer le COURANT
+  pid_per_motor: false        # gains communs aux 4 moteurs
+  flash_persistence: false    # rien ne survit a une coupure -> tout repousser a l'init
+  buzzer: false
+  log_level_param: true       # PARAM idx 19, SEULE carte a l'avoir

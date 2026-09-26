@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>bamboo4WD_V4_WSEsp32_base</name>
+  <version>0.0.0</version>
+  <!-- Paquet de BRINGUP du ROBOT BambooWS. Pendant exact de bamboo4WD_V4_YBStm32_base :
+       aucun noeud, seulement la COMPOSITION de cette machine-ci. La difference entre les
+       deux paquets est la seule chose qui doive differer entre deux robots -- la verite
+       physique reste dans bamboo_base/config/robots/bamboo4WD_V4_WSEsp32.yaml.
+       ATTENTION : ce robot est EN PAUSE (attache moteur M1 cassee) et ce bringup n'a
+       jamais ete lance. Voir l'en-tete de launch/bringup.launch.py. -->
+  <description>Bringup du robot bamboo4WD_V4_WSEsp32 (BambooWS) : carte WaveShare General
+    Driver ESP32. Robot EN PAUSE, bringup NON VALIDE sur machine.</description>
+  <maintainer email="titi28011976@users.noreply.github.com">Titi28011976</maintainer>
+  <license>Apache 2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>bamboo_base</exec_depend>
+  <!-- Le controleur de CE robot, et lui seul. Pas de bamboo_videotracking ici : ce robot
+       n'a AUCUN servo (DO_SET_SERVO repond UNSUPPORTED), donc pas de camera motorisee. -->
+  <exec_depend>bamboo_controler_WSEsp32</exec_depend>
+  <exec_depend>linorobot2_description</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -43,11 +43,13 @@ Exemples :
   ros2 launch bamboo4WD_V4_YBStm32_base bringup.launch.py enable_video:=false   # carte seule
 """
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
+
+from bamboo_base.capability_check import checkServoAxes
 
 
 def _include(package, launch_file, arguments, flag):
@@ -61,9 +63,27 @@ def _include(package, launch_file, arguments, flag):
     return IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([FindPackageShare(package), "launch", launch_file])),
-        launch_arguments=arguments,
+        # .items() et pas le dict : IncludeLaunchDescription itere des paires (nom, valeur)
+        # et un dict nu s'itere sur ses CLES -- l'erreur se voit seulement au lancement.
+        launch_arguments=arguments.items(),
         condition=IfCondition(LaunchConfiguration(flag)),
     )
+
+
+def _checkCapabilities(context, *args, **kwargs):
+    """Confronte servo_axes aux capacites DECLAREES des modules de controleur vises.
+
+    Se fait ICI, au tout debut du bringup, et pas dans un noeud : un axe pose sur une carte
+    sans servo PWM ne doit pas etre decouvert quand la premiere consigne part -- la
+    WaveShare ESP32, par exemple, repond UNSUPPORTED a DO_SET_SERVO en renvoyant quand
+    meme un ACK, donc rien ne bouge et rien ne se plaint.
+
+    Lecture de fichiers UNIQUEMENT : rien n'ouvre le port serie, qui est mono-proprietaire.
+    Ce controle tourne meme quand le tracking est desactive, parce qu'un axe mal declare est
+    une erreur de configuration, pas une consequence des drapeaux du lancement.
+    """
+    robot = LaunchConfiguration("robot").perform(context)
+    return [LogInfo(msg="capacites : " + line) for line in checkServoAxes(robot)]
 
 
 def generate_launch_description():
@@ -104,6 +124,9 @@ def generate_launch_description():
             description="Peripherique V4L2. /dev/bamboocam des que la regle udev "
                         "99-bambooSTM32YB.rules est posee sur la machine ; /dev/video0 en "
                         "repli, qui est l'etat constate du RPi a T10."),
+
+        # --- controle de coherence AVANT tout noeud --------------------------------------
+        OpaqueFunction(function=_checkCapabilities),
 
         # --- la carte -----------------------------------------------------------------
         _include("bamboo_controler_YBStm32v3", "driver.launch.py",

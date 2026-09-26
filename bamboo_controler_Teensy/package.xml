@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>bamboo_controler_Teensy</name>
+  <version>0.1.0</version>
+  <description>Module de controleur Teensy + UGeek Motor HAT (PCA9685 0x6F, MAVLink v2 sysid 3). DECLARATIF ET NON VALIDE SUR ROBOT : porte la declaration de capacites (4 moteurs, 4 encodeurs reels, MPU6050 SANS magnetometre, servos differes) mais aucun driver ROS -- son launch refuse de demarrer en le disant.</description>
+  <maintainer email="titi28011976@users.noreply.github.com">Titi28011976</maintainer>
+  <license>Apache 2.0</license>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

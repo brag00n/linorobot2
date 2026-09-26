@@ -1,0 +1,48 @@
+# DECLARATION DE CAPACITES de la carte Yahboom ROS Control Board V3.0.
+#
+# POURQUOI CE FICHIER EXISTE, et pourquoi il n'est pas de la documentation : le piege du
+# chantier 1 etait qu'une capacite ABSENTE se decouvrait A L'EXECUTION -- l'ESP32
+# WaveShare repond MAV_RESULT_UNSUPPORTED a DO_SET_SERVO et personne ne le voyait, les
+# consignes partaient dans le vide avec un ACK. Ici la capacite est une DONNEE, lue au
+# bringup par bamboo_base.capability_check, qui fait echouer le demarrage EN NOMMANT
+# l'axe dont le controleur cible n'a pas de servo PWM.
+#
+# Ce fichier decrit UNE CARTE, jamais un robot : aucune geometrie, aucun PID, aucune
+# borne de course. La verite physique du chassis vit dans
+# bamboo_base/config/robots/<robot>.yaml, et c'est sa table `servo_axes` qui dit quel axe
+# va sur quelle voie de quelle carte.
+#
+# CE N'EST PAS un fichier de parametres ROS (pas de `/**: ros__parameters:`) : il est lu
+# par du code de launch, avant que le moindre noeud existe.
+controller: YBStm32v3
+board: "Yahboom ROS Control Board V3.0 (STM32F103RCT6)"
+sysid: 1                      # MAVLink v2, dialecte bamboo ; hote = 255
+package: bamboo_controler_YBStm32v3
+node: stm32_mavlink_driver
+launch: driver.launch.py
+# validated = un driver existe ET a tourne sur la carte ; declared = structure seule.
+status: validated
+usb: "1a86:7523 (CH340) @115200 -- port MONO-PROPRIETAIRE"
+
+capabilities:
+  motors: 4
+  # Les 4 voies sont REELLES depuis le remplacement de carte du 2026-09-25 (l'ancienne
+  # avait M2 mort). A ne pas confondre avec l'ESP32, ou 3/4 sont des recopies de 1/2.
+  encoders: 4
+  encoders_real: 4
+  imu: true
+  # MPU9250 : le magnetometre est ce qui distingue cette carte du Teensy (MPU6050) et de
+  # la GrovePi+ -- cap ABSOLU possible ici, pas ailleurs.
+  magnetometer: true
+  # Nombre de voies PWM du header S1..S4 = ids MAVLink 1..4. C'est ce chiffre que
+  # capability_check compare au `channel` de chaque axe de servo_axes.
+  servo_pwm: 4
+  servo_bus: true             # chaine du bras Yahboom (FUNC 0x20-0x24), hors sujet SG90
+  battery_voltage: true
+  battery_current: false      # pas d'INA219 sur cette carte, contrairement a l'ESP32
+  pid_per_motor: true
+  flash_persistence: true
+  buzzer: true
+  # La table PARAM s'arrete a l'index 18 (PARAM_COUNT 19) : PAS de LOG_LEVEL idx 19. Un
+  # PARAM_SET sur 19 serait ignore SANS ERREUR -> le seuil est filtre cote hote.
+  log_level_param: false

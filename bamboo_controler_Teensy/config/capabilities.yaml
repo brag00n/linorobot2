@@ -1,0 +1,32 @@
+# DECLARATION DE CAPACITES du 3e controleur : Teensy + UGeek Motor HAT.
+# Contrat et raison d'etre : voir bamboo_controler_YBStm32v3/config/capabilities.yaml.
+controller: Teensy
+board: "Teensy 3.x/4.x + UGeek Motor HAT (PCA9685 0x6F, I2C)"
+sysid: 3
+package: bamboo_controler_Teensy
+node: ""                      # AUCUN driver ROS : voir `status`
+launch: driver.launch.py
+# declared = STRUCTURE SEULE, jamais lancee sur un robot monte. Le launch de ce module
+# REFUSE de demarrer en le disant, plutot que de ne rien lancer en silence.
+status: declared
+usb: "<< A RELEVER >> (Teensy en USB serial natif)"
+
+capabilities:
+  motors: 4
+  encoders: 4
+  encoders_real: 4
+  imu: true
+  magnetometer: false         # MPU6050 : pas de magneto -> aucun cap absolu
+  # Le PCA9685 a 16 voies PWM, mais les servos sont DIFFERES sur ce controleur : rien
+  # n'est cable ni essaye. Declarer 0 est la lecture honnete -- un axe qui le viserait
+  # doit echouer, pas partir sur une voie supposee.
+  servo_pwm: 0
+  servo_bus: false
+  battery_voltage: false
+  battery_current: false
+  pid_per_motor: true
+  flash_persistence: false
+  buzzer: false
+  log_level_param: false
+  # cpr 48 est un PLACEHOLDER non mesure ([[teensy-binary-frame-mode]]) : il vit dans le
+  # fichier canonique du robot qui utiliserait cette carte, pas ici.

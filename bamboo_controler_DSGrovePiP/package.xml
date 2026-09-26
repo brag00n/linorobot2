@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>bamboo_controler_DSGrovePiP</name>
+  <version>0.1.0</version>
+  <description>Module de controleur GrovePi+ (Dexter Industries / Seeed Studio, ATmega328P, MAVLink v2 sysid 4) detournee en CARTE CAPTEURS : 0 moteur, 0 encodeur, MPU6050 sans magnetometre (donc pas de yaw), 4 HC-SR04 + Sharp IR = 5 DISTANCE_SENSOR a 18 Hz. DECLARATIF : aucun driver ROS, le launch refuse de demarrer en le disant. UART par le port Grove SERIAL, JAMAIS le header RPi.</description>
+  <maintainer email="titi28011976@users.noreply.github.com">Titi28011976</maintainer>
+  <license>Apache 2.0</license>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
