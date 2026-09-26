@@ -1,0 +1,85 @@
+# ============================================================================
+# bamboo_base - TRACTION a la manette (robot BambooWS, lot 5 du chantier 1)
+# ============================================================================
+# NOM DU FICHIER : `joy_drive.yaml`, et c'est un ECART ASSUME avec le plan, qui
+# disait `joy_bamboo.yaml`. Ce nom est DEJA PRIS par un autre paquet --
+# `bamboo_control/config/joy_bamboo.yaml` (chantier 2, bambooSTM32YB) -- qui
+# configure la MEME manette pour un tout autre usage : modes du tracking et pas
+# relatifs des axes servo, AUCUN /cmd_vel. Deux fichiers homonymes dans deux
+# paquets s'installent sans conflit technique, mais un lecteur qui grep le nom en
+# trouve deux et corrige le mauvais. Ici : traction seule.
+# Le `joy.yaml` AMONT de linorobot2 n'est pas touche.
+#
+# ---------------------------------------------------------------------------
+# LES INDEX SONT << A RELEVER AU jstest >>, PAS REPRIS D'AILLEURS.
+# joy_linux lit l'API joystick du NOYAU ; le prototype lit SDL/pygame, et les
+# deux numerotations diffèrent (gachettes, croix, clic de stick). Le mode
+# d'appairage compte aussi : XInput (Home+X) et DirectInput (Home+Y) ne donnent
+# pas la meme table. C'est l'essai T9 de BambooWS, et il se fait AVANT de figer
+# ce fichier -- un index faux sur le deadman, et le robot part au premier
+# frolement de stick.
+# ============================================================================
+
+joy_linux_node:
+  ros__parameters:
+    dev: "/dev/input/js0"
+
+    # LE PARAMETRE QUI COMPTE, et son defaut est un piege : autorepeat_rate vaut
+    # 0 par defaut, donc joy_linux ne publie QUE sur changement d'etat. Stick
+    # tenu immobile = plus aucun /joy = plus aucun /cmd_vel = le watchdog 0,5 s
+    # du driver ET le fail-safe 500 ms du firmware freinent, alors que
+    # l'operateur pousse toujours. A 25 Hz la consigne est nourrie en continu.
+    autorepeat_rate: 25.0
+    # Zone morte materielle : les sticks de cette manette ne reviennent pas
+    # exactement a 0. Sans elle le robot rampe tout seul, deadman tenu.
+    deadzone: 0.12
+    # Regroupe en UN message les evenements noyau de la meme fenetre : evite une
+    # rafale de /joy quand les deux axes du stick bougent ensemble.
+    coalesce_interval: 0.02
+
+teleop_twist_joy:
+  ros__parameters:
+
+    # --- arcade un seul stick : LY avance, LX tourne -----------------------
+    # << A RELEVER a T9 >> convention joy_linux / xpad.
+    axis_linear:
+      x: 1                 # stick GAUCHE Y
+    axis_angular:
+      yaw: 0               # stick GAUCHE X
+    # SIGNE : aucune inversion ici, et ce n'est pas un oubli. L'evdev du noyau
+    # donne ABS_X positif vers la DROITE, mais joy_linux normalise en DIVISANT PAR
+    # -max : l'axe publie est donc positif vers la GAUCHE, ce qui est deja le sens
+    # ROS (+ = anti-horaire). Une echelle positive suffit. Si T9 montre le robot
+    # tournant a l'oppose du stick, la correction est une echelle NEGATIVE
+    # (`scale_angular.yaw: -0.8`) : teleop_twist_joy n'a pas de parametre de signe.
+    # `inverted_reverse` n'en est pas un : il ne fait qu'inverser le lacet EN
+    # MARCHE ARRIERE (comportement type voiture). On le laisse a false -> le stick
+    # garde le meme sens en avant et en arriere.
+    inverted_reverse: false
+
+    # --- vitesses : lentes par defaut, l'echelle vient de l'essai ----------
+    # Volontairement BASSES pour le premier essai au sol : 0,25 m/s est une
+    # marche lente, rattrapable a la main. Le turbo est un APPUI TENU, jamais un
+    # etat memorise -- relacher revient a l'echelle lente.
+    scale_linear:
+      x: 0.25
+    scale_angular:
+      yaw: 0.8
+    scale_linear_turbo:
+      x: 0.5
+    scale_angular_turbo:
+      yaw: 1.5
+
+    # --- homme-mort : LE parametre de securite de ce fichier ---------------
+    # require_enable_button: true => AUCUN /cmd_vel sans le bouton tenu. Le
+    # laisser a false ferait rouler le robot sur un simple frolement de stick,
+    # y compris manette posee sur la table.
+    require_enable_button: true
+    enable_button: 4         # LB  -> homme-mort, A TENIR
+    enable_turbo_button: 5   # RB  -> turbo, en plus du deadman
+
+    # A SAVOIR pour lire la Verification 5 : quand le deadman est relache,
+    # teleop_twist_joy publie un Twist NUL -- il ne se contente pas de cesser de
+    # publier. L'arret au relachement ne depend donc PAS du watchdog ; celui-ci
+    # couvre l'autre panne, la perte de la manette, ou plus rien n'arrive du tout.
+    # (Aucun parametre a poser pour cela : c'est le comportement du noeud.)

@@ -270,6 +270,42 @@ services:
       export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
       ros2 launch bamboo_base driver.launch.py"
 
+#--- Traction a la MANETTE du robot BambooWS (lot 5.6) : driver + joy_linux + teleop_twist_joy
+#    dans UN SEUL conteneur -- le reseau compose est en bridge et la memoire partagee DDS est
+#    coupee, donc on ne met pas la decouverte inter-conteneur entre un homme-mort et des
+#    moteurs. EXCLUSIF avec driver.real, driver.stm32 et bringup.real : un seul proprietaire du
+#    port serie.
+#    HORS DU PROFIL `boot`, et ce n'est pas un oubli (cf. le commentaire de driver.real et le
+#    lot 6.3) : un robot qui demarre seul avec un chemin d'actuation ouvert n'est acceptable
+#    qu'apres validation du deadman -- Verification 5, robot au sol, main sur la manette.
+#    A CE JOUR L'ESSAI EST IMPOSSIBLE : l'attache moteur N20 de M1 est cassee sur BambooWS.
+#    Le service est donc ecrit et lancable en LECTURE SEULE (enable_cmd_vel:=false, defaut),
+#    ce qui suffit a verifier le mapping des index au jstest sans qu'une roue bouge.
+  drive.real:
+    extends: base
+    # Pas de restart: unless-stopped -- volontaire. Un pilotage manuel n'a pas a revenir tout
+    # seul apres un arret : personne ne tient la manette au moment ou il redemarrerait.
+    volumes:
+      - /dev:/dev
+      # Memes montages que driver.real : le codec d'hote (Esp32ComSerial) vit dans le depot
+      # firmware et resout ses sys.path par __file__, l'arbre doit etre present.
+      - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:rw
+    # `robot:=` est ECRIT EN DUR, pas ${ROBOT} : ce service est la traction de BambooWS, et
+    # .env porte ROBOT=bamboo4WD_V4_YBStm32 (l'autre robot, dont les moteurs recoivent 12,6 V
+    # bruts). Suivre ${ROBOT} ici enverrait la manette sur le mauvais robot au premier `up`.
+    # ARMEMENT : BAMBOO_ARM n'est pas dans .env, donc le defaut false s'applique. Pour armer,
+    # `BAMBOO_ARM=true docker compose up drive.real` -- l'armement reste une action explicite
+    # et tracee, jamais un etat par defaut du fichier.
+    command: >
+      bash -lc "cd /root/linorobot2_ws &&
+      colcon build --packages-select bamboo_interfaces bamboo_base --symlink-install &&
+      source install/setup.bash &&
+      (python3 -c 'import serial' 2>/dev/null || (apt-get update && apt-get install -y python3-serial)) &&
+      export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
+      ros2 launch bamboo_base drive.launch.py
+      robot:=bamboo4WD_V4_WSEsp32 joy_dev:=${BAMBOO_JOY:-/dev/input/js0}
+      enable_cmd_vel:=${BAMBOO_ARM:-false}"
+
 #==== 3 - Groupes du robot bambooSTM32YB (tracking camera)
 #
 #     LIMITE CONNUE de la bascule ROBOT= : compose ne sait pas conditionner un service a la

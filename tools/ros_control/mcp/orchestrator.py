@@ -72,7 +72,9 @@ COMPOSE = "sudo -n docker compose"
 # `teleop_twist_keyboard` (docker-compose.yaml:193-198), un programme qui LIT STDIN : demarre
 # en detache par `docker compose start`, il tourne sans clavier et ne publie jamais rien --
 # un outil qui le "demarrerait" mentirait. L'equivalent DURABLE d'un teleop est le service
-# manette (`drive.real`, lot 5.6 du chantier 1, pas encore ecrit) et c'est lui qui entrera.
+# manette (`drive.real`, lot 5.6 du chantier 1) est ECRIT depuis le 2026-09-26, et il est
+# donc ENTRE -- c'est la promesse tenue. Il demarre en LECTURE SEULE (enable_cmd_vel=false
+# par defaut, BAMBOO_ARM absent de .env) : le demarrer ne peut pas faire tourner une roue.
 SERVICES = {
     "rosbridge": "pont rosbridge_suite :9090 (client MCP ros2-analysis)",
     "foxglovebridge": "pont foxglove_bridge :8765 (client Foxglove Studio)",
@@ -83,6 +85,10 @@ SERVICES = {
                     "PAS notre pont MAVLink : EXCLUSIF avec driver.real et driver.stm32 "
                     "(un seul proprietaire du port serie)",
     "driver.real": "driver ESP32 (pont MAVLink) LECTURE SEULE (enable_cmd_vel=false)",
+    "drive.real": "traction MANETTE de BambooWS : driver ESP32 + joy_linux + teleop_twist_joy "
+                  "dans UN conteneur -- LECTURE SEULE (enable_cmd_vel=false ; armer demande "
+                  "BAMBOO_ARM=true, hors de portee de cet outil). EXCLUSIF avec driver.real, "
+                  "driver.stm32 et bringup.real (un seul proprietaire du port serie)",
     "driver.stm32": "driver STM32 Yahboom v3 (pont MAVLink sysid 1) LECTURE SEULE (enable_cmd_vel=false)",
     "bamboo_video": "groupe video : acquisition + mux + streaming externe :8080 (autonome)",
     "bamboo_videotracking": "groupe tracking : Tracking/FaceRecog/FaceTrain/ServoCam, s'enregistre sur bamboo_video",
