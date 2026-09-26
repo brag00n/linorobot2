@@ -268,7 +268,14 @@ private:
     if (msg->seq != 0 && msg->seq == last_mode_seq_) {return;}
     last_mode_seq_ = msg->seq;
 
-    if (msg->target == "predict_mode") {
+    // DEUX NOMS POUR CHAQUE CIBLE, et ce n'est pas de la complaisance : le CONTRAT est
+    // `bamboo_interfaces/msg/ModeCmd.msg`, qui documente `predict` et `tracker` -- ce que
+    // `overlay_node` (:204,:206) consomme deja pour ses pastilles. Ce noeud, lui, n'ecoutait
+    // historiquement que `predict_mode` / `track_mode`. Une commande CONFORME au contrat
+    // allumait donc la pastille du HUD sans rien changer au comportement du suivi -- defaut
+    // silencieux, et le pire des deux mondes. On accepte les deux, les noms du contrat
+    // d'abord ; les anciens restent valides pour ne casser aucun script existant.
+    if (msg->target == "predict" || msg->target == "predict_mode") {
       if (msg->value != "off" && msg->value != "anticip" && msg->value != "coast") {
         RCLCPP_WARN(get_logger(), "predict_mode inconnu : '%s'", msg->value.c_str());
         return;
@@ -278,7 +285,7 @@ private:
       RCLCPP_INFO(get_logger(), "predict_mode -> %s", predict_mode_.c_str());
       return;
     }
-    if (msg->target == "detector" || msg->target == "track_mode") {
+    if (msg->target == "detector" || msg->target == "tracker" || msg->target == "track_mode") {
       DetectConfig cfg = det_.config();
       if (msg->target == "detector") {cfg.detector = msg->value;} else {
         cfg.track_mode = msg->value;
