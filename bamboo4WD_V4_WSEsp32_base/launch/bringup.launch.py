@@ -30,7 +30,8 @@ DEFAUTS
   enable_driver       true   carte en LECTURE SEULE (cf. enable_cmd_vel)
   enable_description  true   URDF + TF, sans effet materiel
   enable_video        FALSE  voir ci-dessus : les services compose s'en chargent
-  enable_control      FALSE  le paquet bamboo_control arrive au lot V5
+  enable_control      FALSE  bamboo_control existe (lot V5) mais son mapping vise la
+                             CAMERA MOTORISEE, que ce robot n'a pas (aucun servo PWM)
   enable_cmd_vel      FALSE  et ici ce n'est pas une precaution de principe : M1 est
                              CASSE. Aucune actuation avant remontage.
 """
@@ -92,7 +93,9 @@ def generate_launch_description():
                         "compose camera.real / camera.mjpg / camera.h264."),
         DeclareLaunchArgument(
             "enable_control", default_value="false",
-            description="Groupe manette. Le paquet bamboo_control arrive au lot V5."),
+            description="Groupe manette. bamboo_control existe, mais son mapping vise "
+                        "les axes servo de la camera motorisee : cette carte n'a "
+                        "aucun servo PWM, donc les nudges seraient refuses."),
         DeclareLaunchArgument(
             "enable_cmd_vel", default_value="false",
             description="Actuation MOTEUR. Reste false : l'attache moteur de M1 est "

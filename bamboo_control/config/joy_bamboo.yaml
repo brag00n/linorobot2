@@ -1,0 +1,107 @@
+# ============================================================================
+# bamboo_control - manette (faits d'HOTE, pas de robot)
+# ============================================================================
+# Ce fichier ne porte AUCUN fait physique du robot : les bornes des axes de
+# servo, les noms d'axes et leur carte d'execution vivent dans le canonique
+# bamboo_base/config/robots/<robot>.yaml, et ce noeud ne les connait pas -- il
+# envoie des PAS RELATIFS sur des axes NOMMES et laisse l'executeur borner.
+#
+# ---------------------------------------------------------------------------
+# AVERTISSEMENT QUI COUTE UNE HEURE SI ON LE SAUTE : LES INDEX CI-DESSOUS SONT
+# << A RELEVER AU jstest >>, ILS NE SONT PAS REPRIS DU PROTOTYPE.
+#
+# Le prototype (tools/robot_controlv3/nodes/GamepadNode.py:36-55) porte bien des
+# index MESURES sur cette manette, mais il lit la manette par PYGAME/SDL, la ou
+# joy_linux_node lit l'API joystick du NOYAU. Les deux numerotations DIFFERENT,
+# et pas d'un decalage constant :
+#
+#   role            SDL / pygame (prototype)   joy_linux / xpad (attendu ici)
+#   LX / LY         axes 0 / 1                 axes 0 / 1
+#   gachettes LT/RT axes 4 / 5                 axes 2 / 5
+#   RX / RY         axes 2 / 3                 axes 3 / 4
+#   croix (D-pad)   get_hat(0), un HAT         axes 6 / 7, DEUX AXES
+#   clic stick D    bouton 9                   bouton 10 (le bouton Guide
+#                                              occupe l'index 8)
+#
+# Les valeurs ecrites ici sont donc la convention xpad ATTENDUE, marquee comme
+# non verifiee : un relevé `jstest /dev/input/js0` (ou `ros2 topic echo /joy`)
+# doit les confirmer AVANT de figer ce fichier, et le mode d'appairage change le
+# resultat -- XInput (Home+X) et DirectInput (Home+Y) ne donnent pas la meme
+# table. C'est l'essai T9 de bambooSTM32YB.
+# ============================================================================
+
+joy_linux_node:
+  ros__parameters:
+    dev: "/dev/input/js0"
+
+    # LE PARAMETRE QUI COMPTE, et son defaut est un piege : autorepeat_rate vaut
+    # 0 par defaut, donc joy_linux ne publie QUE sur changement d'etat. Stick
+    # tenu immobile = plus aucun /joy = plus aucun pas relatif emis. A 25 Hz on
+    # obtient un mouvement continu tant que le stick est pousse, et c'est aussi
+    # ce qui permettra au futur chemin de traction de nourrir son watchdog.
+    autorepeat_rate: 25.0
+    # Zone morte materielle de cette manette. Les sticks de la Under Control
+    # 2919 ne reviennent pas exactement a 0 : sans zone morte la camera derive
+    # toute seule, ce qui est exactement le defaut qu'on ne veut pas sur un
+    # servo a butee.
+    deadzone: 0.12
+    # Regroupe les evenements du noyau arrivant dans la meme fenetre en UN
+    # message : evite une rafale de /joy quand deux axes bougent ensemble.
+    coalesce_interval: 0.02
+
+bamboo_teleop:
+  ros__parameters:
+
+    # --- index des commandes (cf. AVERTISSEMENT en tete) -----------------
+    # << A RELEVER >> convention joy_linux / xpad.
+    axis_pan: 3            # stick DROIT X   (- gauche / + droite)
+    axis_tilt: 4           # stick DROIT Y   (- haut   / + bas)
+    axis_dpad_x: 6         # croix horizontale (joy_linux la donne en AXE)
+    axis_dpad_y: 7         # croix verticale, +1 = haut, -1 = bas
+    button_tracking: 2     # X -> bascule le suivi          (touche F du prototype)
+    button_recognition: 3  # Y -> bascule la reconnaissance (touche R)
+    button_acquisition: 0  # A -> bascule l'acquisition     (touche A)
+    button_tracker: 4      # LB -> cycle de tracker         (none/mil/vit)
+    button_predict: 5      # RB -> cycle de prediction      (off/anticip/coast)
+    button_recenter: 10    # clic stick DROIT -> recentrage des axes
+
+    # --- axes de servo pilotes a la manette ------------------------------
+    # NOMS, jamais de numero de voie : c'est le contrat ServoCmd/Nudge. Changer
+    # de carte d'execution ne touche pas ce fichier.
+    pan_axis_name: "pan"
+    tilt_axis_name: "tilt"
+    # Le tilt d'une nacelle est presque toujours a inverser par rapport au stick
+    # (pousser en haut doit lever la camera, et l'axe Y du noyau est + vers le
+    # bas). Mis en parametre plutot qu'en dur : le signe depend du montage
+    # mecanique, qui est un fait d'hote.
+    invert_tilt: true
+    invert_pan: false
+
+    # --- loi de deplacement relatif --------------------------------------
+    # Vitesse angulaire A FOND DE STICK. Volontairement LENTE : la camera porte
+    # un capteur et le SG90 n'a aucun retour de position, donc un mouvement lent
+    # est le seul moyen d'arreter un depart en butee A L'OEIL. A relever a T6.
+    nudge_max_deg_s: 45.0
+    # Cadence d'envoi des pas. On NE PEUT PAS appeler /servo/nudge a 25 Hz :
+    # c'est un SERVICE (requete/reponse), pas un topic, donc chaque appel cree un
+    # future et une rafale non consommee les empile. On accumule donc les pas et
+    # on n'envoie qu'a cette cadence, ET jamais tant qu'un appel est en vol.
+    nudge_rate_hz: 10.0
+    # En dessous de ce pas accumule on n'envoie rien : evite un appel de service
+    # pour 0.02 deg, que le servo ne saurait de toute facon pas rendre (sa
+    # resolution utile est de l'ordre du degre).
+    nudge_min_deg: 0.3
+    # Coupe-circuit du chemin servo, sans toucher aux modes : utile pour essayer
+    # les boutons de mode sans qu'un frolement de stick bouge la camera.
+    nudge_enabled: true
+
+    # --- modes -----------------------------------------------------------
+    # Le service de nudge est cherche a cette adresse ; les modes partent sur ce
+    # topic, en LATCHE (transient_local) pour qu'un noeud demarre apres l'appui
+    # recoive quand meme le dernier etat demande.
+    nudge_service: "/servo/nudge"
+    mode_topic: "/videotracking/mode_cmd"
+    # Duree minimale entre deux prises en compte du MEME bouton : la croix vue
+    # comme un axe n'a pas de front franc et un appui bref peut produire
+    # plusieurs echantillons a 25 Hz.
+    debounce_s: 0.25

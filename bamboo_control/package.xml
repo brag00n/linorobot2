@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>bamboo_control</name>
+  <version>0.0.0</version>
+  <description>Groupe manette du robot bamboo4WD_V4 : traduit /joy en commandes de MODE du groupe videotracking et en deplacements RELATIFS des axes de servo. Ne commande AUCUN moteur de traction -- c'est un choix de perimetre, pas un oubli (voir teleop_node.py).</description>
+  <maintainer email="titi28011976@users.noreply.github.com">Titi28011976</maintainer>
+  <license>Apache 2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>bamboo_interfaces</exec_depend>
+  <!-- joy_linux et non joy : le paquet apt installe dans l'image est
+       ros-humble-joy-linux (couche Dockerfile de la manette, verifiee 3/3 au
+       lot V1.0). Les deux exposent /joy avec le MEME type mais des index
+       d'axes differents -- ne pas substituer l'un a l'autre sans relever. -->
+  <exec_depend>joy_linux</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

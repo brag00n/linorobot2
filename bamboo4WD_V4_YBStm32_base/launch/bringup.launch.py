@@ -30,9 +30,10 @@ DEFAUTS, ET POURQUOI ILS SONT PRUDENTS
                              servos. Tant que T6/T7 de bambooSTM32YB ne sont pas passes,
                              une camera qui part en butee au demarrage est un risque reel
                              (SG90 bloque a ~700 mA, pignons plastique). A armer a la main.
-  enable_control      FALSE  le paquet bamboo_control n'existe pas encore (lot V5). Mis a
-                             true avant sa creation, le launch echoue en nommant le paquet
-                             -- ce qui est le bon comportement, pas un bug a contourner.
+  enable_control      FALSE  le paquet bamboo_control EXISTE depuis le lot V5. Il reste a
+                             false pour la meme raison que le tracking : le stick droit
+                             bouge les servos (service /servo/nudge). A armer apres T6/T7,
+                             et les index d'axes sont a relever a T9 avant de s'y fier.
   enable_cmd_vel      false  les MOTEURS restent muets : le pack 12,6 V arrive brut sur des
                              moteurs 7,4 V nominaux (constantes PWM non mises a l'echelle).
                              LES SERVOS OUI, LES MOTEURS NON, jusqu'a T2/T3/T5.
@@ -56,9 +57,9 @@ def _include(package, launch_file, arguments, flag):
     """Inclusion conditionnelle d'un launch de groupe.
 
     Le chemin est une SUBSTITUTION, donc resolu seulement si la condition est vraie : un
-    groupe desactive dont le paquet n'est pas installe (bamboo_control avant le lot V5) ne
-    fait donc rien echouer. C'est ce qui permet de declarer des maintenant la place du
-    groupe manette sans attendre son paquet.
+    groupe desactive dont le paquet n'est pas installe ne fait donc rien echouer -- ce qui a
+    permis de declarer la place du groupe manette avant que son paquet n'existe, et ce qui
+    protege encore le bringup WSEsp32, dont tous les groupes ne sont pas construits.
     """
     return IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -113,8 +114,12 @@ def generate_launch_description():
                         "(voir l'en-tete) : il commande les servos. A armer apres T6/T7."),
         DeclareLaunchArgument(
             "enable_control", default_value="false",
-            description="Groupe manette. Le paquet bamboo_control arrive au lot V5 ; "
-                        "true avant cela fait echouer le launch en le nommant."),
+            description="Groupe manette (bamboo_control). FALSE par defaut pour la meme "
+                        "raison que le tracking : le stick droit commande les servos."),
+        DeclareLaunchArgument(
+            "joy_dev", default_value="/dev/input/js0",
+            description="Peripherique manette, fait de MACHINE : le numero depend de "
+                        "l'ordre d'appairage. Sans effet si enable_control est false."),
         DeclareLaunchArgument(
             "enable_cmd_vel", default_value="false",
             description="Actuation MOTEUR. Reste false jusqu'a T2/T3/T5 de bambooSTM32YB. "
@@ -159,6 +164,7 @@ def generate_launch_description():
 
         # --- groupe manette (lot V5) ---------------------------------------------------
         _include("bamboo_control", "control.launch.py",
-                 {"robot": robot},
+                 {"robot": robot,
+                  "joy_dev": LaunchConfiguration("joy_dev")},
                  "enable_control"),
     ])

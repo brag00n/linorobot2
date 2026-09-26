@@ -324,6 +324,25 @@ services:
       source install/setup.bash &&
       ros2 launch bamboo_videotracking videotracking.launch.py robot:=${ROBOT}"
 
+#--- Groupe MANETTE (paquet bamboo_control, lot V5) : joy_linux_node + bamboo_teleop.
+#    NE COMMANDE AUCUN MOTEUR DE TRACTION -- c'est un choix de perimetre, pas un oubli : il
+#    produit des commandes de MODE pour le groupe tracking et des pas relatifs sur les axes
+#    servo NOMMES (service /servo/nudge). Il n'a donc AUCUN besoin du port serie et peut
+#    tourner sans driver : les nudges sont alors refuses proprement.
+#    HORS du profil `boot`, meme motif que bamboo_videotracking : le stick droit bouge les
+#    servos, et rien ne doit bouger tout seul au demarrage avant T6/T7 de bambooSTM32YB.
+#    /dev est deja monte par `base` (privileged) -> la manette /dev/input/js0 est visible.
+#    BAMBOO_JOY permet de suivre l'ordre d'appairage sans editer ce fichier (a relever a T9).
+#      docker compose up -d bamboo_control
+  bamboo_control:
+    extends: base
+    command: >
+      bash -lc "cd /root/linorobot2_ws &&
+      colcon build --packages-select bamboo_interfaces bamboo_base bamboo_control --symlink-install &&
+      source install/setup.bash &&
+      ros2 launch bamboo_control control.launch.py
+      robot:=${ROBOT} joy_dev:=${BAMBOO_JOY:-/dev/input/js0}"
+
 #--- Controleur STM32 (Yahboom ROS Control Board V3.0, pont MAVLink sysid 1) : proprietaire
 #    UNIQUE du CH340. LECTURE SEULE par defaut (enable_cmd_vel:=false) : le pack 12,6 V arrive
 #    brut sur des moteurs 7,4 V. Les SERVOS, eux, passent par /servo/cmd et sont bornes cote
@@ -367,13 +386,14 @@ services:
     command: >
       bash -lc "cd /root/linorobot2_ws &&
       colcon build --packages-select bamboo_interfaces bamboo_base bamboo_controler_YBStm32v3
-      bamboo_video bamboo_videotracking bamboo4WD_V4_YBStm32_base --symlink-install &&
+      bamboo_video bamboo_videotracking bamboo_control bamboo4WD_V4_YBStm32_base --symlink-install &&
       source install/setup.bash &&
       (python3 -c 'import serial' 2>/dev/null || (apt-get update && apt-get install -y python3-serial)) &&
       export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
       ros2 launch bamboo4WD_V4_YBStm32_base bringup.launch.py
       robot:=${ROBOT} video_device:=${BAMBOO_CAM:-/dev/video0}
-      enable_tracking:=${ENABLE_TRACKING:-false} enable_cmd_vel:=false"
+      enable_tracking:=${ENABLE_TRACKING:-false} enable_control:=${ENABLE_CONTROL:-false}
+      joy_dev:=${BAMBOO_JOY:-/dev/input/js0} enable_cmd_vel:=false"
 
 #--- flash du microcode ESP32 : outil, JAMAIS demarre par `up` (profil `tools`).
 #    Tourne dans l'image ROS deja presente -> aucune image supplementaire a construire, et
