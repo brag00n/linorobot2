@@ -160,7 +160,8 @@ def generate_launch_description():
     # Les chemins de modeles et de visages sont des faits d'HOTE (bind-mounts du depot
     # firmware et volume nomme), pas de la physique du robot -> arguments de launch, pas
     # fichier canonique. Voir docker-compose.yaml.
-    models = ("/root/linorobot2_hardware/firmware/usbcam_bamboo/Bambou4WD_python/src/"
+    models = ("/root/linorobot2_ws/src/linorobot2_hardware/firmware/usbcam_bamboo/"
+              "Bambou4WD_python/src/"
               "resources/Other/face_detection_model")
     return LaunchDescription([
         DeclareLaunchArgument(

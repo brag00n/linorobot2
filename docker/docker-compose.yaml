@@ -5,6 +5,11 @@ networks:
 volumes:
   # cache d'esptool pour le service flash.esp32 (voir son commentaire)
   esptool_cache:
+  # Galerie SFace + jeu d'apprentissage du groupe tracking. VOLUME NOMME et pas un chemin du
+  # depot : data/faces/ n'est PAS versionne (visages de personnes reelles), et un bind-mount
+  # sur l'arbre de travail le ferait apparaitre dans `git status` a chaque acquisition. A jeter
+  # par `docker volume rm bamboov4_humble_bamboo_faces`.
+  bamboo_faces:
 
 services:   
   base:
@@ -264,6 +269,83 @@ services:
       (python3 -c 'import serial' 2>/dev/null || (apt-get update && apt-get install -y python3-serial)) &&
       export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
       ros2 launch bamboo_base driver.launch.py"
+
+#==== 3 - Groupes du robot bambooSTM32YB (tracking camera)
+#
+#     LIMITE CONNUE de la bascule ROBOT= : compose ne sait pas conditionner un service a la
+#     valeur d'une variable (`profiles:` est ADDITIF, pas restrictif). ROBOT est donc propage
+#     en `robot:=` aux launch -- ce qui choisit le fichier canonique, la geometrie, les PID et
+#     la table servo_axes -- mais c'est l'OPERATEUR qui demarre le service de controleur de SON
+#     robot (`driver.stm32` ici, `driver.real` pour BambooWS). Les deux ne se disputent rien :
+#     CH340 1a86:7523 d'un cote, CP2102 de l'autre.
+
+#--- Groupe VIDEO : acquisition + mux + streaming externe. AUTONOME par construction -- il
+#    sert le flux BRUT tant qu'aucun client d'overlay ne s'est enregistre (exigence explicite,
+#    validee a T10 de bambooSTM32YB). Aucun `depends_on` ni vers ni depuis le tracking.
+#    EXCLUSIF avec camera.mjpg, camera.real et camera.h264 : un seul format UVC a la fois sur
+#    /dev/video0, et le port 8080 est le meme que celui de camera.mjpg.
+  bamboo_video:
+    extends: base
+    profiles: ["boot"]
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - /dev:/dev
+    # BAMBOO_CAM n'est PAS /dev/bamboocam par defaut, et c'est une mesure : la regle udev
+    # 99-bambooSTM32YB.rules n'est pas encore posee sur ce RPi (constate a T10, le symlink
+    # etait absent). Poser la regle puis mettre BAMBOO_CAM=/dev/bamboocam dans .env.
+    command: >
+      bash -lc "cd /root/linorobot2_ws &&
+      colcon build --packages-select bamboo_interfaces bamboo_video --symlink-install &&
+      source install/setup.bash &&
+      ros2 launch bamboo_video video.launch.py
+      robot:=${ROBOT} stream_mode:=mjpg video_device:=${BAMBOO_CAM:-/dev/video0}"
+
+#--- Groupe TRACKING : Tracking / FaceRecog / FaceTrain / ServoCam dans UN process composee
+#    (component_container_mt + intra-process). Il s'ENREGISTRE sur bamboo_video
+#    (/video/register_overlay) pour recuperer le flux et le rendre enrichi.
+#    HORS du profil `boot` DELIBEREMENT, jusqu'a T7 de bambooSTM32YB valide : ce groupe est le
+#    seul a commander les servos, et un robot qui bouge la tete tout seul au demarrage n'est
+#    pas acceptable avant d'avoir mesure les butees.
+#      docker compose up -d bamboo_videotracking
+  bamboo_videotracking:
+    extends: base
+    volumes:
+      - /dev:/dev
+      # Les .onnx vivent dans l'AUTRE depot. Monte en LECTURE SEULE : ce groupe lit des
+      # modeles, il n'ecrit jamais dans le depot firmware. MEME POINT DE MONTAGE que
+      # driver.real, a ne pas diverger -- deux chemins pour un meme depot est un piege.
+      - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:ro
+      - bamboo_faces:/root/data/faces
+    command: >
+      bash -lc "cd /root/linorobot2_ws &&
+      colcon build --packages-select bamboo_interfaces bamboo_videotracking --symlink-install &&
+      source install/setup.bash &&
+      ros2 launch bamboo_videotracking videotracking.launch.py robot:=${ROBOT}"
+
+#--- Controleur STM32 (Yahboom ROS Control Board V3.0, pont MAVLink sysid 1) : proprietaire
+#    UNIQUE du CH340. LECTURE SEULE par defaut (enable_cmd_vel:=false) : le pack 12,6 V arrive
+#    brut sur des moteurs 7,4 V. Les SERVOS, eux, passent par /servo/cmd et sont bornes cote
+#    hote -- c'est ce service qui les execute pour les axes que servo_axes lui attribue.
+#    ARRETER robot_controlv3 et le MCP robot-action AVANT de le demarrer : un seul
+#    proprietaire du port serie.
+  driver.stm32:
+    extends: base
+    profiles: ["boot"]
+    restart: unless-stopped
+    volumes:
+      - /dev:/dev
+      # rw et non ro, contrairement au tracking : le codec de robot_control/ resout ses hacks
+      # de sys.path par __file__, l'arbre firmware doit etre present et inscriptible.
+      - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:rw
+    command: >
+      bash -lc "cd /root/linorobot2_ws &&
+      colcon build --packages-select bamboo_interfaces bamboo_base bamboo_controler_YBStm32v3 --symlink-install &&
+      source install/setup.bash &&
+      (python3 -c 'import serial' 2>/dev/null || (apt-get update && apt-get install -y python3-serial)) &&
+      export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
+      ros2 launch bamboo_controler_YBStm32v3 driver.launch.py robot:=${ROBOT} enable_cmd_vel:=false"
 
 #--- flash du microcode ESP32 : outil, JAMAIS demarre par `up` (profil `tools`).
 #    Tourne dans l'image ROS deja presente -> aucune image supplementaire a construire, et
