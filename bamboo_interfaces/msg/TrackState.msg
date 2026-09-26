@@ -37,3 +37,22 @@ int32   bbox_h
 string  pred_phase    # off / anticip / coast
 float32 pred_nx       # cible anticipee, meme normalisation que nx/ny
 float32 pred_ny
+
+# --- ajouts du lot V3, requis par des CONSOMMATEURS et non par le suivi lui-meme -----
+# lock_id est le NUMERO D'EPISODE de verrou : il n'incremente qu'a une prise de verrou.
+# C'est lui, et rien d'autre, qui dit a facerecog_node "c'est peut-etre une autre
+# personne, vide ta moyenne glissante". Le deduire de `locked` cote consommateur serait
+# faux : deux episodes separes par une seule trame perdue sont indiscernables autrement,
+# et l'EMA de l'ancien visage contaminerait le nouveau.
+uint32  lock_id
+# Age du verrou courant, en secondes. Porte ici parce que la reconnaissance n'est armee
+# qu'au-dela d'un seuil (2 s dans le prototype) : le recalculer cote consommateur
+# demanderait de memoriser l'instant de prise, donc de dupliquer un etat qui existe deja.
+float32 lock_age_s
+# Cause du DERNIER deverrouillage (update_ko / degenerate / implausible / score /
+# det_miss / hold_timeout / switch), vide si jamais perdu. Alimente `unlock_reason` de
+# TrackingStats : sans elle, une perte de cible se voit mais ne s'explique pas.
+string  lost_reason
+# Nombre de visages detectes dans la trame, verrou ou pas. Distingue "personne devant la
+# camera" de "plusieurs personnes et le verrou hesite", deux pannes qui se ressemblent.
+int32   n_faces

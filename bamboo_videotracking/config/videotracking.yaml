@@ -1,0 +1,96 @@
+# Reglages du groupe bamboo_videotracking (faits de GROUPE, pas de robot).
+#
+# Format ROS natif (`<noeud>: ros__parameters:`) pour rester utilisable tel quel par
+# `ros2 param load` et reproductible par `ros2 param dump`.
+#
+# CE QUI N'ENTRE PAS ICI, et c'est le contrat :
+#  - les BORNES DE COURSE des servos (pan 8-172, tilt 20-70) : elles vivent dans
+#    `bamboo_base/config/robots/<robot>.yaml`, table `servo_axes`, seule source unique, et
+#    le launch les injecte par-dessus ce fichier. Les redeclarer ici les dupliquerait --
+#    c'est exactement ce qui a produit les 4 valeurs de diametre de roue contradictoires du
+#    chantier 1.
+#  - les chemins d'HOTE (`models_dir`, `faces_dir`, topic d'entree) : arguments de launch.
+#
+# Toutes ces valeurs viennent du prototype `robot_controlv3` : ce sont des reglages EPROUVES,
+# pas des amorcages. Les changer demande de refaire le banc V6.3 pour comparer a egalite.
+
+tracking_node:
+  ros__parameters:
+    # YuNet a 320 px : le compromis retenu pour tenir >= 10 fps sur RPi4 (cible V6).
+    detector: "yunet"
+    det_width: 320
+    det_conf: 0.6
+    # MIL et non ViT : OpenCV 4.5.4 (Humble/Jammy) n'a PAS cv::TrackerVit (arrive en 4.7).
+    # Le mode "vit" reste declare et repond "indisponible" au lieu de mentir.
+    track_mode: "mil"
+    iou_reanchor: 0.3
+    score_min: 0.25
+    hold_ms: 600.0
+    max_det_misses: 8
+    # Prediction de Kalman : "anticip" avance la cible du horizon, "coast" la prolonge
+    # pendant une occlusion, "off" desactive. dt borne [1e-3, 0.2] dans le noeud.
+    predict_mode: "anticip"
+    predict_horizon_s: 0.15
+    coast_max_s: 0.6
+
+facerecog_node:
+  ros__parameters:
+    # Hysteresis a DEUX seuils : on verrouille une identite a 0.363 et on ne la lache qu'a
+    # 0.30. Un seuil unique fait clignoter le nom d'un visage de profil.
+    cos_on: 0.363
+    cos_off: 0.30
+    ema_alpha: 0.4
+    # Ne reconnait qu'une cible STABLE depuis 2 s : avant, le cadre bouge encore et
+    # alignCrop travaille sur un visage flou -> faux "unknown" a repetition.
+    stable_s: 2.0
+    acquire_period_s: 0.4
+    acquire_max_per_episode: 40
+
+overlay_node:
+  ros__parameters:
+    enriched_topic: "/videotracking/enriched/compressed"
+    jpeg_quality: 80
+    # 0.0 = pas de limitation : l'etage suit la cadence de detection. Le monter (ex. 0.1)
+    # bride le RE-ENCODAGE, seul etage qui coute du CPU pur sur RPi4.
+    min_period_s: 0.0
+    stats_period_s: 1.0
+    draw_stats: true
+    # Enregistrement aupres de bamboo_video : ce groupe est CLIENT, jamais l'inverse. Sans
+    # cet appel le mux sert le flux brut -- donc le streaming marche sans nous.
+    register_with_mux: true
+    mux_service: "/video/register_overlay"
+    overlay_timeout_s: 2.0
+
+servocam_node:
+  ros__parameters:
+    # Gains de la loi de commande. Les BORNES viennent du fichier canonique (cf. en-tete).
+    pan_gain: 18.0
+    pan_invert: false
+    tilt_gain: 10.0
+    tilt_invert: false
+    # Zone morte + hysteresis : sans elles la camera pompe autour du centre. L'erreur est
+    # diminuee de la zone morte avant application, sinon le mouvement saute au franchissement.
+    deadzone: 0.08
+    deadzone_hyst: 0.05
+    max_step_deg: 6.0
+    max_vel_deg_s: 120.0
+    max_accel_deg_s2: 400.0
+    smooth: true
+    aspect: 1.3333333
+    rate_hz: 30.0
+    # Cible perdue depuis 0.5 s -> on arrete de commander (on ne recentre PAS d'office :
+    # un retour au repos non demande ferait perdre une cible qui revient dans le champ).
+    idle_timeout_s: 0.5
+
+face_train_node:
+  ros__parameters:
+    # Memes constantes que le prototype : split 50/50 apprentissage/validation, un lot est
+    # accepte si 60 % de ses images se reconnaissent, et un petit lot dont 80 % des images
+    # sont du dechet est rejete en bloc.
+    cos_thr: 0.363
+    min_imgs: 10
+    recog_min_ok: 0.6
+    garbage_frac: 0.8
+    # Fin de batch -> ModeCmd{target: "training", value: "done"} pour que facerecog_node
+    # recharge sa galerie. Sans ce signal, une personne fraichement enrolee reste "unknown".
+    mode_topic: "/videotracking/mode_cmd"

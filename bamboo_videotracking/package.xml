@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>bamboo_videotracking</name>
+  <version>0.1.0</version>
+  <description>
+    Groupe de suivi de visage de bambooSTM32YB (bamboo4WD_V4_YBStm32) : chemin chaud
+    en rclcpp composable (decodage, detection YuNet, suivi MIL, prediction de Kalman,
+    reconnaissance SFace, incrustation) et apprentissage en rclpy hors temps reel.
+
+    CLIENT de bamboo_video, jamais l'inverse : il s'abonne au flux brut, s'enregistre
+    par /video/register_overlay et rend le flux enrichi. Arrete, il ne fait que
+    degrader le flux servi, il ne le coupe pas.
+
+    NE DEPEND D'AUCUN MODULE DE CONTROLEUR : servocam_node publie /servo/cmd en
+    adressant les axes PAR LEUR NOM (pan, tilt) et ignore quelle carte les execute.
+  </description>
+  <maintainer email="noreply@example.com">bamboo4WD</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>bamboo_interfaces</depend>
+  <!-- OpenCV est pris par find_package(OpenCV) : libopencv-dev, couche apt du lot V1.
+       PAS de cv_bridge : ce paquet ne manipule que du CompressedImage, donc
+       cv::imdecode / cv::imencode suffisent et la conversion sensor_msgs/Image
+       n'a aucun appelant ici. -->
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
