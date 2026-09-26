@@ -19,14 +19,27 @@ find_package(rclcpp_components REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(bamboo_interfaces REQUIRED)
-# OpenCV 4.5.4 sur Humble/Jammy -- version MESUREE dans le conteneur, pas supposee.
+# OpenCV >= 4.10, compile depuis les sources dans /usr/local par docker/Dockerfile, A COTE
+# du 4.5.4 d'apt. Ce n'est pas un confort : le 4.5.4 de Jammy ne sait PAS lire
+# face_detection_yunet_2023mar.onnx (mesure, six tailles d'entree essayees) et n'a pas
+# cv::TrackerVit. Ce paquet ne dependant pas de cv_bridge, il peut se lier a 4.10 seul --
+# bamboo_video, lui, reste sur 4.5.4 seul. Ne JAMAIS melanger les deux dans un processus.
 # Les composants demandes explicitement pour que l'absence d'un module echoue ICI, a
 # la configuration, et non au link avec un symbole manquant :
-#   video     -> cv::TrackerMIL (4.5.4 le porte en natif, PAS le cv::legacy du contrib)
-#               et cv::KalmanFilter
+#   video     -> cv::TrackerMIL / cv::TrackerVit et cv::KalmanFilter
 #   objdetect -> cv::FaceDetectorYN, cv::FaceRecognizerSF
 #   imgcodecs -> imdecode / imencode (MJPG entrant, JPEG annote sortant)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs video objdetect)
+# Trace OBLIGATOIRE : deux OpenCV coexistent dans l'image, et un find_package qui retombe
+# silencieusement sur /usr/lib/aarch64-linux-gnu/cmake/opencv4 rendrait le build "reussi"
+# mais YuNet 2023mar toujours illisible a l'execution. La ligne le prouve.
+message(STATUS "bamboo_videotracking : OpenCV ${OpenCV_VERSION} depuis ${OpenCV_DIR}")
+if(OpenCV_VERSION VERSION_LESS "4.8")
+  message(FATAL_ERROR
+    "OpenCV ${OpenCV_VERSION} trouve dans ${OpenCV_DIR} : trop ancien pour "
+    "face_detection_yunet_2023mar.onnx (>= 4.8 requis). La couche source du Dockerfile "
+    "n'a pas ete construite, ou CMake a prefere l'OpenCV d'apt.")
+endif()
 
 # --- bibliotheque de portage partagee par les composables ---------------------
 # La detection, la machine a etats de verrou et le predicteur sont COMMUNS a

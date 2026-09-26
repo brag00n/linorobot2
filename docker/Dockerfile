@@ -157,11 +157,18 @@ RUN apt-get update && apt-get install -y python3-serial
 #
 # ATTENTION, A VERIFIER DANS LE CONTENEUR AVANT D'ECRIRE LE C++ :
 #     pkg-config --modversion opencv4
-# Humble/Jammy livre OpenCV 4.5.4. cv::FaceDetectorYN, cv::FaceRecognizerSF et
-# cv::TrackerMIL y sont, mais cv::TrackerVit n'est apparu qu'en 4.7. Si 4.5.4 est confirme :
-# le suivi se limite a MIL (le prototype sait deja retomber) et le mode vit reste DECLARE
-# mais repond "indisponible" -- recompiler OpenCV sur un RPi4 coute des heures pour un gain
-# non demontre. Pas de pip : l'image n'en a pas et on n'en ajoute pas.
+# Cette couche apt RESTE, et elle n'est pas redondante avec l'OpenCV 4.10 compile juste
+# apres : elle fournit cv_bridge, image_transport et le cv2 de python3-opencv, tous
+# compiles CONTRE 4.5.4 -- c'est ce dont bamboo_video / web_video_server a besoin. Ne pas
+# la supprimer en croyant simplifier.
+#
+# DEUX MANQUES DE 4.5.4, MESURES DANS LE CONTENEUR (et non deduits) :
+#   1. face_detection_yunet_2023mar.onnx est ILLISIBLE -- teste a 320x240, 320x176,
+#      320x256, 320x224, 640x480 et 320x320 : les six echouent. Ce n'est donc pas une
+#      contrainte de dimension mais un millesime de modele : 4.5.4 attend le graphe 2022mar
+#      (erreurs -215 eltwise_layer / -204 "Layer with requested id not found").
+#   2. cv::TrackerVit n'existe qu'a partir de 4.7.
+# D'ou la couche suivante. Pas de pip : l'image n'en a pas et on n'en ajoute pas.
 RUN apt-get update && apt-get install -y \
     libopencv-dev \
     python3-opencv \
@@ -179,6 +186,41 @@ RUN apt-get update && apt-get install -y \
     ros-$ROS_DISTRO-joy-linux \
     ros-$ROS_DISTRO-teleop-twist-joy \
     joystick
+
+# --- OpenCV 4.10 compile depuis les sources, A COTE de l'OpenCV d'apt ------------------
+# Installe dans /usr/local, il ne REMPLACE pas le 4.5.4 d'apt (/usr/lib/aarch64-linux-gnu) :
+# les SONAME sont versionnes (libopencv_core.so.405 vs .so.410), donc les deux cohabitent sur
+# le disque sans risque. Ce qui est interdit, c'est de melanger les deux dans UN SEUL
+# processus -- d'ou le partage : bamboo_videotracking (aucune dependance a cv_bridge, cf. son
+# package.xml) se lie a 4.10 seul, bamboo_video (web_video_server + cv_bridge) reste sur
+# 4.5.4 seul.
+#
+# BUILD_opencv_python3=OFF est DELIBERE : le volet Python n'utilise que FaceRecognizerSF,
+# imread et resize, tous presents en 4.5.4. Construire les bindings masquerait le cv2 d'apt
+# pour tous les noeuds rclpy de l'image, pour zero gain, et couterait un tiers du temps de
+# compilation. calib3d/features2d/flann sont des dependances INTERNES de video/objdetect,
+# pas un choix.
+#
+# COUT ASSUME : plusieurs heures de compilation sur RPi4. C'est le prix du point 1 ci-dessus.
+RUN apt-get update && apt-get install -y \
+    build-essential cmake git pkg-config \
+    libjpeg-dev libpng-dev libtiff-dev \
+ && cd /tmp \
+ && git clone --depth 1 --branch 4.10.0 https://github.com/opencv/opencv.git opencv-src \
+ && cmake -S opencv-src -B opencv-build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/usr/local \
+      -DBUILD_LIST=core,imgproc,imgcodecs,dnn,video,objdetect,calib3d,features2d,flann \
+      -DBUILD_opencv_python3=OFF \
+      -DBUILD_opencv_apps=OFF \
+      -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF \
+      -DWITH_GTK=OFF -DWITH_QT=OFF -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF \
+      -DWITH_IPP=OFF -DWITH_TBB=OFF -DWITH_OPENEXR=OFF \
+      -DOPENCV_GENERATE_PKGCONFIG=ON \
+ && cmake --build opencv-build -j4 \
+ && cmake --install opencv-build \
+ && ldconfig \
+ && rm -rf /tmp/opencv-src /tmp/opencv-build
 
 ENTRYPOINT ["/entrypoint.sh"]
 
