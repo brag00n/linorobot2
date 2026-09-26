@@ -222,6 +222,17 @@ class Stm32MavlinkDriver(Node):
         # qu'il demarre produit un mouvement que personne n'a demande. A passer true une fois
         # les butees validees (T6 de bambooSTM32YB).
         self._declare_host("servo_center_on_start", False)
+        # SERVICE /servo/nudge : NE PAS le servir par defaut, et c'est la correction d'un
+        # defaut reel. `servocam_node` cree le MEME nom pleinement qualifie en absolu
+        # (servocam_node.cpp) tandis qu'on le creait ici en relatif dans un launch SANS
+        # namespace : les deux tournent, et lequel repond n'est PAS defini par ROS. Les deux
+        # bougeraient le servo, et servocam_node garderait en plus son propre etat de rampe,
+        # donc sa rampe et la position reelle divergeraient sans que rien ne le dise.
+        # A passer true UNIQUEMENT quand le groupe tracking ne tourne pas (driver seul, essai
+        # de course a la main, MCP). Commutable a chaud : c'est l'inverse du redemarrage.
+        # /servo/cmd (consigne ABSOLUE) reste servi dans tous les cas -- rien n'est perdu,
+        # seule la forme relative est desarmee.
+        self._declare_host("enable_nudge_service", False)
 
         # --- fiabilite QoS des capteurs ---
         # `sensor_data` est BEST-EFFORT, donc INVISIBLE a travers rosbridge (qui souscrit en
@@ -322,7 +333,8 @@ class Stm32MavlinkDriver(Node):
         # repond UNSUPPORTED) ne doit rien creer ici -- une capacite absente doit etre ABSENTE
         # de l'interface, pas decouverte a l'execution.
         self.sub_servo = self.create_subscription(ServoCmd, "servo/cmd", self._on_servo_cmd, 10)
-        self.srv_nudge = self.create_service(Nudge, "servo/nudge", self._on_nudge)
+        self.srv_nudge = None
+        self._apply_nudge_service(bool(g("enable_nudge_service")))
         # Persistance flash : ACTE VOLONTAIRE, jamais un effet de bord d'un `ros2 param set`.
         self.srv_save = self.create_service(Trigger, "save_board_config", self._on_save)
 
@@ -708,9 +720,32 @@ class Stm32MavlinkDriver(Node):
             self._push_board_config(geom=touch_geom, pid=touch_pid, save=False)
         # L'armement EN DERNIER : si une autre valeur du meme lot avait ete refusee, on n'aura
         # pas arme un robot sur une configuration a moitie appliquee.
+        if "enable_nudge_service" in new:
+            self._apply_nudge_service(bool(new["enable_nudge_service"]))
         if "enable_cmd_vel" in new:
             self._apply_actuation(bool(new["enable_cmd_vel"]))
         return SetParametersResult(successful=True)
+
+    # --- service de nudge ---------------------------------------------------
+    def _apply_nudge_service(self, enable):
+        """Cree ou detruit le service servo/nudge. Idempotent.
+
+        Le detruire, et pas seulement l'ignorer, est le POINT : un client teste
+        `service_is_ready()` (c'est ce que fait bamboo_teleop avant chaque envoi). Un service
+        present qui refuserait poliment laisserait le client croire qu'il commande quelque
+        chose, et la collision de nom avec servocam_node resterait entiere.
+        """
+        if enable and self.srv_nudge is None:
+            self.srv_nudge = self.create_service(Nudge, "servo/nudge", self._on_nudge)
+            self.get_logger().warn(
+                "servo/nudge SERVI PAR LE DRIVER : a ne faire que sans le groupe tracking "
+                "-- servocam_node cree le meme nom et lequel repondrait ne serait pas defini.")
+        elif not enable and self.srv_nudge is not None:
+            self.destroy_service(self.srv_nudge)
+            self.srv_nudge = None
+            self.get_logger().info(
+                "servo/nudge non servi par le driver (defaut) : le groupe tracking en est "
+                "proprietaire. /servo/cmd, consigne absolue, reste disponible.")
 
     # --- actuation moteur ---------------------------------------------------
     def _apply_actuation(self, enable):

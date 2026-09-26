@@ -283,8 +283,11 @@ class TeleopNode(Node):
         if not self._nudgeCli.service_is_ready():
             self._warnOnce(
                 "nudge_absent",
-                "aucun serveur sur %s : ni servocam_node ni le driver ne tourne -- les "
-                "pas de stick sont accumules, pas perdus." % self._nudgeCli.srv_name)
+                "aucun serveur sur %s : le groupe tracking ne tourne pas (servocam_node en "
+                "est proprietaire), et le driver ne sert ce service que si "
+                "enable_nudge_service est arme -- il est FALSE par defaut, un seul serveur "
+                "etant admis. Les pas de stick sont accumules, pas perdus."
+                % self._nudgeCli.srv_name)
             return
 
         req = Nudge.Request()

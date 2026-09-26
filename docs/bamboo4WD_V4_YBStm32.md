@@ -147,7 +147,7 @@ La commande des servomoteurs **ne vient pas « de la carte STM32 »**. Elle circ
 | Élément | Rôle |
 |---|---|
 | `/servo/cmd` (`ServoCmd`) | consigne **absolue** d'un axe **nommé** |
-| `/servo/nudge` (`Nudge`) | incrément relatif |
+| `/servo/nudge` (`Nudge`) | incrément relatif — **un seul serveur à la fois**, cf. l'encadré |
 | `/servo/state` (`ServoCmd`) | position rendue — **ombre d'hôte**, cf. l'avertissement |
 | `servo_axes` (canonique) | `nom d'axe → (contrôleur, voie, bornes, repos)` — **seul** endroit qui lie un axe à une carte |
 
@@ -310,8 +310,18 @@ lot V5) ; `enable_cmd_vel` **false** (§6.4). `enable_control:=true` avant l'exi
 
 Publiés : `odom/unfiltered`, `imu/data`, `mag`, `battery`, `wheel_rpm`, `stm32_status`, `joint_states`,
 `req_states`, `servo/state`.
-Souscrits / services : `servo/cmd`, `servo/nudge`, `save_board_config` (cette carte **a** la persistance
-flash), et `cmd_vel` **uniquement** si `enable_cmd_vel` est armé.
+Souscrits / services : `servo/cmd`, `save_board_config` (cette carte **a** la persistance
+flash), `cmd_vel` **uniquement** si `enable_cmd_vel` est armé, et `servo/nudge` **uniquement** si
+`enable_nudge_service` est armé.
+
+> ⚠️ **`/servo/nudge` ne doit avoir qu'UN serveur, et c'est un défaut corrigé, pas une précaution
+> théorique.** `servocam_node` le crée en **absolu** et le driver le créait en **relatif** dans un launch
+> **sans namespace** : même nom pleinement qualifié, donc **ROS ne définit pas lequel répond**. Les deux
+> auraient bougé le servo, et `servocam_node` aurait en plus gardé son propre état de rampe — sa rampe et
+> la position réelle divergeant en silence. Le driver ne sert donc **plus** ce service par défaut
+> (`enable_nudge_service: false`) ; il se commute **à chaud**, à n'armer que lorsque le groupe tracking ne
+> tourne pas. La consigne **absolue** `/servo/cmd` reste servie dans tous les cas : seule la forme
+> relative est désarmée.
 
 > ⚠️ **QoS et rosbridge** : `imu/data` et `mag` publient en `sensor_data` (best-effort), donc sont
 > **illisibles par rosbridge**, qui est `reliable`. Un `echo` vide n'y est pas la preuve d'une absence de
