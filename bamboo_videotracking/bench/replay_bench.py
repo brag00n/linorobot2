@@ -6,9 +6,14 @@ scene (nombre de visages, contraste, flou de bouge) et de l'eclairage. Comparer 
 Python, ou detecteur A contre B, sur deux scenes differentes ne mesure rien. Ici la
 SEQUENCE EST FIXE : ce sont les memes octets a chaque passe, injectes a la meme cadence.
 
-Deux modes, et le second n'injecte rien :
-  --images DIR    rejoue un dossier de JPEG en boucle sur le topic d'entree du groupe.
-                  C'est le mode de comparaison : sequence figee, versionnable.
+Trois modes, et un seul des trois mesure :
+  --record DIR    CAPTURE la sequence, ne mesure rien. A faire UNE FOIS, avant toute
+                  comparaison : sans lui il n'y a pas de sequence figee et le banc n'a rien a
+                  rejouer. La sequence vient de la VRAIE camera (memes optique, meme
+                  quantification JPEG, meme eclairage) parce qu'un lot de JPEG venus
+                  d'ailleurs ferait mesurer le decodage d'images etrangeres au robot.
+  --images DIR    rejoue ce dossier en boucle sur le topic d'entree du groupe. C'est le mode
+                  de COMPARAISON : memes octets a chaque passe.
   --observe-only  n'injecte rien et ne fait que mesurer ce qui passe -- pour une vraie
                   camera ou un `ros2 bag play` lance a cote. Honnete mais NON reproductible :
                   a n'utiliser que pour constater, jamais pour comparer deux variantes.
@@ -26,9 +31,16 @@ colonnes est un bug de comptage du groupe, et c'est une information utile.
 VERSIONNE DANS LE PAQUET, deliberement : les scripts de banc du chantier 1 vivaient dans
 /tmp du conteneur et ont ete perdus avec lui.
 
-Exemple (dans le conteneur, groupe deja lance) :
+Exemples (dans le conteneur) :
+  # une seule fois, groupe VIDEO seul, un visage devant la camera :
+  ros2 run bamboo_videotracking replay_bench.py --record /root/data/bench/seq01 --count 120
+  # puis, a chaque variante a comparer, groupe TRACKING lance :
   ros2 run bamboo_videotracking replay_bench.py --images /root/data/bench/seq01 \
       --rate 30 --duration 30 --label cpp-mil-320 --json /root/data/bench/cpp.json
+
+La sequence n'est PAS versionnee (des JPEG dans git, et le depot grossit a chaque essai) :
+elle vit dans le volume nomme, comme la galerie de visages. Ce qui est versionne, c'est le
+MOYEN de la refaire -- ce fichier.
 """
 import argparse
 import glob
@@ -67,6 +79,59 @@ class _Counter:
         if self.n < 2 or self.first is None or self.last <= self.first:
             return 0.0
         return (self.n - 1) / (self.last - self.first)
+
+
+class SequenceRecorder(Node):
+    """Capture une sequence figee depuis le topic d'entree. NE MESURE RIEN.
+
+    Ecrit les JPEG TELS QU'ILS ARRIVENT, sans re-encoder : re-encoder changerait la taille des
+    donnees, donc le cout de decodage, c'est-a-dire precisement l'etage qu'on veut mesurer
+    ensuite. Corollaire : le groupe video doit publier en `jpeg` -- un autre format est REFUSE
+    plutot que renomme en .jpg, sinon la sequence serait illisible au rejeu et on chercherait
+    la panne dans le banc.
+
+    A lancer avec le groupe VIDEO seul, sans le tracking : capturer pendant que le tracking
+    tourne fait payer la capture a la chaine qu'on cherche a mesurer, et la sequence porterait
+    alors la trace de sa propre mesure.
+    """
+
+    def __init__(self, args):
+        super().__init__("bench_recorder")
+        self.args = args
+        self.n = 0
+        os.makedirs(args.record, exist_ok=True)
+        existing = glob.glob(os.path.join(args.record, "*.jpg"))
+        if existing:
+            # On REFUSE d'ecraser : une sequence deja capturee est la reference de toutes les
+            # passes deja mesurees. La reecrire en silence invaliderait les comparaisons
+            # anciennes sans que rien ne le signale.
+            raise SystemExit(
+                "%s contient deja %d .jpg : choisir un autre dossier, ou le vider "
+                "explicitement si cette sequence ne sert plus de reference."
+                % (args.record, len(existing)))
+        qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+        self.sub = self.create_subscription(
+            CompressedImage, args.input_topic, self._onFrame, qos)
+        self.get_logger().info(
+            "capture : %d trames depuis %s vers %s"
+            % (args.count, args.input_topic, args.record))
+
+    def _onFrame(self, msg):
+        if self.n >= self.args.count:
+            return
+        fmt = (msg.format or "").lower()
+        if "jpeg" not in fmt and "jpg" not in fmt:
+            raise SystemExit(
+                "format `%s` sur %s : ce banc rejoue du JPEG. Le groupe video tourne-t-il en "
+                "`stream_mode:=mjpg` ? (en h264 le flux ne passe pas par ROS du tout)"
+                % (msg.format, self.args.input_topic))
+        with open(os.path.join(self.args.record, "%04d.jpg" % self.n), "wb") as fh:
+            fh.write(bytes(msg.data))
+        self.n += 1
+
+    @property
+    def done(self):
+        return self.n >= self.args.count
 
 
 class ReplayBench(Node):
@@ -244,6 +309,12 @@ def main(argv=None):
     src.add_argument("--images", help="dossier de JPEG rejoue en boucle (mode comparable)")
     src.add_argument("--observe-only", action="store_true",
                      help="ne rien injecter, mesurer ce qui passe (NON reproductible)")
+    src.add_argument("--record", metavar="DIR",
+                     help="CAPTURER la sequence dans ce dossier et sortir : ne mesure rien")
+    p.add_argument("--count", type=int, default=120,
+                   help="nombre de trames a capturer avec --record (defaut 120, soit 4 s a "
+                        "30 fps -- assez pour un mouvement de tete complet, assez court pour "
+                        "que la sequence tienne en memoire au rejeu)")
     p.add_argument("--rate", type=float, default=30.0,
                    help="cadence d'injection en fps (defaut 30, celle du passthrough MJPG)")
     p.add_argument("--duration", type=float, default=30.0,
@@ -263,6 +334,30 @@ def main(argv=None):
     args = p.parse_args(argv)
 
     rclpy.init()
+
+    if args.record:
+        # Chemin COURT et separe : l'enregistrement ne partage ni compteur ni rodage avec la
+        # mesure. Les melanger dans une seule classe donnerait un objet dont la moitie des
+        # champs est morte selon le mode.
+        rec = SequenceRecorder(args)
+        try:
+            # Borne de temps EN PLUS du compte : si le topic ne publie pas, on sort en le
+            # disant au lieu d'attendre indefiniment un flux qui n'existe pas.
+            deadline = time.monotonic() + max(10.0, 3.0 * args.count / 30.0)
+            while rclpy.ok() and not rec.done and time.monotonic() < deadline:
+                rclpy.spin_once(rec, timeout_sec=0.1)
+            if not rec.done:
+                print("!! %d trames capturees sur %d : %s publie-t-il ? (verifier "
+                      "`ros2 topic hz %s`)"
+                      % (rec.n, args.count, args.input_topic, args.input_topic))
+                return 1
+            print("sequence capturee : %d trames dans %s"
+                  % (rec.n, os.path.abspath(args.record)))
+        finally:
+            rec.destroy_node()
+            rclpy.shutdown()
+        return 0
+
     node = ReplayBench(args)
     try:
         # Rodage : on fait tourner la chaine, PUIS on remet les compteurs a zero. Sans cela
