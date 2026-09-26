@@ -283,6 +283,13 @@ services:
 #    ce qui suffit a verifier le mapping des index au jstest sans qu'une roue bouge.
   drive.real:
     extends: base
+    # Profil DEDIE, et ce n'est pas de la decoration : sans cle `profiles:` un service tombe
+    # dans le profil `default`, donc un `docker compose up -d` NU l'aurait demarre -- et il
+    # aurait saisi le port serie et publie /cmd_vel sans que personne l'ait nomme (c'est le
+    # piege deja constate le 2026-09-22, cf. le commentaire du profil `boot` plus haut).
+    # Nommer un service active implicitement son profil : `compose up -d drive.real` marche
+    # toujours, et l'outil MCP `start` aussi, qui nomme le service.
+    profiles: ["drive"]
     # Pas de restart: unless-stopped -- volontaire. Un pilotage manuel n'a pas a revenir tout
     # seul apres un arret : personne ne tient la manette au moment ou il redemarrerait.
     volumes:
