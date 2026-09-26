@@ -71,6 +71,7 @@ PROPRIETAIRE UNIQUE DU SERIE : ce noeud, l'application robot_controlv3 et le ser
 `robot-action` sont MUTUELLEMENT EXCLUSIFS sur /dev/stm32. Arreter l'un avant de lancer l'autre.
 """
 import math
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -249,6 +250,14 @@ class Stm32MavlinkDriver(Node):
         # un acte rare et delibere, et la preuve que la carte a pris la valeur vaut cette
         # pause. La carte repond d'ordinaire en ~50 ms.
         self._declare_host("board_readback_timeout_s", 1.0)
+        # Delai d'attente de l'OUVERTURE du port, et non d'une reponse. RobotComSerial
+        # ouvre le port DANS SON THREAD LECTEUR : sans cette attente, la diffusion de
+        # configuration ci-dessous court contre cette ouverture et est refusee sur
+        # "port indisponible" -- defaut observe au premier lancement reel du 2026-09-26,
+        # ou la carte est restee sur la configuration PERSISTEE EN FLASH par une session
+        # precedente pendant que board_config_ok disait false. Genereux a dessein : un
+        # auto-scan sonde chaque candidat ~0,8 s.
+        self._declare_host("board_connect_timeout_s", 5.0)
 
         g = lambda n: self.get_parameter(n).value
         self.port = g("port")
@@ -291,6 +300,7 @@ class Stm32MavlinkDriver(Node):
         self.imu_qos_name = str(g("imu_qos"))
         self.board_log_level = int(g("board_log_level"))
         self.readback_timeout = float(g("board_readback_timeout_s"))
+        self.connect_timeout = float(g("board_connect_timeout_s"))
         # Derniere relecture reussie de la SRAM de la carte, publiee dans Stm32Status.
         self.board_cfg = None
 
@@ -348,7 +358,14 @@ class Stm32MavlinkDriver(Node):
         # decrit plus ce que le fichier canonique dit aujourd'hui. Le fichier canonique fait
         # foi -> on le repousse a chaque connexion, puis on relit pour le prouver.
         # save=False : ce push ne touche PAS la flash.
+        self._wait_link_open()
         self._push_board_config(geom=True, pid=True)
+        # Un echec n'est PAS definitif : la carte peut n'avoir pas encore emis son premier
+        # HEARTBEAT. On reessaie donc jusqu'a preuve de prise, puis le timer se supprime --
+        # une carte configuree ne doit pas payer un sondage perpetuel.
+        self.cfg_retry_timer = None
+        if self.board_cfg is None:
+            self.cfg_retry_timer = self.create_timer(2.0, self._retry_board_config)
 
         # Journal draine a 2 Hz : ces lignes sont rares et la file hote est bornee (200),
         # inutile de payer ce parcours 30 fois par seconde.
@@ -462,6 +479,40 @@ class Stm32MavlinkDriver(Node):
                                              save=save, motor_id=i + 1):
                     self.get_logger().error(f"ecriture du PID moteur M{i + 1} refusee")
         self._readback_board_config()
+
+    def _wait_link_open(self):
+        """Attend que le port soit REELLEMENT ouvert, au plus `board_connect_timeout_s`.
+
+        `RobotComSerial.connected` est vrai des que le handle existe ; l'ouverture a lieu dans
+        le thread lecteur (resolution du port, puis sondage des candidats). Attendre ici est la
+        seule facon de ne pas ecrire dans un port qui n'existe pas encore. Un depassement n'est
+        PAS fatal : le driver publie ce qu'il recoit et la diffusion sera reessayee.
+        """
+        fin = time.time() + max(0.0, self.connect_timeout)
+        while not self.link.connected and time.time() < fin:
+            time.sleep(0.05)
+        if not self.link.connected:
+            self.get_logger().warn(
+                f"port {self.port} non ouvert apres {self.connect_timeout:.1f} s : la "
+                "configuration sera reessayee. Un autre programme tient-il le port "
+                "(robot_controlv3, MCP robot-action) ?")
+            return False
+        return True
+
+    def _retry_board_config(self):
+        """Reessaie la diffusion tant que la SRAM n'est pas prouvee conforme au canonique."""
+        if self.board_cfg is not None:
+            self.cfg_retry_timer.cancel()
+            self.cfg_retry_timer = None
+            return
+        if not self.link.connected:
+            return
+        self._push_board_config(geom=True, pid=True)
+        if self.board_cfg is not None:
+            self.get_logger().info(
+                "configuration carte diffusee et relue apres reessai (board_config_ok=true).")
+            self.cfg_retry_timer.cancel()
+            self.cfg_retry_timer = None
 
     def _readback_board_config(self):
         """Relit geometrie et PID DANS la carte : seule preuve que l'ecriture a porte.
