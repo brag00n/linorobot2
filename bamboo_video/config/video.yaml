@@ -1,0 +1,30 @@
+# Reglages du groupe bamboo_video (faits de GROUPE et faits d'HOTE du format retenu).
+#
+# Format ROS natif (`<noeud>: ros__parameters:`) pour rester utilisable tel quel par
+# `ros2 param load` et reproductible par `ros2 param dump`.
+#
+# CE QUI N'ENTRE PAS ICI, et c'est le contrat :
+#  - la RESOLUTION du capteur (`camera_width`, `camera_height`) : faits PHYSIQUES, donc
+#    `bamboo_base/config/robots/<robot>.yaml`, seule source unique. Le launch les lit la et
+#    les injecte dans le pipeline gscam2. Les redeclarer ici les dupliquerait -- c'est
+#    exactement ce qui a produit les 4 valeurs de diametre de roue contradictoires du
+#    chantier 1.
+#  - le `/dev/videoN` et les ports TCP : faits d'HOTE variables, donc arguments de launch
+#    (le resolveur VID:PID 05a3:9331 peut les produire).
+#
+# Le groupe est AUTONOME par construction : aucune valeur ici ne mentionne
+# bamboo_videotracking. Le seul point de contact est le service /video/register_overlay,
+# et c'est le tracking qui l'appelle, jamais l'inverse.
+
+stream_mux_node:
+  ros__parameters:
+    # Entree : ce que gscam2 publie (remappe par le launch). Sortie : L'URL STABLE, la
+    # seule que le navigateur connaisse -- elle ne change pas selon que le tracking tourne.
+    raw_topic: "/video/raw/compressed"
+    out_topic: "/video/stream/compressed"
+    source_topic: "/video/stream_source"
+    # 2 s = trois periodes d'une chaine de tracking degradee a 10 fps. On DEGRADE (retour au
+    # brut) au lieu de couper, et on ne commute pas sur un simple hoquet de detection.
+    overlay_timeout_s: 2.0
+    # Periode de surveillance : disparition du publieur enrichi + expiration du delai.
+    check_period_s: 0.5

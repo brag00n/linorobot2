@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>bamboo_video</name>
+  <version>0.0.0</version>
+  <description>Groupe video du robot bamboo4WD_V4 : PROPRIETAIRE unique de la camera (acquisition MJPG sans decodage) et de la diffusion HTTP. Autonome par construction -- il sert le flux brut tant qu'aucun client enrichi ne s'est enregistre.</description>
+  <maintainer email="titi28011976@users.noreply.github.com">Titi28011976</maintainer>
+  <license>Apache 2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>bamboo_interfaces</exec_depend>
+  <!-- gscam2 est clone et construit par colcon dans l'image (couche Dockerfile du
+       chemin MJPG) : declare en exec_depend, jamais installe par rosdep. -->
+  <exec_depend>gscam2</exec_depend>
+  <exec_depend>web_video_server</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
