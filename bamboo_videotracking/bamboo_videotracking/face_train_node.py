@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """face_train_node -- serveur d'action ROS2 de l'apprentissage (enrolement SFace).
 
 Remplace le couple FaceTrainNode (thread worker) + topic `/recognition/train_state` du
@@ -36,8 +37,12 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from bamboo_interfaces.action import TrainFaces
 from bamboo_interfaces.msg import ModeCmd
 
-from .face_recognizer import FaceRecognizer
-from .face_trainer import FaceTrainer
+# Imports ABSOLUS et non relatifs : ce fichier est installe comme PROGRAMME executable
+# (install(PROGRAMS ...)) et lance directement par ros2 launch, donc sans paquet parent --
+# un import relatif y leve ImportError. Le paquet reste importable grace a
+# ament_python_install_package().
+from bamboo_videotracking.face_recognizer import FaceRecognizer
+from bamboo_videotracking.face_trainer import FaceTrainer
 
 
 class _Cancelled(Exception):

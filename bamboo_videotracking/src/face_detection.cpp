@@ -254,7 +254,7 @@ std::vector<cv::Rect> FaceDetection::detect(
     res10_.setInput(blob);
     const cv::Mat out = res10_.forward();
     // Sortie 1x1xNx7 : [_, _, confiance, x1, y1, x2, y2] en coordonnees NORMALISEES.
-    const cv::Mat det(out.size[2], out.size[3], CV_32F, const_cast<void *>(out.ptr<float>()));
+    const cv::Mat det(out.size[2], out.size[3], CV_32F, const_cast<float *>(out.ptr<float>()));
     for (int i = 0; i < det.rows; ++i) {
       const float conf = det.at<float>(i, 2);
       if (conf < static_cast<float>(cfg_.det_conf)) { continue; }

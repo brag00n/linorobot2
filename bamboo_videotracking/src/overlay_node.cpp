@@ -134,9 +134,16 @@ public:
         rec_ = m;
         recog_rate_.tick();
       });
+    // `transient_local` (latche) est INCOMPATIBLE avec l'intra-process : rclcpp refuse en
+    // construction "intraprocess communication allowed only with volatile durability". On
+    // desactive donc l'intra-process sur CETTE SEULE entite -- elle est hors chemin chaud (une
+    // commande de mode par appui de touche), alors que les IMAGES, elles, doivent rester en
+    // zero-copy : c'est tout l'interet du container.
+    rclcpp::SubscriptionOptions mode_opts;
+    mode_opts.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
     mode_sub_ = create_subscription<bamboo_interfaces::msg::ModeCmd>(
       "/videotracking/mode_cmd", rclcpp::QoS(1).reliable().transient_local(),
-      [this](bamboo_interfaces::msg::ModeCmd::ConstSharedPtr m) {onMode(m);});
+      [this](bamboo_interfaces::msg::ModeCmd::ConstSharedPtr m) {onMode(m);}, mode_opts);
 
     stats_timer_ = create_wall_timer(
       std::chrono::milliseconds(static_cast<int>(stats_period_s_ * 1000.0)),
