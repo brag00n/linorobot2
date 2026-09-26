@@ -222,11 +222,24 @@ L'image porte **4.5.4** (apt, `/usr/lib/aarch64-linux-gnu`) **et 4.10.0** compil
 tailles d'entrée sondées, les six échouent. Ce n'est pas une contrainte de dimension mais un
 **millésime de modèle** : 4.5.4 attend le graphe `2022mar`.
 
-Les SONAME sont versionnés (`.so.405` vs `.so.410`) → cohabitation sans risque **sur le disque**. Ce qui
-est interdit, c'est de **mélanger les deux dans un processus** :
+**Les SONAME ne peuvent pas se substituer l'un à l'autre, et c'est mesuré, pas supposé** : l'arbre apt
+livre `libopencv_core.so.4.5d` / `.so.4.5.4d` (suffixe `d` d'Ubuntu jammy) quand celui des sources livre
+`.so.410` / `.so.4.10.0`, et `readelf -d` montre que `libweb_video_server.so` et `libcv_bridge.so`
+réclament nommément **`.so.4.5d`**. Un binaire apt ne peut donc **pas** se retrouver lié à 4.10 par
+accident, même avec `/usr/local/lib` dans le cache `ldconfig` (18 entrées). Ce qui reste interdit, c'est
+de **mélanger les deux dans un même processus** :
 
 - `bamboo_videotracking` (aucune dépendance à `cv_bridge`) se lie à **4.10 seul** ;
 - `bamboo_video` (`web_video_server` + `cv_bridge`, compilé contre 4.5.4) reste sur **4.5.4 seul**.
+
+> ⚠️ **Depuis ce build, `/usr/local` GAGNE par défaut.** `pkg-config --modversion opencv4` répond
+> **4.10.0 sans aucun `PKG_CONFIG_PATH`** (mesuré) : `/usr/local/lib/pkgconfig` est dans le chemin par
+> défaut, et CMake cherche `/usr/local` avant `/usr`. Le défaut s'est donc **inversé** — un futur paquet
+> compilé qui devrait rester sur 4.5.4 doit désormais **épingler** son `OpenCV_DIR` explicitement, au
+> lieu de compter sur ce que `find_package` trouve. `bamboo_video` y échappe pour une raison qui n'est
+> pas de la chance : c'est un paquet `ament_python`, il ne compile **rien**, et son Python voit 4.5.4
+> (`/usr/lib/python3/dist-packages/cv2…so`). C'est aussi une raison de plus de garder `face_train_node.py`
+> **hors** du conteneur de composition : il importe `cv2` en 4.5.4 là où les composables C++ portent 4.10.
 
 `bamboo_videotracking/CMakeLists.txt` **trace** la version retenue et **échoue à la configuration** sous
 4.8 : avec deux arbres dans l'image, un repli silencieux donnerait un build « réussi » et un modèle
