@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>bamboo4WD_V4_YBStm32_base</name>
+  <version>0.0.0</version>
+  <!-- Paquet de BRINGUP du ROBOT bambooSTM32YB : il ne contient AUCUN noeud. Son seul role
+       est de composer, en un point d'entree unique, les controleurs et les groupes que ce
+       robot-ci embarque. Un robot est une MACHINE, un controleur une CARTE : c'est ici que
+       l'on declare quelles cartes et quels groupes forment cette machine, et nulle part
+       ailleurs. La verite PHYSIQUE, elle, reste dans bamboo_base/config/robots/. -->
+  <description>Bringup du robot bamboo4WD_V4_YBStm32 (bambooSTM32YB) : carte Yahboom
+    ROS Control Board V3.0 + groupes video et tracking camera.</description>
+  <maintainer email="titi28011976@users.noreply.github.com">Titi28011976</maintainer>
+  <license>Apache 2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <!-- Dependances d'EXECUTION seulement : ce paquet n'a rien a compiler. -->
+  <!-- La source unique de verite physique (config/robots/<robot>.yaml). -->
+  <exec_depend>bamboo_base</exec_depend>
+  <!-- Le controleur de CE robot. Les trois autres modules (WSEsp32, Teensy, DSGrovePiP)
+       ne sont PAS des dependances : ils appartiennent a d'autres machines. -->
+  <exec_depend>bamboo_controler_YBStm32v3</exec_depend>
+  <exec_depend>bamboo_video</exec_depend>
+  <exec_depend>bamboo_videotracking</exec_depend>
+  <!-- URDF + TF. Amont linorobot2, parametre par ROBOT_BASE (4wd). -->
+  <exec_depend>linorobot2_description</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

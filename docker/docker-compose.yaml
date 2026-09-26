@@ -347,6 +347,34 @@ services:
       export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
       ros2 launch bamboo_controler_YBStm32v3 driver.launch.py robot:=${ROBOT} enable_cmd_vel:=false"
 
+#--- Bringup COMPLET du robot en UN SEUL conteneur (paquet bamboo4WD_V4_YBStm32_base) :
+#    carte + URDF + video, et le tracking a la demande. C'est l'entree de BANC et de mise au
+#    point, l'equivalent conteneurise de `ros2 launch ... bringup.launch.py`.
+#    ⚠️ EXCLUSIF avec bamboo_video / bamboo_videotracking / driver.stm32 : demarrer les deux
+#    leverait DEUX FOIS les memes noeuds (deux proprietaires du CH340, deux gscam2 sur
+#    /dev/video0). HORS du profil `boot` : l'exploitation, c'est le decoupage en groupes, qui
+#    seul permet d'arreter le tracking sans couper le flux video.
+#      docker compose up -d bringup.stm32
+#      docker compose run --rm --service-ports bringup.stm32 <commande>   # variante jetable
+  bringup.stm32:
+    extends: base
+    ports:
+      - "8080:8080"
+    volumes:
+      - /dev:/dev
+      - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:rw
+      - bamboo_faces:/root/data/faces
+    command: >
+      bash -lc "cd /root/linorobot2_ws &&
+      colcon build --packages-select bamboo_interfaces bamboo_base bamboo_controler_YBStm32v3
+      bamboo_video bamboo_videotracking bamboo4WD_V4_YBStm32_base --symlink-install &&
+      source install/setup.bash &&
+      (python3 -c 'import serial' 2>/dev/null || (apt-get update && apt-get install -y python3-serial)) &&
+      export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
+      ros2 launch bamboo4WD_V4_YBStm32_base bringup.launch.py
+      robot:=${ROBOT} video_device:=${BAMBOO_CAM:-/dev/video0}
+      enable_tracking:=${ENABLE_TRACKING:-false} enable_cmd_vel:=false"
+
 #--- flash du microcode ESP32 : outil, JAMAIS demarre par `up` (profil `tools`).
 #    Tourne dans l'image ROS deja presente -> aucune image supplementaire a construire, et
 #    esptool s'installe dans la couche ephemere du conteneur, pas sur l'hote dietpi.
