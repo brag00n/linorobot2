@@ -389,6 +389,17 @@ latence bout en bout < 150 ms · flux annoté ≥ 10 fps. C'est le banc qui tran
 8. **Pièges GrovePi+, si elle rejoint ce robot** : **ne jamais l'enficher sur le header RPi** (RESET sur
    BCM8 → carte bloquée), **UART uniquement sur le port Grove SERIAL**, et son **baud capteurs diffère
    du baud de contrôle** — confusion déjà commise une fois.
-9. **Nommage des paquets** : colcon avertit à chaque build que les majuscules
+9. **Déplacer un fichier installé casse les conteneurs déjà construits, pas la source.** Mesuré à TC2
+   le 2026-09-28, en déplaçant le fichier canonique hors de `bamboo_base` : sous `--symlink-install`,
+   colcon avait laissé dans la couche du conteneur un `build/bamboo_base/config/robots/<robot>.yaml`
+   qui **pointait** sur le fichier déplacé. Le lien pend, l'installation refuse
+   « doesn't exist or not a regular file », et comme la `command:` est une chaîne
+   `colcon build && … && ros2 launch`, le conteneur **sort** — puis `restart: unless-stopped` en fait
+   une **boucle**. `setup.py` était pourtant correct (il globe `config/robots/*.yaml`) : colcon ne purge
+   pas les entrées disparues de son `build/`. Remède : **recréer** le conteneur
+   (`up -d --force-recreate <svc>`), qui repart d'une couche neuve — `restart` n'y suffit **pas**.
+   Vaut pour **tout** conteneur qui construisait `bamboo_base` avant le déplacement, donc aussi
+   `driver.real` de l'autre robot : il tourne encore, mais son prochain `restart` échouera ainsi.
+10. **Nommage des paquets** : colcon avertit à chaque build que les majuscules
    (`bamboo_controler_YBStm32v3`, `bamboo4WD_V4_*_base`, …) ne suivent pas ses conventions. Choix
    assumé, **conservé**.
