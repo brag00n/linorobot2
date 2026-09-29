@@ -26,6 +26,11 @@ maintenir, seulement deux manieres de les demarrer.
 
 DEFAUTS, ET POURQUOI ILS SONT PRUDENTS
 --------------------------------------
+Depuis E3, les cinq defauts ci-dessous ne sont plus ecrits en Python : ils viennent de
+config/layout.yaml, section `groups`, du meme paquet. Retirer ou ajouter un groupe est donc
+une modification de DONNEE, pas de code. La ligne de commande reste souveraine, et un
+fichier absent retombe sur exactement ces valeurs (launch/layout.py, table FALLBACK).
+
   enable_driver       true   la carte en LECTURE SEULE (cf. enable_cmd_vel)
   enable_description  true   URDF + TF, sans effet materiel
   enable_video        true   acquisition + diffusion, autonome
@@ -45,15 +50,25 @@ Exemples :
   ros2 launch bamboo4WD_V4_YBStm32_base bringup.launch.py
   ros2 launch bamboo4WD_V4_YBStm32_base bringup.launch.py enable_tracking:=true
   ros2 launch bamboo4WD_V4_YBStm32_base bringup.launch.py enable_video:=false   # carte seule
+  ros2 launch bamboo4WD_V4_YBStm32_base bringup.launch.py layout_file:=/tmp/essai.yaml
 """
+import os
+import sys
+
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction
+from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription, LogInfo,
+                            OpaqueFunction, SetLaunchConfiguration)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
 
 from bamboo_base.capability_check import checkServoAxes
+
+# layout.py est un module FRERE de ce fichier, pas un paquet Python installe : ros2launch
+# charge ce launch par son CHEMIN, et son dossier n'est donc pas sur sys.path.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from layout import layoutDefaults  # noqa: E402  (apres l'ajustement de sys.path)
 
 
 def _include(package, launch_file, arguments, flag):
@@ -72,6 +87,30 @@ def _include(package, launch_file, arguments, flag):
         launch_arguments=arguments.items(),
         condition=IfCondition(LaunchConfiguration(flag)),
     )
+
+
+def _resolveLayout(context, *args, **kwargs):
+    """Donne aux `enable_*` laisses vides le defaut ecrit dans config/layout.yaml.
+
+    POURQUOI UNE OpaqueFunction, et pas un `default_value`. Le chemin du layout depend de
+    l'argument `layout_file`, dont la valeur n'est connue qu'au lancement : lire le fichier
+    a la construction de la LaunchDescription reviendrait a lire un chemin pas encore
+    resolu. Les cinq arguments sont donc declares VIDES -- "" veut dire "prends le defaut du
+    fichier" -- et remplis ici, avant que le premier _include ne soit visite.
+
+    C'est bien l'ordre de la liste qui le garantit : launch visite les entites une par une,
+    et chaque `IfCondition` n'est evaluee qu'a son tour.
+
+    Une valeur donnee en ligne de commande n'est PAS vide, donc elle gagne : le fichier
+    fournit un defaut, jamais une contrainte.
+    """
+    path = LaunchConfiguration("layout_file").perform(context)
+    flags, notes = layoutDefaults(path)
+    actions = [LogInfo(msg="layout : " + line) for line in notes]
+    for flag, value in sorted(flags.items()):
+        if LaunchConfiguration(flag).perform(context) == "":
+            actions.append(SetLaunchConfiguration(flag, value))
+    return actions
 
 
 def _checkCapabilities(context, *args, **kwargs):
@@ -113,23 +152,31 @@ def generate_launch_description():
             description="Chemin COMPLET du fichier canonique, pousse a tous les groupes. "
                         "Surcharger pour essayer une configuration sans reconstruire."),
         DeclareLaunchArgument(
-            "enable_driver", default_value="true",
+            "layout_file",
+            # Meme raisonnement que robot_config : le defaut nomme CE paquet, parce que la
+            # composition d'un robot appartient au paquet de ce robot.
+            default_value=PathJoinSubstitution([
+                FindPackageShare("bamboo4WD_V4_YBStm32_base"), "config", "layout.yaml"]),
+            description="Composition de la machine (section groups). Surcharger pour "
+                        "essayer une autre composition sans reconstruire."),
+        DeclareLaunchArgument(
+            "enable_driver", default_value="",
             description="Driver de la carte Yahboom v3 (MAVLink sysid 1). Proprietaire "
                         "UNIQUE du CH340 : arreter robot_controlv3 et le MCP robot-action "
                         "avant."),
         DeclareLaunchArgument(
-            "enable_description", default_value="true",
+            "enable_description", default_value="",
             description="robot_state_publisher (URDF + TF). publish_joints=false : ce sont "
                         "les encodeurs, via le driver, qui publient les vrais joint_states."),
         DeclareLaunchArgument(
-            "enable_video", default_value="true",
+            "enable_video", default_value="",
             description="Groupe video : acquisition MJPG + mux + diffusion HTTP."),
         DeclareLaunchArgument(
-            "enable_tracking", default_value="false",
+            "enable_tracking", default_value="",
             description="Groupe tracking. FALSE par defaut, et c'est une regle de securite "
                         "(voir l'en-tete) : il commande les servos. A armer apres T6/T7."),
         DeclareLaunchArgument(
-            "enable_control", default_value="false",
+            "enable_control", default_value="",
             description="Groupe manette (bamboo_control). FALSE par defaut pour la meme "
                         "raison que le tracking : le stick droit commande les servos."),
         DeclareLaunchArgument(
@@ -146,7 +193,10 @@ def generate_launch_description():
                         "99-bambooSTM32YB.rules est posee sur la machine ; /dev/video0 en "
                         "repli, qui est l'etat constate du RPi a T10."),
 
-        # --- controle de coherence AVANT tout noeud --------------------------------------
+        # --- composition, puis coherence, AVANT tout noeud --------------------------------
+        # L'ordre compte : _resolveLayout remplit les enable_* vides, et les _include qui
+        # suivent lisent ces memes drapeaux dans leur IfCondition.
+        OpaqueFunction(function=_resolveLayout),
         OpaqueFunction(function=_checkCapabilities),
 
         # --- la carte -----------------------------------------------------------------

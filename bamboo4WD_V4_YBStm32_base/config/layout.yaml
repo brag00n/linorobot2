@@ -1,0 +1,28 @@
+# Composition du robot bamboo4WD_V4_YBStm32 (bambooSTM32YB).
+#
+# CE FICHIER DIT QUELS GROUPES CETTE MACHINE FAIT TOURNER, et rien d'autre : aucune valeur
+# physique ici (geometrie, PID, bornes de servo vivent dans bamboo4WD_V4_YBStm32.yaml, le
+# fichier canonique du meme dossier), aucun fait de machine (port serie, /dev/videoN, qui
+# restent dans docker/.env ou les arguments du bringup).
+#
+# Il porte les DEFAUTS des cinq arguments enable_* du bringup. La ligne de commande reste
+# souveraine : `enable_video:=false` gagne contre `enable: true` ecrit ici.
+#
+# Les noms de groupe sont le VOCABULAIRE du bringup, tenu dans launch/layout.py. Un nom
+# inconnu fait echouer le bringup en le nommant : un groupe avale en silence serait le pire
+# des cas -- le lancement passerait, et le noeud manquerait sans que rien ne le dise.
+#
+# Le PAQUET de chaque groupe n'est volontairement pas repete ici : c'est le bringup qui le
+# nomme, en Python, et une seconde copie que personne ne lit ne serait pas une configuration.
+
+groups:
+  driver:        {enable: true}    # carte Yahboom v3, LECTURE SEULE (cf. enable_cmd_vel)
+  description:   {enable: true}    # URDF + TF, aucun effet materiel
+  video:         {enable: true}    # acquisition MJPG + mux + diffusion HTTP
+
+  # LES DEUX SEULS GROUPES QUI COMMANDENT LES SERVOS. Ils restent a false, et c'est une
+  # regle de securite, pas une preference : videotracking emet une consigne ABSOLUE de
+  # repos des son premier tick (servocam_node.cpp:59,108-109), sans mode arme ni visage.
+  # A armer a la main, apres T6/T7 de bambooSTM32YB.
+  videotracking: {enable: false}
+  control:       {enable: false}   # manette : le stick droit bouge les servos
