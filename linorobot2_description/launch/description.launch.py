@@ -38,31 +38,47 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
-def _canonicalParams(robot):
+def _canonicalParams(robot, config_path=''):
     """Lit la source unique <robot>.yaml et renvoie son bloc ros__parameters, ou None.
+
+    `config_path` est le chemin COMPLET, POUSSE par le bringup du robot (E2) : depuis E2 la
+    configuration du STM32 vit dans bamboo4WD_V4_YBStm32_base, pas dans bamboo_base, et ce
+    paquet-ci n'a aucune raison de connaitre le nom de ce paquet-la. Les deux recherches
+    ci-dessous restent le repli des robots sans paquet propre (WSEsp32) et des appels directs.
 
     Import et recherche de paquet sont volontairement tolerants : ce paquet ne DEPEND pas de
     bamboo_base, il l'utilise s'il est la -- cas d'une installation de la seule description,
     ou d'un robot amont linorobot2.
 
-    DEUX chemins de recherche, et le second n'est pas du zele : constate le 2026-09-23, le
-    conteneur robotdesc ne construit PAS bamboo_base (seul driver.real le fait, dans sa
-    propre couche), donc l'index ament n'y connait pas ce paquet. On cherche donc aussi le
-    paquet frere dans l'arbre SOURCE, atteint depuis ce fichier (l'install etant en
-    --symlink-install, __file__ resout dans src/).
+    QUATRE chemins de recherche, et aucun n'est du zele. Le conteneur robotdesc lance ce
+    launch DIRECTEMENT, sans bringup, donc sans chemin pousse -- et il ne construit ni
+    bamboo_base ni le paquet du robot (seul driver.real le fait, dans sa propre couche),
+    donc l'index ament n'y connait aucun des deux. D'ou, pour chacun des deux emplacements
+    possibles, un essai par l'index ament ET un essai sur le paquet frere dans l'arbre
+    SOURCE, atteint depuis ce fichier (l'install etant en --symlink-install, __file__ resout
+    dans src/).
+
+    Les deux emplacements viennent d'une CONVENTION de nom, pas d'une liste de robots : le
+    robot `X` a son paquet `X_base`. Ce module reste donc ignorant de tout robot precis.
     """
-    if not robot:
+    if not robot and not config_path:
         return None
-    rel = os.path.join('config', 'robots', robot + '.yaml')
-    candidates = []
-    try:
-        from ament_index_python.packages import get_package_share_directory
-        candidates.append(os.path.join(get_package_share_directory('bamboo_base'), rel))
-    except Exception:
-        pass
-    # <depot>/linorobot2_description/launch/ -> <depot>/bamboo_base/
+    # (paquet, chemin relatif) : d'abord le paquet DU ROBOT, ou la configuration vit depuis
+    # E2 ; puis bamboo_base, qui garde celle des robots sans paquet propre.
+    homes = ((robot + '_base', os.path.join('config', robot + '.yaml')),
+             ('bamboo_base', os.path.join('config', 'robots', robot + '.yaml')))
+
+    # Le chemin pousse passe D'ABORD : il fait autorite sur toute recherche.
+    candidates = [config_path] if config_path else []
+    # <depot>/linorobot2_description/launch/ -> <depot>/<paquet>/
     here = os.path.dirname(os.path.realpath(__file__))
-    candidates.append(os.path.join(here, '..', '..', 'bamboo_base', rel))
+    for package, rel in homes:
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            candidates.append(os.path.join(get_package_share_directory(package), rel))
+        except Exception:
+            pass
+        candidates.append(os.path.join(here, '..', '..', package, rel))
 
     for path in candidates:
         try:
@@ -73,9 +89,9 @@ def _canonicalParams(robot):
             continue
     # Repli BRUYANT : un URDF sur valeurs constructeur fausse la TF, les costmaps Nav2 et le
     # plugin skid-steer sans rien casser de visible -- il faut donc le dire.
-    print('[description.launch] ATTENTION : geometrie canonique introuvable '
-          '(' + robot + '.yaml) -> le xacro utilise ses defauts constructeur.',
-          file=sys.stderr)
+    print('[description.launch] ATTENTION : geometrie canonique introuvable ('
+          + (config_path or (robot + '.yaml')) + ') -> le xacro utilise ses defauts '
+          'constructeur.', file=sys.stderr)
     return None
 
 
@@ -94,7 +110,8 @@ def _describe(context, *args, **kwargs):
         print('[description.launch] ATTENTION : aucun robot nomme (ni robot:= ni '
               'BAMBOO_ROBOT) -> le xacro utilise ses defauts constructeur, la TF ne '
               'decrit AUCUN robot reel.', file=sys.stderr)
-    params = _canonicalParams(robot) or {}
+    params = _canonicalParams(
+        robot, LaunchConfiguration('robot_config').perform(context)) or {}
 
     # La FAMILLE cinematique vient du fichier du robot, pas de l'environnement : c'est une
     # propriete du ROBOT, et la garder dans LINOROBOT2_BASE en faisait une deuxieme source de
@@ -157,9 +174,16 @@ def generate_launch_description():
         DeclareLaunchArgument(
             name='robot',
             default_value=EnvironmentVariable('BAMBOO_ROBOT', default_value=''),
-            description='Nom du fichier de source unique dans bamboo_base/config/robots/ '
-                        '(sans .yaml). Donne la famille cinematique ET la geometrie de roue. '
-                        'Vide : defauts du xacro, signale sur stderr.'
+            description='Nom du robot (sans .yaml). Donne la famille cinematique ET la '
+                        'geometrie de roue. Vide : defauts du xacro, signale sur stderr.'
+        ),
+
+        DeclareLaunchArgument(
+            name='robot_config',
+            default_value='',
+            description='Chemin COMPLET du fichier canonique du robot, pousse par son '
+                        'bringup. Vide : recherche dans bamboo_base (robots sans paquet '
+                        'propre).'
         ),
 
         DeclareLaunchArgument(

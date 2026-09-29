@@ -22,6 +22,7 @@ import os
 
 import yaml
 from ament_index_python.packages import get_package_share_directory
+from bamboo_base.robot_config import resolveRobotConfig  # ou vit la config d'un robot
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
@@ -55,11 +56,13 @@ def _checkAxes(context, *args, **kwargs):
     Lecture de fichiers UNIQUEMENT : rien n'ouvre le port serie, mono-proprietaire.
     """
     robot = LaunchConfiguration("robot").perform(context)
+    robot_config = LaunchConfiguration("robot_config").perform(context)
     cfg = _readParams(_configPath(), "bamboo_teleop")
     wanted = [cfg.get("pan_axis_name", "pan"), cfg.get("tilt_axis_name", "tilt")]
 
-    canonical = os.path.join(
-        get_package_share_directory("bamboo_base"), "config", "robots", robot + ".yaml")
+    # Chemin POUSSE par le bringup du robot (E2) ; vide, resolveRobotConfig cherche les
+    # emplacements connus et echoue en nommant ce qu'il a essaye.
+    canonical = resolveRobotConfig(robot, robot_config)
     with open(canonical, "r", encoding="utf-8") as fh:
         doc = yaml.safe_load(fh) or {}
     params = {}
@@ -88,8 +91,13 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             "robot", default_value="bamboo4WD_V4_YBStm32",
-            description="Nom du fichier canonique dans bamboo_base/config/robots/ (sans "
-                        ".yaml). Lu ICI seulement pour verifier les noms d'axes."),
+            description="Nom du robot (sans .yaml). Sert a nommer le fichier canonique "
+                        "quand robot_config n'est pas pousse."),
+        DeclareLaunchArgument(
+            "robot_config", default_value="",
+            description="Chemin COMPLET du fichier canonique du robot, pousse par son "
+                        "bringup. Vide : recherche par convention (<robot>_base/config/, "
+                        "puis bamboo_base), qui echoue en nommant les chemins essayes."),
         DeclareLaunchArgument(
             "joy_dev", default_value="/dev/input/js0",
             description="Peripherique manette. Fait de MACHINE : visible dans le "

@@ -12,6 +12,9 @@
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>std_srvs</exec_depend>
   <exec_depend>bamboo_interfaces</exec_depend>
+  <!-- Le launch de ce module importe bamboo_base.robot_config pour savoir ou vit le fichier
+       canonique du robot (E2) : dependance d'EXECUTION, pas de construction. -->
+  <exec_depend>bamboo_base</exec_depend>
   <!-- joy_linux et non joy : le paquet apt installe dans l'image est
        ros-humble-joy-linux (couche Dockerfile de la manette, verifiee 3/3 au
        lot V1.0). Les deux exposent /joy avec le MEME type mais des index

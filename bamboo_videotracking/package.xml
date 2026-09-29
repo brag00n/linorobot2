@@ -32,6 +32,9 @@
        n'a aucun appelant ici. -->
 
   <exec_depend>rclpy</exec_depend>
+  <!-- Le launch de ce module importe bamboo_base.robot_config pour savoir ou vit le fichier
+       canonique du robot (E2) : dependance d'EXECUTION, pas de construction. -->
+  <exec_depend>bamboo_base</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
 

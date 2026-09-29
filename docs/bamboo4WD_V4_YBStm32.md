@@ -10,10 +10,14 @@ même carte, ni le même nombre d'encodeurs réels, ni les mêmes capacités d'a
 > est impossible — et impossible **silencieusement**, ce qui est pire.
 
 > 🔶 **État de validation, annoncé d'emblée.** Les paquets ROS de la chaîne de tracking sont **écrits**
-> et un seul essai est **validé sur robot** : **T10 de bambooSTM32YB** (groupe vidéo seul, flux brut à
-> 30 fps). **Aucun servo n'a jamais été branché** : l'essai **T1** (tension du rail servo au
-> multimètre) est un **prérequis non négociable**. Tout ce qui touche au mouvement de la caméra est
-> donc ici du **contrat**, pas du mesuré. Les valeurs non mesurées sont marquées
+> et **deux essais** sont **validés sur robot** : **T10 de bambooSTM32YB** (groupe vidéo seul, flux brut à
+> 30 fps) et **T1** (tension du rail servo au multimètre, annoncé bon le 2026-09-26).
+> ⚠️ **LES SG90 SONT DÉSORMAIS CÂBLÉS SUR LA CARTE** (2026-09-26), mais **leur course n'a jamais
+> été mesurée** — l'essai **T6** est dû. Conséquence opérationnelle : tout ce qui publie
+> `/servo/cmd` bouge maintenant du **matériel réel**, donc démarrer `bamboo_videotracking` **plaque
+> les deux axes sur leur repos (pan 88°, tilt 42°) dès le premier tick de minuterie**, sans qu'aucun
+> mode soit armé ni aucun visage présent (`servocam_node.cpp:59,108-109` : `last_sent{-1}`, donc le
+> premier `emit()` passe). Le mouvement de la caméra reste donc du **contrat**, pas du mesuré. Les valeurs non mesurées sont marquées
 > `<< NON MESURÉ >>` — elles le sont aussi dans le fichier canonique, et c'est là qu'il faut les
 > corriger.
 
@@ -52,16 +56,23 @@ Deux conséquences pratiques du tableau, plus importantes que le tableau lui-mê
 
 ## 2. Source unique de vérité : le fichier canonique
 
-`bamboo_base/config/robots/bamboo4WD_V4_YBStm32.yaml` porte **toute** la physique de cette machine et
+`bamboo4WD_V4_YBStm32_base/config/bamboo4WD_V4_YBStm32.yaml` porte **toute** la physique de cette
+machine et
 rien d'autre. Les **faits d'hôte** (port, baud, `/dev/videoN`, ports TCP) n'y sont **pas** : ils vivent
 dans les YAML de groupe et dans les profils `robots/*.json` du dépôt firmware, parce qu'ils diffèrent
 légitimement d'une machine à l'autre alors que la géométrie, non.
+
+> **Il a déménagé le 2026-09-28 (étape É2)** : il était dans `bamboo_base/config/robots/`, paquet
+> **générique**. La configuration d'un robot appartient au paquet **de ce robot**. Les modules ne vont
+> plus la chercher : le bringup la leur **pousse** par l'argument `robot_config`, et un module lancé
+> seul la retrouve par convention (`<robot>_base/config/`, puis `bamboo_base` pour les robots sans
+> paquet propre) — en échouant en **nommant** les chemins essayés, jamais en silence.
 
 Format ROS natif, donc utilisable tel quel :
 
 ```bash
 ros2 param load /stm32_mavlink_driver \
-  install/bamboo_base/share/bamboo_base/config/robots/bamboo4WD_V4_YBStm32.yaml
+  install/bamboo4WD_V4_YBStm32_base/share/bamboo4WD_V4_YBStm32_base/config/bamboo4WD_V4_YBStm32.yaml
 ```
 
 | Clé | Valeur | Provenance |
@@ -346,7 +357,7 @@ des règles, basculer `.env`. Le driver, lui, se passe des symlinks : il résout
 | OpenCV 4.10 dans l'image | 🔶 en construction |
 | Bringup mono-processus | écrit, **jamais lancé** |
 | `capability_check` + capacités déclarées | écrits, **jamais exécutés** |
-| Servos | ❌ **rien branché** — T1 dû |
+| Servos | ⚠️ **câblés sur la carte (2026-09-26)**, T1 ✅ validé — mais **course jamais mesurée**, T6 dû ; clamp pan 8–172° / tilt **20–70°** uniquement côté hôte |
 | Manette (`bamboo_control`) | ❌ lot V5, paquet inexistant (les paquets apt, eux, sont dans l'image) |
 | Mesure de performance (banc reproductible) | écrit, **aucune mesure** |
 | Démarrage automatique | non posé |

@@ -1,8 +1,8 @@
 # Carte Yahboom ROS Control Board V3.0 : FAITS D'HOTE ET DE TRANSPORT UNIQUEMENT.
 #
 # La geometrie, la motorisation et la table servo_axes NE SONT PAS ICI : elles vivent
-# dans la source unique bamboo_base/config/robots/bamboo4WD_V4_YBStm32.yaml, chargee par
-# driver.launch.py APRES ce fichier. Redeclarer un parametre physique ici le ferait
+# dans la source unique bamboo4WD_V4_YBStm32_base/config/bamboo4WD_V4_YBStm32.yaml (deplacee
+# depuis bamboo_base a E2), poussee a driver.launch.py APRES ce fichier. Redeclarer un parametre physique ici le ferait
 # perdre silencieusement face au fichier canonique -> ne pas le faire.
 /**:
   ros__parameters:

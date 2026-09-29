@@ -4,8 +4,11 @@ CE QUE CE FICHIER EST, ET CE QU'IL N'EST PAS
 --------------------------------------------
 Il declare la COMPOSITION de cette machine : quelles cartes elle embarque, quels groupes
 fonctionnels elle fait tourner. Il ne porte AUCUNE valeur physique -- ni geometrie, ni PID,
-ni bornes de servo : tout cela vit dans bamboo_base/config/robots/<robot>.yaml, la source
-unique, et est propage par le seul argument `robot`.
+ni bornes de servo : tout cela vit dans config/<robot>.yaml DE CE PAQUET (deplace depuis
+bamboo_base a E2, parce que c'est la configuration de CE robot), et ce fichier est POUSSE
+aux modules par l'argument `robot_config`. Les modules, eux, restent generiques : aucun ne
+va chercher la configuration d'un robot, ce qui est la condition pour les reutiliser tels
+quels sur une autre machine.
 
 Il coexiste avec les services Docker de docker/docker-compose.yaml, et les deux ne font PAS
 le meme travail -- a ne pas confondre, sous peine de lancer deux fois les memes noeuds :
@@ -84,18 +87,31 @@ def _checkCapabilities(context, *args, **kwargs):
     une erreur de configuration, pas une consequence des drapeaux du lancement.
     """
     robot = LaunchConfiguration("robot").perform(context)
-    return [LogInfo(msg="capacites : " + line) for line in checkServoAxes(robot)]
+    config = LaunchConfiguration("robot_config").perform(context)
+    # Le chemin est POUSSE, pas cherche : checkServoAxes vit dans bamboo_base, paquet
+    # generique, qui depuis E2 ne connait plus l'emplacement de la configuration du STM32.
+    return [LogInfo(msg="capacites : " + line)
+            for line in checkServoAxes(robot, config)]
 
 
 def generate_launch_description():
     robot = LaunchConfiguration("robot")
+    robot_config = LaunchConfiguration("robot_config")
 
     return LaunchDescription([
         DeclareLaunchArgument(
             "robot", default_value="bamboo4WD_V4_YBStm32",
-            description="Nom du fichier de source unique dans bamboo_base/config/robots/ "
-                        "(sans .yaml). Propage depuis docker/.env (ROBOT=) et transmis TEL "
-                        "QUEL a tous les groupes : c'est la seule bascule."),
+            description="Nom du robot (sans .yaml). Propage depuis docker/.env (ROBOT=) "
+                        "et transmis TEL QUEL a tous les groupes : c'est la seule "
+                        "bascule."),
+        DeclareLaunchArgument(
+            "robot_config",
+            # Le defaut nomme CE paquet : c'est lui qui porte la configuration de CE robot.
+            # Substitution, donc resolue seulement si personne ne surcharge l'argument.
+            default_value=PathJoinSubstitution([
+                FindPackageShare("bamboo4WD_V4_YBStm32_base"), "config", [robot, ".yaml"]]),
+            description="Chemin COMPLET du fichier canonique, pousse a tous les groupes. "
+                        "Surcharger pour essayer une configuration sans reconstruire."),
         DeclareLaunchArgument(
             "enable_driver", default_value="true",
             description="Driver de la carte Yahboom v3 (MAVLink sysid 1). Proprietaire "
@@ -135,7 +151,7 @@ def generate_launch_description():
 
         # --- la carte -----------------------------------------------------------------
         _include("bamboo_controler_YBStm32v3", "driver.launch.py",
-                 {"robot": robot,
+                 {"robot": robot, "robot_config": robot_config,
                   "enable_cmd_vel": LaunchConfiguration("enable_cmd_vel")},
                  "enable_driver"),
 
@@ -145,7 +161,7 @@ def generate_launch_description():
         # Avant, elle lisait BAMBOO_ROBOT, variable definie NULLE PART, et repliait sur un
         # nom de robot en dur -> la TF portait la geometrie de l'AUTRE robot.
         _include("linorobot2_description", "description.launch.py",
-                 {"robot": robot,
+                 {"robot": robot, "robot_config": robot_config,
                   "rviz": "false", "publish_joints": "false"},
                  "enable_description"),
 
@@ -153,7 +169,7 @@ def generate_launch_description():
         # stream_mode force a mjpg : en h264 le flux ne passe pas par ROS et le tracking
         # devient impossible (contrainte UVC, un seul format a la fois sur le capteur).
         _include("bamboo_video", "video.launch.py",
-                 {"robot": robot,
+                 {"robot": robot, "robot_config": robot_config,
                   "stream_mode": "mjpg",
                   "video_device": LaunchConfiguration("video_device")},
                  "enable_video"),
@@ -162,12 +178,12 @@ def generate_launch_description():
         # Aucun `depends_on` implicite : s'il demarre sans le groupe video, il attend son
         # flux sans rien casser, et le mux sert le brut tant qu'il ne s'est pas enregistre.
         _include("bamboo_videotracking", "videotracking.launch.py",
-                 {"robot": robot},
+                 {"robot": robot, "robot_config": robot_config},
                  "enable_tracking"),
 
         # --- groupe manette (lot V5) ---------------------------------------------------
         _include("bamboo_control", "control.launch.py",
-                 {"robot": robot,
+                 {"robot": robot, "robot_config": robot_config,
                   "joy_dev": LaunchConfiguration("joy_dev")},
                  "enable_control"),
     ])

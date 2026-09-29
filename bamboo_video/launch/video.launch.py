@@ -25,13 +25,14 @@ il consommerait tout le budget du tracking. Les trois chemins partagent le port 
 Parametres, dans cet ORDRE, et l'ordre est le contrat (meme convention que
 `bamboo_videotracking/launch/videotracking.launch.py`) :
   1. config/video.yaml                        -> reglages du groupe (topics, delais)
-  2. resolution lue dans config/robots/<robot>.yaml de bamboo_base (source UNIQUE)
+  2. resolution lue dans le fichier canonique du robot, POUSSE par son bringup
   3. arguments de launch (peripherique, port)  -> faits d'HOTE, donc gagnants
 """
 import os
 
 import yaml
 from ament_index_python.packages import get_package_share_directory
+from bamboo_base.robot_config import resolveRobotConfig  # ou vit la config d'un robot
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, LogInfo, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
@@ -40,15 +41,18 @@ from launch_ros.actions import Node
 _MODES = ("mjpg", "h264")
 
 
-def _cameraSize(robot):
+def _cameraSize(robot, config_path=""):
     """Lit `camera_width` / `camera_height` dans le fichier canonique du robot.
+
+    `config_path` est POUSSE par le bringup du robot (E2) : ce module est generique et n'a
+    pas a savoir ou vit la configuration d'une machine. Vide, resolveRobotConfig cherche,
+    dans l'ordre documente la-bas, et echoue en NOMMANT les chemins essayes.
 
     Echoue en NOMMANT la cle manquante : une resolution absente ferait negocier a v4l2src
     un format arbitraire, et la loi de commande pan/tilt -- qui normalise par la demi-largeur
     -- travaillerait alors sur une geometrie differente de celle declaree.
     """
-    path = os.path.join(
-        get_package_share_directory("bamboo_base"), "config", "robots", robot + ".yaml")
+    path = resolveRobotConfig(robot, config_path)
     with open(path, "r", encoding="utf-8") as fh:
         doc = yaml.safe_load(fh) or {}
 
@@ -71,6 +75,7 @@ def _launchSetup(context, *args, **kwargs):
             "stream_mode='%s' inconnu : attendu %s" % (mode, " | ".join(_MODES)))
 
     robot = LaunchConfiguration("robot").perform(context)
+    robot_config = LaunchConfiguration("robot_config").perform(context)
     device = LaunchConfiguration("video_device").perform(context)
     framerate = LaunchConfiguration("framerate").perform(context)
     frame_id = LaunchConfiguration("frame_id").perform(context)
@@ -92,7 +97,7 @@ def _launchSetup(context, *args, **kwargs):
             "Aucune trame n'entre dans ROS -> LE TRACKING EST IMPOSSIBLE dans ce mode. "
             "Basculer stream_mode:=mjpg pour l'activer."))]
 
-    size = _cameraSize(robot)
+    size = _cameraSize(robot, robot_config)
 
     # gscam2 en passthrough JPEG : recette EPROUVEE de camera_mjpg.launch.py, reprise telle
     # quelle. `image_encoding: jpeg` fait recopier le buffer MJPG materiel dans un
@@ -165,7 +170,13 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             "robot", default_value="bamboo4WD_V4_YBStm32",
-            description="Nom du fichier de source unique dans bamboo_base/config/robots/."),
+            description="Nom du robot (sans .yaml). Sert a nommer le fichier canonique "
+                        "quand robot_config n'est pas pousse."),
+        DeclareLaunchArgument(
+            "robot_config", default_value="",
+            description="Chemin COMPLET du fichier canonique du robot, pousse par son "
+                        "bringup. Vide : recherche par convention (<robot>_base/config/, "
+                        "puis bamboo_base), qui echoue en nommant les chemins essayes."),
         DeclareLaunchArgument(
             "stream_mode", default_value="mjpg",
             description="mjpg = passthrough MJPG dans ROS, tracking POSSIBLE ; "

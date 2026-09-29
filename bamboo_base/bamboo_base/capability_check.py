@@ -30,6 +30,7 @@ import sys
 # tourne. hw_resolve.py, lui, s'interdit toute dependance parce qu'il sert aussi hors ROS.
 import yaml
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
+from bamboo_base.robot_config import resolveRobotConfig
 
 # Convention de nommage des modules de controleur, voulue par l'utilisateur :
 # "controler" avec UN SEUL l, et la casse du nom de carte preservee (YBStm32v3, WSEsp32...).
@@ -67,10 +68,16 @@ def loadCapabilities(controller):
     return doc
 
 
-def loadRobot(robot):
-    """Lit le fichier canonique du robot et aplatit ses ros__parameters."""
-    path = os.path.join(
-        get_package_share_directory("bamboo_base"), "config", "robots", robot + ".yaml")
+def loadRobot(robot, config_path=""):
+    """Lit le fichier canonique du robot et aplatit ses ros__parameters.
+
+    `config_path` est le chemin COMPLET du fichier, POUSSE par le bringup du robot (E2). Ce
+    module est generique : il n'a pas a savoir ou vit la configuration d'une machine
+    particuliere, et depuis E2 elle ne vit plus ici -- bamboo4WD_V4_YBStm32_base porte la
+    sienne. Vide, resolveRobotConfig cherche les emplacements connus et echoue en NOMMANT
+    les chemins essayes -- jamais en silence.
+    """
+    path = resolveRobotConfig(robot, config_path)
     with open(path, "r", encoding="utf-8") as fh:
         doc = yaml.safe_load(fh) or {}
     params = {}
@@ -79,14 +86,14 @@ def loadRobot(robot):
     return path, params
 
 
-def checkServoAxes(robot):
+def checkServoAxes(robot, config_path=""):
     """Verifie chaque axe de servo_axes contre les capacites de son controleur.
 
     Renvoie la liste des lignes de compte rendu (une par axe). Leve RuntimeError des le
     premier axe invalide : on ne demarre pas a moitie une machine dont un axe est mal
     declare.
     """
-    path, params = loadRobot(robot)
+    path, params = loadRobot(robot, config_path)
     axes = params.get("servo_axes") or {}
     if not axes:
         # Legitime : un robot sans camera motorisee n'a pas d'axe. Ce n'est pas une erreur.
@@ -133,8 +140,13 @@ def checkServoAxes(robot):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     robot = argv[0] if argv else "bamboo4WD_V4_YBStm32"
+    # Deuxieme argument facultatif : le chemin du fichier canonique. En ligne de commande il
+    # n'y a pas de bringup pour le pousser, et depuis E2 celui du STM32 n'est plus dans ce
+    # paquet -- sans lui, la verification hors conteneur echouerait en cherchant au mauvais
+    # endroit.
+    config_path = argv[1] if len(argv) > 1 else ""
     try:
-        for line in checkServoAxes(robot):
+        for line in checkServoAxes(robot, config_path):
             print(line)
     except RuntimeError as exc:
         print("ECHEC de la verification de capacites : %s" % exc, file=sys.stderr)

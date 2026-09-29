@@ -14,7 +14,7 @@ qui bloquerait le container ferait tomber la cadence de tracking.
 Parametres, dans cet ORDRE, et l'ordre est le contrat (meme convention que
 `bamboo_base/launch/driver.launch.py`) :
   1. config/videotracking.yaml                 -> reglages du groupe (faits de groupe)
-  2. bornes servo derivees de config/robots/<robot>.yaml de bamboo_base (source UNIQUE)
+  2. bornes servo derivees du fichier canonique du robot, POUSSE par son bringup
   3. chemins de montage passes en arguments    -> faits d'HOTE, donc gagnants
 
 Le point 2 merite l'`OpaqueFunction` qu'il coute : la table `servo_axes` du fichier canonique
@@ -33,6 +33,7 @@ import os
 
 import yaml
 from ament_index_python.packages import get_package_share_directory
+from bamboo_base.robot_config import resolveRobotConfig  # ou vit la config d'un robot
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
@@ -43,16 +44,19 @@ from launch_ros.descriptions import ComposableNode
 _AXES = ("pan", "tilt")
 
 
-def _servoLimits(robot):
+def _servoLimits(robot, config_path=""):
     """Derive les parametres de course de servocam_node depuis la table `servo_axes`.
+
+    `config_path` est POUSSE par le bringup du robot (E2) : ce module est generique et n'a
+    pas a savoir ou vit la configuration d'une machine. Vide, resolveRobotConfig cherche,
+    dans l'ordre documente la-bas, et echoue en NOMMANT les chemins essayes.
 
     Echoue en NOMMANT l'axe ou la cle manquante, jamais en silence : un axe dont les bornes
     seraient absentes se traduirait par un retour aux defauts compiles, donc par une butee
     possible -- exactement le piege du chantier 1 ou une capacite absente etait decouverte
     a l'execution.
     """
-    path = os.path.join(
-        get_package_share_directory("bamboo_base"), "config", "robots", robot + ".yaml")
+    path = resolveRobotConfig(robot, config_path)
     with open(path, "r", encoding="utf-8") as fh:
         doc = yaml.safe_load(fh) or {}
 
@@ -84,6 +88,7 @@ def _servoLimits(robot):
 
 def _launchSetup(context, *args, **kwargs):
     robot = LaunchConfiguration("robot").perform(context)
+    robot_config = LaunchConfiguration("robot_config").perform(context)
     models_dir = LaunchConfiguration("models_dir").perform(context)
     faces_dir = LaunchConfiguration("faces_dir").perform(context)
     input_topic = LaunchConfiguration("input_topic").perform(context)
@@ -92,7 +97,7 @@ def _launchSetup(context, *args, **kwargs):
     group_cfg = os.path.join(
         get_package_share_directory("bamboo_videotracking"),
         "config", "videotracking.yaml")
-    limits = _servoLimits(robot)
+    limits = _servoLimits(robot, robot_config)
 
     hot = [group_cfg, {"models_dir": models_dir, "input_topic": input_topic}]
     recog = [group_cfg, {"models_dir": models_dir, "faces_dir": faces_dir}]
@@ -166,7 +171,13 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             "robot", default_value="bamboo4WD_V4_YBStm32",
-            description="Nom du fichier de source unique dans bamboo_base/config/robots/."),
+            description="Nom du robot (sans .yaml). Sert a nommer le fichier canonique "
+                        "quand robot_config n'est pas pousse."),
+        DeclareLaunchArgument(
+            "robot_config", default_value="",
+            description="Chemin COMPLET du fichier canonique du robot, pousse par son "
+                        "bringup. Vide : recherche par convention (<robot>_base/config/, "
+                        "puis bamboo_base), qui echoue en nommant les chemins essayes."),
         DeclareLaunchArgument(
             "models_dir", default_value=models,
             description="Repertoire des .onnx YuNet/SFace (monte depuis le depot firmware)."),

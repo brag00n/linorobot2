@@ -345,7 +345,7 @@ services:
     # etait absent). Poser la regle puis mettre BAMBOO_CAM=/dev/bamboocam dans .env.
     command: >
       bash -lc "cd /root/linorobot2_ws &&
-      colcon build --packages-select bamboo_interfaces bamboo_video --symlink-install &&
+      colcon build --packages-select bamboo_interfaces bamboo_base bamboo_video --symlink-install &&
       source install/setup.bash &&
       ros2 launch bamboo_video video.launch.py
       robot:=${ROBOT} stream_mode:=mjpg video_device:=${BAMBOO_CAM:-/dev/video0}"
@@ -368,7 +368,7 @@ services:
       - bamboo_faces:/root/data/faces
     command: >
       bash -lc "cd /root/linorobot2_ws &&
-      colcon build --packages-select bamboo_interfaces bamboo_videotracking --symlink-install &&
+      colcon build --packages-select bamboo_interfaces bamboo_base bamboo_videotracking --symlink-install &&
       source install/setup.bash &&
       ros2 launch bamboo_videotracking videotracking.launch.py robot:=${ROBOT}"
 
