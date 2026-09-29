@@ -140,10 +140,13 @@ def generate_launch_description():
                  "enable_driver"),
 
         # --- URDF / TF ----------------------------------------------------------------
-        # Amont linorobot2, parametre par ROBOT_BASE (4wd) et non par `robot` : c'est la
-        # FAMILLE cinematique qu'il lit, pas l'identite de la machine.
+        # `robot` y va comme partout ailleurs (corrige a E1) : la description en tire la
+        # FAMILLE cinematique (robot_base: du fichier canonique) ET la geometrie de roue.
+        # Avant, elle lisait BAMBOO_ROBOT, variable definie NULLE PART, et repliait sur un
+        # nom de robot en dur -> la TF portait la geometrie de l'AUTRE robot.
         _include("linorobot2_description", "description.launch.py",
-                 {"rviz": "false", "publish_joints": "false"},
+                 {"robot": robot,
+                  "rviz": "false", "publish_joints": "false"},
                  "enable_description"),
 
         # --- groupe video -------------------------------------------------------------

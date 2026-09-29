@@ -115,7 +115,8 @@ def generate_launch_description():
 
         # --- URDF / TF ----------------------------------------------------------------
         _include("linorobot2_description", "description.launch.py",
-                 {"rviz": "false", "publish_joints": "false"},
+                 {"robot": robot,
+                  "rviz": "false", "publish_joints": "false"},
                  "enable_description"),
 
         # --- groupe video (desactive par defaut) ---------------------------------------

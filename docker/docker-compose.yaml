@@ -175,7 +175,12 @@ services:
     # publish_joints:=false : c'est le driver (esp32_mavlink_driver) qui publie les
     # VRAIS /joint_states depuis les encodeurs. Laisser le joint_state_publisher amont
     # actif ferait deux publieurs sur le meme topic, dont un qui n'emet que des zeros.
-    command: ros2 launch linorobot2_description description.launch.py rviz:=false publish_joints:=false
+    # robot:=${ROBOT} et pas un repli : sans lui, la description retombait sur la
+    # geometrie de roue ECRITE EN DUR de l autre robot (rayon 0.04 / demi-voie 0.0625
+    # au lieu de 0.03425 / 0.0825 pour le STM32). C etait le SEUL des lanceurs de ce
+    # fichier a ne pas nommer son robot.
+    command: ros2 launch linorobot2_description description.launch.py robot:=${ROBOT}
+      rviz:=false publish_joints:=false
 
 #--- Real robot
   bringup.real:
