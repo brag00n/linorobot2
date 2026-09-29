@@ -80,10 +80,14 @@ def _launchSetup(context, *args, **kwargs):
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
-            "robot", default_value="bamboo4WD_V4_YBStm32",
-            description="Nom du robot (sans .yaml). Sert a nommer le fichier canonique "
-                        "quand robot_config n'est pas pousse. Propage depuis docker/.env "
-                        "(ROBOT=)."),
+            "robot",
+            # PAS de default_value (E6) : un module GENERIQUE ne choisit pas un robot en
+            # silence. Sans defaut, launch refuse et NOMME l'argument manquant ; avec un
+            # defaut, un module lance seul chargeait la geometrie et les bornes servo d'un
+            # AUTRE robot sans un mot -- donc des butees possibles sur les SG90.
+            description="Nom du robot (sans .yaml), OBLIGATOIRE. Sert a nommer le fichier "
+                        "canonique quand robot_config n'est pas pousse. C'est le bringup "
+                        "du robot qui le fournit (ou docker/.env, ROBOT=)."),
         DeclareLaunchArgument(
             "robot_config", default_value="",
             description="Chemin COMPLET du fichier canonique du robot, pousse par son "

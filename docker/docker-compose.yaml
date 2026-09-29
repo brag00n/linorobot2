@@ -10,6 +10,15 @@ volumes:
   # sur l'arbre de travail le ferait apparaitre dans `git status` a chaque acquisition. A jeter
   # par `docker volume rm bamboov4_humble_bamboo_faces`.
   bamboo_faces:
+  # Espace de travail colcon du banc (service bringup.stm32, profil `bench`). SANS ces deux
+  # volumes, `build/` et `install/` vivent dans la couche inscriptible du conteneur : tout
+  # conteneur neuf -- et chaque `run --rm` d'un essai -- reconstruit a FROID, mesure de 8 a
+  # 12 min. Avec eux, le build survit a un `--force-recreate` et un essai ne paie que ses
+  # paquets modifies. Revers assume : un fichier qui DEMENAGE laisse un lien symbolique mort
+  # (--symlink-install) que recreer le conteneur ne suffit plus a purger -- il faut alors
+  # `docker volume rm bamboov4_humble_bench_build bamboov4_humble_bench_install`.
+  bench_build:
+  bench_install:
 
 services:   
   base:
@@ -366,9 +375,17 @@ services:
       # driver.real, a ne pas diverger -- deux chemins pour un meme depot est un piege.
       - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:ro
       - bamboo_faces:/root/data/faces
+    # MAKEFLAGS=-j3 : SEUL paquet C++ lourd du depot (7 unites de compilation, OpenCV dans
+    # chacune) et `make` compile en serie par defaut -- 19 min en un fil, ~7 min en trois.
+    # 3 et non 4 : un coeur reste pour les autres conteneurs, et le RPi n'a pas de swap.
+    # A ne pas confondre avec le VRAI probleme de duree : l'horloge de l'HOTE Windows (pas
+    # celle du RPi, mesuree juste) est ~9 h DANS LE FUTUR, jamais synchronisee (source
+    # "Local CMOS Clock"). Les sources arrivent donc datees du futur, chaque .cpp est
+    # toujours "plus recent que son .o", et TOUT se recompile a chaque demarrage -- `make`
+    # le dit : "Clock skew detected. Your build may be incomplete."
     command: >
       bash -lc "cd /root/linorobot2_ws &&
-      colcon build --packages-select bamboo_interfaces bamboo_base bamboo_videotracking --symlink-install &&
+      MAKEFLAGS=-j3 colcon build --packages-select bamboo_interfaces bamboo_base bamboo_videotracking --symlink-install &&
       source install/setup.bash &&
       ros2 launch bamboo_videotracking videotracking.launch.py robot:=${ROBOT}"
 
@@ -421,16 +438,29 @@ services:
 #    leverait DEUX FOIS les memes noeuds (deux proprietaires du CH340, deux gscam2 sur
 #    /dev/video0). HORS du profil `boot` : l'exploitation, c'est le decoupage en groupes, qui
 #    seul permet d'arreter le tracking sans couper le flux video.
-#      docker compose up -d bringup.stm32
-#      docker compose run --rm --service-ports bringup.stm32 <commande>   # variante jetable
+#      docker compose --profile bench up -d bringup.stm32
+#      docker compose --profile bench run --rm --service-ports bringup.stm32 <commande>
+#    Pour un ESSAI, garder le conteneur plutot que `--rm` : `run -d --name tc_bench
+#    bringup.stm32 sleep infinity` puis des `docker exec`. Un `exec` ne passe PAS par
+#    l'entrypoint : il doit sourcer ROS et l'espace de travail, et exporter
+#    FASTRTPS_DEFAULT_PROFILES_FILE lui-meme.
   bringup.stm32:
     extends: base
+    # Profil `bench` (E6) : sans cette cle le service etait dans `default`, donc un `up -d` NU le
+    # levait -- un SECOND proprietaire du CH340, un second gscam2 sur /dev/video0 et un second
+    # port 8080, alors que le commentaire ci-dessus annonce le contraire. Corollaire : tout
+    # stop/start/logs/exec sur ce service exige `--profile bench`, sinon compose repond
+    # `no such service` en laissant l'ancien conteneur tourner.
+    profiles: ["bench"]
     ports:
       - "8080:8080"
     volumes:
       - /dev:/dev
       - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:rw
       - bamboo_faces:/root/data/faces
+      # Build persistant : voir le commentaire de bench_build en tete de fichier.
+      - bench_build:/root/linorobot2_ws/build
+      - bench_install:/root/linorobot2_ws/install
     command: >
       bash -lc "cd /root/linorobot2_ws &&
       colcon build --packages-select bamboo_interfaces bamboo_base bamboo_controler_YBStm32v3
