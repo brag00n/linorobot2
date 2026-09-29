@@ -16,6 +16,17 @@ les robots qui n'ont pas encore leur propre paquet.
 
 enable_cmd_vel reste sur la valeur du YAML (false = moteurs muets) sauf surcharge
 explicite. Les SERVOS ne sont pas concernes par ce verrou : ils repondent toujours.
+
+NOMS DE TOPICS : LOGIQUES ICI, REELS CHEZ LE ROBOT (E4)
+-------------------------------------------------------
+Le noeud s'abonne a des noms RELATIFS -- `cmd_vel` et `servo/cmd` -- et ce launch les expose
+en arguments dont le defaut est ce meme nom : rien ne change tant que personne ne les pousse.
+C'est le bringup du robot qui decide du nom REEL, parce que le cablage est un fait de MACHINE
+et non de carte : ce robot ecoute la manette, un autre ecouterait un module de navigation, et
+aucun des deux ne demande de toucher au driver.
+
+Le remappage se fait ICI et pas depuis le bringup : `remappings=` appartient au Node, et un
+launch inclus ne peut pas en recevoir de l'exterieur. D'ou le detour par des arguments.
 """
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -44,8 +55,12 @@ def _launchSetup(context, *args, **kwargs):
         get_package_share_directory("bamboo_controler_YBStm32v3"),
         "config", "stm32_driver.yaml")
 
+    cmd_vel = LaunchConfiguration("cmd_vel_topic").perform(context)
+    servo_cmd = LaunchConfiguration("servo_cmd_topic").perform(context)
+
     return [
         LogInfo(msg="fichier canonique du robot : " + canonical),
+        LogInfo(msg="cablage : cmd_vel -> %s, servo/cmd -> %s" % (cmd_vel, servo_cmd)),
         Node(
             package="bamboo_controler_YBStm32v3",
             executable="stm32_mavlink_driver",
@@ -53,6 +68,11 @@ def _launchSetup(context, *args, **kwargs):
             output="screen",
             parameters=[cfg, canonical,
                         {"enable_cmd_vel": LaunchConfiguration("enable_cmd_vel")}],
+            # Les deux cles sont les noms tels que le noeud les cree
+            # (stm32_mavlink_driver.py:812 pour cmd_vel, :345 pour servo/cmd) : un remappage
+            # dont la cle ne correspond a aucune souscription est ignore EN SILENCE, donc la
+            # cle doit rester le nom relatif, meme quand la valeur est absolue.
+            remappings=[("cmd_vel", cmd_vel), ("servo/cmd", servo_cmd)],
         ),
     ]
 
@@ -74,5 +94,15 @@ def generate_launch_description():
             description="true = actuation MOTEUR (roues surelevees obligatoires, apres "
                         "T2/T3/T5 de bambooSTM32YB) ; false = moteurs muets. Les servos "
                         "repondent dans les deux cas."),
+        DeclareLaunchArgument(
+            "cmd_vel_topic", default_value="cmd_vel",
+            description="Nom REEL de la consigne de deplacement ecoutee par la carte. "
+                        "Defaut = le nom logique, donc comportement inchange. Pousse par le "
+                        "bringup du robot (section wiring de son layout)."),
+        DeclareLaunchArgument(
+            "servo_cmd_topic", default_value="/servo/cmd",
+            description="Nom REEL des consignes de servo ecoutees par la carte. Doit valoir "
+                        "le meme nom que celui publie par le groupe tracking, sinon la "
+                        "camera ne bouge plus et aucun des deux noeuds ne se plaint."),
         OpaqueFunction(function=_launchSetup),
     ])

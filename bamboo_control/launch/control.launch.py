@@ -1,7 +1,7 @@
 """Lance le groupe manette : joy_linux_node + bamboo_teleop.
 
 NOM DU FICHIER IMPOSE : les deux paquets de bringup incluent `control.launch.py` par ce
-nom exact (`bamboo4WD_V4_YBStm32_base/launch/bringup.launch.py:161`). Le renommer casse
+nom exact (`bamboo4WD_V4_YBStm32_base/launch/bringup.launch.py`). Le renommer casse
 les deux bringup sans erreur de compilation -- l'echec n'apparait qu'au lancement.
 
 CE GROUPE NE COMMANDE AUCUN MOTEUR DE TRACTION, c'est un choix de perimetre ecrit dans
@@ -17,6 +17,13 @@ Parametres, dans cet ORDRE, et l'ordre est le contrat (meme convention que
 Le fichier canonique du robot n'est PAS une source de parametres ici -- il est lu
 uniquement pour VERIFIER que les noms d'axes vises existent (voir _checkAxes). La table
 `servo_axes` reste le seul endroit qui lie un nom d'axe a une carte et a une voie.
+
+DETTE ASSUMEE (E4) : ce groupe N'EXPOSE PAS de `cmd_vel_out_topic`, contrairement au driver
+et au tracking. Ce n'est pas un oubli -- `teleop_node.py` ne publie AUCUN /cmd_vel (dit deux
+fois la-bas, lignes 4 et 144), donc l'argument remapperait un publieur inexistant : un
+remappage sans cle correspondante est ignore EN SILENCE, ce qui donnerait un point de
+configuration qui a l'air de marcher et ne fait rien. A ajouter le jour ou ce noeud gagne un
+publieur de traction, c'est-a-dire apres T2/T3/T5 de bambooSTM32YB.
 """
 import os
 

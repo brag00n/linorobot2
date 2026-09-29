@@ -28,6 +28,12 @@ ses defauts compiles. On resout donc la table ici, a l'ouverture du launch, et o
 Ce groupe ne depend d'AUCUN module de controleur : il publie /servo/cmd en nommant les axes
 (`pan`, `tilt`) et tourne sans executeur -- c'est ce qui rend le banc V6.3 possible robot
 eteint.
+
+Depuis E4, ce nom de sortie est un ARGUMENT (`servo_cmd_topic`), de defaut `/servo/cmd` donc
+sans changement : le nom LOGIQUE appartient au noeud, le nom REEL au robot qui l'embarque. Le
+remappage se pose ici, sur le ComposableNode, parce qu'un launch inclus ne peut pas recevoir
+de `remappings=` de l'exterieur. Le meme nom doit etre pousse au module de controleur qui
+ECOUTE, sinon la camera ne bouge plus sans qu'aucun des deux noeuds ne se plaigne.
 """
 import os
 
@@ -93,6 +99,7 @@ def _launchSetup(context, *args, **kwargs):
     faces_dir = LaunchConfiguration("faces_dir").perform(context)
     input_topic = LaunchConfiguration("input_topic").perform(context)
     container_name = LaunchConfiguration("container_name").perform(context)
+    servo_cmd = LaunchConfiguration("servo_cmd_topic").perform(context)
 
     group_cfg = os.path.join(
         get_package_share_directory("bamboo_videotracking"),
@@ -138,6 +145,10 @@ def _launchSetup(context, *args, **kwargs):
                 plugin="bamboo_videotracking::ServoCamNode",
                 name="servocam_node",
                 parameters=servo,
+                # La cle est le nom tel que le noeud le cree, donc ABSOLU
+                # (servocam_node.cpp:111-112 publie "/servo/cmd") : une cle relative ne
+                # correspondrait a rien et le remappage serait ignore en silence.
+                remappings=[("/servo/cmd", servo_cmd)],
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
         ],
@@ -187,6 +198,11 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "input_topic", default_value="/video/raw/compressed",
             description="Flux brut publie par bamboo_video : ce groupe en est CLIENT."),
+        DeclareLaunchArgument(
+            "servo_cmd_topic", default_value="/servo/cmd",
+            description="Nom REEL des consignes de servo produites par ce groupe. Defaut = "
+                        "le nom logique, donc comportement inchange. Pousse par le bringup "
+                        "du robot, qui doit pousser le MEME nom au module de controleur."),
         DeclareLaunchArgument(
             "container_name", default_value="videotracking_container",
             description="Nom du process de composition (component_container_mt)."),
