@@ -51,6 +51,12 @@ Exemples :
   ros2 launch bamboo4WD_V4_YBStm32_base bringup.launch.py enable_tracking:=true
   ros2 launch bamboo4WD_V4_YBStm32_base bringup.launch.py enable_video:=false   # carte seule
   ros2 launch bamboo4WD_V4_YBStm32_base bringup.launch.py layout_file:=/tmp/essai.yaml
+
+CABLAGE (E5)
+------------
+Sous quel nom les groupes se parlent est aussi une donnee du robot : section `wiring` du meme
+layout, poussee aux modules par les arguments que E4 leur a ajoutes. Le bringup est le SEUL a
+connaitre les deux bouts d'un flux -- c'est pourquoi c'est lui qui les accorde.
 """
 import os
 import sys
@@ -90,7 +96,7 @@ def _include(package, launch_file, arguments, flag):
 
 
 def _resolveLayout(context, *args, **kwargs):
-    """Donne aux `enable_*` laisses vides le defaut ecrit dans config/layout.yaml.
+    """Donne aux arguments laisses vides le defaut ecrit dans config/layout.yaml.
 
     POURQUOI UNE OpaqueFunction, et pas un `default_value`. Le chemin du layout depend de
     l'argument `layout_file`, dont la valeur n'est connue qu'au lancement : lire le fichier
@@ -103,6 +109,9 @@ def _resolveLayout(context, *args, **kwargs):
 
     Une valeur donnee en ligne de commande n'est PAS vide, donc elle gagne : le fichier
     fournit un defaut, jamais une contrainte.
+
+    Depuis E5 la meme mecanique sert au CABLAGE : layoutDefaults renvoie aussi les
+    `<groupe>_<flux>_topic`, remplis ici et pousses plus bas a chaque module.
     """
     path = LaunchConfiguration("layout_file").perform(context)
     flags, notes = layoutDefaults(path)
@@ -179,6 +188,16 @@ def generate_launch_description():
             "enable_control", default_value="",
             description="Groupe manette (bamboo_control). FALSE par defaut pour la meme "
                         "raison que le tracking : le stick droit commande les servos."),
+        # --- cablage (E5) : defaut vide = "prends le nom ecrit dans wiring" ---------------
+        DeclareLaunchArgument(
+            "driver_servo_cmd_topic", default_value="",
+            description="Nom REEL des consignes de servo ECOUTEES par la carte. Vide : la "
+                        "section wiring du layout decide."),
+        DeclareLaunchArgument(
+            "videotracking_servo_cmd_topic", default_value="",
+            description="Nom REEL des consignes de servo PRODUITES par le tracking. Doit "
+                        "valoir le meme nom que ci-dessus, sinon la camera ne bouge plus "
+                        "sans qu'aucun noeud ne se plaigne."),
         DeclareLaunchArgument(
             "joy_dev", default_value="/dev/input/js0",
             description="Peripherique manette, fait de MACHINE : le numero depend de "
@@ -202,7 +221,10 @@ def generate_launch_description():
         # --- la carte -----------------------------------------------------------------
         _include("bamboo_controler_YBStm32v3", "driver.launch.py",
                  {"robot": robot, "robot_config": robot_config,
-                  "enable_cmd_vel": LaunchConfiguration("enable_cmd_vel")},
+                  "enable_cmd_vel": LaunchConfiguration("enable_cmd_vel"),
+                  # cmd_vel_topic n'est PAS pousse : il reste au defaut du module, et sa
+                  # souscription n'existe de toute facon pas tant que l'actuation est desarmee.
+                  "servo_cmd_topic": LaunchConfiguration("driver_servo_cmd_topic")},
                  "enable_driver"),
 
         # --- URDF / TF ----------------------------------------------------------------
@@ -228,7 +250,9 @@ def generate_launch_description():
         # Aucun `depends_on` implicite : s'il demarre sans le groupe video, il attend son
         # flux sans rien casser, et le mux sert le brut tant qu'il ne s'est pas enregistre.
         _include("bamboo_videotracking", "videotracking.launch.py",
-                 {"robot": robot, "robot_config": robot_config},
+                 {"robot": robot, "robot_config": robot_config,
+                  "servo_cmd_topic": LaunchConfiguration(
+                      "videotracking_servo_cmd_topic")},
                  "enable_tracking"),
 
         # --- groupe manette (lot V5) ---------------------------------------------------

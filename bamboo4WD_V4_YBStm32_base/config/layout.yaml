@@ -1,12 +1,13 @@
-# Composition du robot bamboo4WD_V4_YBStm32 (bambooSTM32YB).
+# Layout du robot bamboo4WD_V4_YBStm32 (bambooSTM32YB) : sa COMPOSITION et son CABLAGE.
 #
-# CE FICHIER DIT QUELS GROUPES CETTE MACHINE FAIT TOURNER, et rien d'autre : aucune valeur
-# physique ici (geometrie, PID, bornes de servo vivent dans bamboo4WD_V4_YBStm32.yaml, le
-# fichier canonique du meme dossier), aucun fait de machine (port serie, /dev/videoN, qui
-# restent dans docker/.env ou les arguments du bringup).
+# CE FICHIER DIT QUELS GROUPES CETTE MACHINE FAIT TOURNER ET SOUS QUELS NOMS ILS SE PARLENT,
+# et rien d'autre : aucune valeur physique ici (geometrie, PID, bornes de servo vivent dans
+# bamboo4WD_V4_YBStm32.yaml, le fichier canonique du meme dossier), aucun fait de machine
+# (port serie, /dev/videoN, qui restent dans docker/.env ou les arguments du bringup).
 #
-# Il porte les DEFAUTS des cinq arguments enable_* du bringup. La ligne de commande reste
-# souveraine : `enable_video:=false` gagne contre `enable: true` ecrit ici.
+# Il porte les DEFAUTS des arguments du bringup -- les cinq enable_* et, depuis E5, les noms
+# de topics. La ligne de commande reste souveraine : `enable_video:=false` gagne contre
+# `enable: true` ecrit ici.
 #
 # Les noms de groupe sont le VOCABULAIRE du bringup, tenu dans launch/layout.py. Un nom
 # inconnu fait echouer le bringup en le nommant : un groupe avale en silence serait le pire
@@ -26,3 +27,22 @@ groups:
   # A armer a la main, apres T6/T7 de bambooSTM32YB.
   videotracking: {enable: false}
   control:       {enable: false}   # manette : le stick droit bouge les servos
+
+# Cablage : sous quel nom REEL circule chaque flux. Le nom LOGIQUE (a gauche) appartient au
+# noeud, le nom REEL (a droite) a CE robot -- meme partage que servo_axes, ou un producteur
+# nomme un AXE et jamais une voie de carte. C'est ici, et seulement ici, qu'on branche la
+# meme carte sur une manette plutot que sur un module de navigation.
+#
+# Section OPTIONNELLE : absente, chaque module garde le defaut de son propre launch, qui est
+# le nom ci-dessous. Un groupe non cablable ou un nom logique inconnu font echouer le bringup
+# en le nommant (launch/layout.py, table WIRING_ARGS).
+#
+# LES DEUX LIGNES DOIVENT PORTER LE MEME NOM : le tracking publie, la carte ecoute. Les
+# separer laisse les deux noeuds contents et la camera immobile -- le bringup le signale.
+#
+# `cmd_vel` n'y figure PAS a dessein : le driver l'expose bien en argument, mais sa
+# souscription n'existe qu'a l'armement moteur, donc hors scope jusqu'a T2/T3/T5. Et le
+# groupe `control` n'y figure pas non plus : son teleop ne publie aucun cmd_vel.
+wiring:
+  videotracking: {servo_cmd: /servo/cmd}   # producteur
+  driver:        {servo_cmd: /servo/cmd}   # consommateur (carte Yahboom v3)
