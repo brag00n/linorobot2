@@ -5,14 +5,24 @@
 #
 # CE QUI N'ENTRE PAS ICI, et c'est le contrat :
 #  - les BORNES DE COURSE des servos (pan 8-172, tilt 20-70) : elles vivent dans
-#    `bamboo_base/config/robots/<robot>.yaml`, table `servo_axes`, seule source unique, et
-#    le launch les injecte par-dessus ce fichier. Les redeclarer ici les dupliquerait --
+#    `<robot>_base/config/<robot>.yaml`, table `servo_axes`, seule source unique, et le
+#    launch les injecte par-dessus ce fichier. Les redeclarer ici les dupliquerait --
 #    c'est exactement ce qui a produit les 4 valeurs de diametre de roue contradictoires du
 #    chantier 1.
+#  - `aspect`, pour la meme raison : il est DERIVE de camera_width/camera_height du fichier
+#    canonique par le launch. Ecrit ici, il devenait un second cadrage -- et c'est ainsi
+#    qu'il a fini a l'ENVERS (w/h au lieu de h/w).
 #  - les chemins d'HOTE (`models_dir`, `faces_dir`, topic d'entree) : arguments de launch.
 #
-# Toutes ces valeurs viennent du prototype `robot_controlv3` : ce sont des reglages EPROUVES,
-# pas des amorcages. Les changer demande de refaire le banc V6.3 pour comparer a egalite.
+# Toutes ces valeurs viennent du prototype `robot_controlv3`, et de la BONNE COUCHE : ce sont
+# les defauts argparse de `RobotMain.py`, qui ECRASENT ceux des constructeurs de classe. Les
+# NOMS sont ceux du prototype (`deadzone`, `max_step`, `invert_tilt`, `max_grow`...) pour
+# qu'un essai se transpose du banc au ROS sans retraduction. Ce sont des reglages EPROUVES,
+# pas des amorcages : les changer demande de refaire le banc V6.3 pour comparer a egalite.
+#
+# Ligne de lancement de reference du prototype :
+#   robot_controlv3.RobotMain --no-motion --invert-tilt --track-max-grow 4.5 --flip h
+#                             --index 1 --robot bamboo4WD_V4_bench --protocol mavlink
 
 tracking_node:
   ros__parameters:
@@ -23,15 +33,32 @@ tracking_node:
     # MIL et non ViT : OpenCV 4.5.4 (Humble/Jammy) n'a PAS cv::TrackerVit (arrive en 4.7).
     # Le mode "vit" reste declare et repond "indisponible" au lieu de mentir.
     track_mode: "mil"
-    iou_reanchor: 0.3
-    score_min: 0.25
-    hold_ms: 600.0
+    # Miroir applique A LA TRAME, avant detection : c'est `--flip h` du prototype, et le
+    # triplet (flip, invert_pan, invert_tilt) est INDIVISIBLE -- le miroir horizontal inverse
+    # nx, donc changer ce champ sans changer invert_pan met le pan a l'envers. Le suivi
+    # lui-meme est insensible au miroir (un visage en miroir reste un visage) ; c'est le
+    # SIGNE de la consigne servo qui ne l'est pas.
+    flip: "h"
+    iou_reanchor: 0.2
+    score_min: 0.3
+    # 5000 ms, pas 600 : a la cadence reelle de detection (~5 fps) 600 ms valent TROIS
+    # trames, donc le verrou mourait au premier visage de profil (perte mesuree 0,80 a T7).
+    hold_ms: 5000.0
+    hold_score_min: 0.6
     max_det_misses: 8
+    # Vraisemblance de la boite. max_grow est un rapport d'AIRE a l'aire de reference (meme
+    # grandeur que `--track-max-grow` du prototype) ; max_area_frac et la garde a 90 % sont
+    # ABSOLUES et rattrapent le cas que le rapport laisse passer : une boite deja gonflee a
+    # l'ancrage donne une aire de reference enorme, donc un rapport toujours sage.
+    max_grow: 4.5
+    max_area_frac: 0.5
     # Prediction de Kalman : "anticip" avance la cible du horizon, "coast" la prolonge
     # pendant une occlusion, "off" desactive. dt borne [1e-3, 0.2] dans le noeud.
+    # Noms en SI conserves (le prototype compte en ms) mais valeurs alignees : --predict-ms
+    # 700 et --predict-lead-ms 120 -> 0,12 s d'anticipation, 0,7 s de prolongation.
     predict_mode: "anticip"
-    predict_horizon_s: 0.15
-    coast_max_s: 0.6
+    predict_horizon_s: 0.12
+    coast_max_s: 0.7
 
 facerecog_node:
   ros__parameters:
@@ -48,7 +75,16 @@ facerecog_node:
 
 overlay_node:
   ros__parameters:
+    # `deadzone`, `aspect` et `servo_cmd_topic` NE sont PAS ici : le launch les pousse depuis
+    # la meme source que servocam_node (sa propre `deadzone`, et le fichier canonique du
+    # robot pour l aspect). Les redeclarer ici creerait un second gisement de verite, donc
+    # un reticule capable de mentir sur la zone morte appliquee.
     enriched_topic: "/videotracking/enriched/compressed"
+    # reliable : un abonne reliable REFUSE un publieur best_effort, alors qu un publieur
+    # reliable satisfait AUSSI les abonnes best_effort. Le mux souscrit en best_effort mais
+    # rosbridge, foxglove et web_video_server en reliable -- ce reglage est le seul qui les
+    # serve tous sans dedoubler le topic. false pour revenir a best_effort sans recompiler.
+    enriched_reliable: true
     jpeg_quality: 80
     # 0.0 = pas de limitation : l'etage suit la cadence de detection. Le monter (ex. 0.1)
     # bride le RE-ENCODAGE, seul etage qui coute du CPU pur sur RPi4.
@@ -63,20 +99,24 @@ overlay_node:
 
 servocam_node:
   ros__parameters:
-    # Gains de la loi de commande. Les BORNES viennent du fichier canonique (cf. en-tete).
-    pan_gain: 18.0
-    pan_invert: false
-    tilt_gain: 10.0
-    tilt_invert: false
+    # Gains de la loi de commande. Les BORNES et `aspect` viennent du fichier canonique,
+    # pousses par le launch (cf. en-tete) : ne PAS les redeclarer ici.
+    pan_gain: 10.0
+    invert_pan: false
+    tilt_gain: 6.0
+    # true : avec `flip: "h"` du tracking_node, ce triplet est exactement celui du prototype
+    # (`--flip h --invert-tilt`). A false, le tilt part en butee -- contre-reaction positive.
+    invert_tilt: true
     # Zone morte + hysteresis : sans elles la camera pompe autour du centre. L'erreur est
     # diminuee de la zone morte avant application, sinon le mouvement saute au franchissement.
-    deadzone: 0.08
-    deadzone_hyst: 0.05
-    max_step_deg: 6.0
-    max_vel_deg_s: 120.0
-    max_accel_deg_s2: 400.0
+    # 0,25 est la valeur du prototype ; 0,08 etait celle du CONSTRUCTEUR de RobotServoMotor,
+    # que RobotMain ecrase -- d'ou une camera trois fois trop nerveuse.
+    deadzone: 0.25
+    dead_hyst: 0.05
+    max_step: 4.0
+    max_vel: 120.0
+    max_accel: 400.0
     smooth: true
-    aspect: 1.3333333
     rate_hz: 30.0
     # Cible perdue depuis 0.5 s -> on arrete de commander (on ne recentre PAS d'office :
     # un retour au repos non demande ferait perdre une cible qui revient dans le champ).

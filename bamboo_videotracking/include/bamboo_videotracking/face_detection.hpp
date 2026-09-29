@@ -53,8 +53,10 @@ namespace bamboo_videotracking
 using Landmarks = std::vector<cv::Point2f>;
 
 /// Reglages exposes en parametres ROS et modifiables a chaud (lot V3.6). Les valeurs sont
-/// celles du prototype : les changer sans mesure au banc V6.3 n'est pas un reglage, c'est
-/// une derive.
+/// celles du prototype -- de ses defauts ARGPARSE (`RobotMain.py`), pas de ceux de ses
+/// constructeurs de classe, que RobotMain ecrase tous. Les noms aussi sont les siens, pour
+/// qu'un essai se transpose du banc au ROS sans retraduction. Les changer sans mesure au
+/// banc V6.3 n'est pas un reglage, c'est une derive.
 struct DetectConfig
 {
   std::string detector{"yunet"};   ///< haar | dnn | yunet
@@ -63,13 +65,18 @@ struct DetectConfig
   double det_conf{0.6};            ///< seuil de confiance du detecteur
 
   // --- machine a etats de verrou ---
-  double iou_reanchor{0.3};        ///< en dessous : le detecteur a trouve AILLEURS -> recentrage
-  double score_min{0.25};          ///< score tracker sous lequel on lache
-  double hold_ms{800.0};           ///< duree de survie sans detection
-  double hold_score_min{0.5};      ///< au-dela de ce score, hold_ms est assoupli
-  int max_det_misses{12};          ///< detections manquees avant liberation ANTI-DERIVE
-  double area_ratio_max{4.0};      ///< boite > 4x l'aire de reference -> invraisemblable
-  double area_ratio_min{0.25};     ///< boite < 1/4 -> invraisemblable
+  double iou_reanchor{0.2};        ///< en dessous : le detecteur a trouve AILLEURS -> recentrage
+  double score_min{0.3};           ///< score tracker sous lequel on lache
+  double hold_ms{5000.0};          ///< duree de survie sans detection
+  double hold_score_min{0.6};      ///< au-dela de ce score, hold_ms est assoupli
+  int max_det_misses{8};           ///< detections manquees avant liberation ANTI-DERIVE
+  // --- vraisemblance de la boite ---
+  // max_grow est le nom du prototype (`--track-max-grow`) et compare des AIRES, comme lui.
+  double max_grow{4.5};            ///< boite > 4,5x l'aire de reference -> invraisemblable
+  double area_ratio_min{0.25};     ///< boite < 1/4 -> invraisemblable (ajout ROS, sans
+                                   ///< equivalent au prototype)
+  double max_area_frac{0.5};       ///< garde ABSOLUE : boite couvrant plus de la moitie de
+                                   ///< l'image -> invraisemblable quoi qu'en dise le rapport
   double inter_frac_min{0.2};      ///< fraction de la boite devant rester dans l'image
 };
 

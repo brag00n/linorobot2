@@ -70,35 +70,49 @@ public:
     pan_.name = "pan";
     tilt_.name = "tilt";
 
-    // Valeurs du prototype (RobotServoMotor.py), A UNE CORRECTION PRES : le prototype
-    // borne le pan a 17-178, mais la fiche carte etablit que 172 deg est le DERNIER
-    // angle sain du SG90 -- au-dela il force en butee en continu (~700 mA, pignons
-    // plastique). Le clamp vit donc ici, cote hote, sans reflash.
-    pan_.gain = declare_parameter<double>("pan_gain", 18.0);
-    pan_.min_deg = declare_parameter<double>("pan_min_deg", 8.0);
-    pan_.max_deg = declare_parameter<double>("pan_max_deg", 172.0);
-    pan_.home = declare_parameter<double>("pan_home_deg", 88.0);
-    pan_.invert = declare_parameter<bool>("pan_invert", false);
+    // Valeurs du prototype, et de la BONNE COUCHE : `RobotServoMotor.__init__` porte des
+    // defauts de classe (panGain 18, tiltGain 10, deadzone 0,08, maxStep 6) que
+    // `RobotMain.py` ECRASE tous par ses defauts argparse (10, 6, 0,25, 4). Le prototype
+    // etant TOUJOURS lance par RobotMain, ce sont ces derniers qui sont calibres -- avoir lu
+    // la couche constructeur est ce qui a produit une camera en butee au premier essai ROS.
+    // Les NOMS sont eux aussi ceux du prototype (`--invert-pan`, `--max-step`...) pour qu'un
+    // essai se transpose du banc au ROS sans retraduction.
+    // UNE SEULE CORRECTION assumee : le prototype borne le pan a 17-178, mais la fiche carte
+    // etablit que 172 deg est le DERNIER angle sain du SG90 -- au-dela il force en butee en
+    // continu (~700 mA, pignons plastique). Le clamp vit donc ici, cote hote, sans reflash,
+    // et les bornes arrivent de toute facon du fichier canonique (cf. le launch).
+    pan_.gain = declare_parameter<double>("pan_gain", 10.0);
+    pan_.min_deg = declare_parameter<double>("pan_min", 8.0);
+    pan_.max_deg = declare_parameter<double>("pan_max", 172.0);
+    pan_.home = declare_parameter<double>("pan_home", 88.0);
+    pan_.invert = declare_parameter<bool>("invert_pan", false);
 
-    tilt_.gain = declare_parameter<double>("tilt_gain", 10.0);
-    tilt_.min_deg = declare_parameter<double>("tilt_min_deg", 20.0);
-    tilt_.max_deg = declare_parameter<double>("tilt_max_deg", 70.0);
-    tilt_.home = declare_parameter<double>("tilt_home_deg", 42.0);
-    tilt_.invert = declare_parameter<bool>("tilt_invert", false);
+    tilt_.gain = declare_parameter<double>("tilt_gain", 6.0);
+    tilt_.min_deg = declare_parameter<double>("tilt_min", 20.0);
+    tilt_.max_deg = declare_parameter<double>("tilt_max", 70.0);
+    tilt_.home = declare_parameter<double>("tilt_home", 42.0);
+    // true, comme `--invert-tilt` du prototype : ny > 0 designe un visage BAS dans l'image,
+    // et c'est en DIMINUANT l'angle du S2 que la camera descend. Sans cette inversion la
+    // boucle est a contre-reaction POSITIVE et le tilt part en butee (mesure a l'essai T7).
+    tilt_.invert = declare_parameter<bool>("invert_tilt", true);
 
-    const double dz = declare_parameter<double>("deadzone", 0.08);
-    const double dh = declare_parameter<double>("deadzone_hyst", 0.05);
-    const double ms = declare_parameter<double>("max_step_deg", 6.0);
+    const double dz = declare_parameter<double>("deadzone", 0.25);
+    const double dh = declare_parameter<double>("dead_hyst", 0.05);
+    const double ms = declare_parameter<double>("max_step", 4.0);
     pan_.dead = tilt_.dead = dz;
     pan_.dead_hyst = tilt_.dead_hyst = dh;
     pan_.max_step = tilt_.max_step = ms;
 
-    max_vel_ = declare_parameter<double>("max_vel_deg_s", 120.0);
-    max_accel_ = declare_parameter<double>("max_accel_deg_s2", 400.0);
+    max_vel_ = declare_parameter<double>("max_vel", 120.0);
+    max_accel_ = declare_parameter<double>("max_accel", 400.0);
     smooth_ = declare_parameter<bool>("smooth", true);
-    // Le cadrage n'est pas carre : une erreur de 0,1 en x et en y ne represente pas le
-    // meme ecart angulaire. La zone morte du pan est donc mise a l'echelle de l'aspect.
-    aspect_ = declare_parameter<double>("aspect", 640.0 / 480.0);
+    // aspect = HAUTEUR / LARGEUR, et le sens compte : nx est normalise par w/2 et ny par
+    // h/2, donc une zone morte CARREE A L'ECRAN demande un seuil de pan multiplie par h/w
+    // (0,5625 en 16:9). Le rapport inverse, lui, ELARGIT la zone morte du pan au lieu de la
+    // resserrer -- c'est ce qui laissait le pan muet sur un visage a nx = -0,13. La valeur
+    // reelle est derivee de camera_width/camera_height par le launch ; ce defaut compile
+    // vaut 1.0, le meme repli neutre que ServoNode.py du prototype.
+    aspect_ = declare_parameter<double>("aspect", 1.0);
     rate_hz_ = declare_parameter<double>("rate_hz", 30.0);
     // Sans TrackState depuis ce delai on RELACHE la rampe (vitesse a zero) au lieu de
     // continuer vers une cible perimee : un tracker qui decroche ne doit pas faire
@@ -157,6 +171,10 @@ private:
     if (m->target == "tracking") {
       const bool on = (m->value == "on" || m->value == "true" || m->value == "1");
       enabled_ = m->value.empty() ? !enabled_ : on;
+      // L'etat ARME etait invisible : rien ne distinguait "desarme" de "aucune cible", et
+      // les deux se traduisent par une camera immobile. On le journalise donc.
+      RCLCPP_INFO(get_logger(), "suivi %s (pan %.1f, tilt %.1f)",
+        enabled_ ? "ARME" : "desarme", pan_.angle, tilt_.angle);
       if (!enabled_) {
         // ON NE RECENTRE PAS en desarmant : la camera reste ou elle est. Recentrer
         // ferait bouger le robot a l'instant ou l'operateur coupe le suivi, ce qui est
@@ -209,7 +227,7 @@ private:
     const double ny = use_pred ? ts->pred_ny : ts->ny;
 
     // SIGNE : nx > 0 = visage a DROITE de l'image. Augmenter l'angle de pan tourne la
-    // camera d'un cote qui depend du montage -> `pan_invert` existe pour ca, et c'est la
+    // camera d'un cote qui depend du montage -> `invert_pan` existe pour ca, et c'est la
     // seule chose a changer si la camera part du mauvais cote au premier essai (T6).
     trackAxis(pan_, nx, pan_.dead * aspect_);
     trackAxis(tilt_, ny, tilt_.dead);
@@ -320,7 +338,9 @@ private:
   Axis tilt_;
   double max_vel_{120.0};
   double max_accel_{400.0};
-  double aspect_{640.0 / 480.0};
+  // Ecrase des le constructeur par le parametre `aspect` (defaut 1.0, repli neutre) : cet
+  // initialiseur ne sert qu'a ne jamais lire un membre non initialise.
+  double aspect_{1.0};
   double rate_hz_{30.0};
   double idle_timeout_s_{0.5};
   bool smooth_{true};

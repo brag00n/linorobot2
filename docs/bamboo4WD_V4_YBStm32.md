@@ -129,6 +129,50 @@ qui le transmettent **tel quel** à tous les groupes → fichier canonique, géo
 > le canonique, mais c'est l'**opérateur** qui démarre le service de contrôleur de **son** robot
 > (`driver.stm32` ici, `driver.real` pour BambooWS).
 
+### Où changer quoi
+
+La configuration de ce robot est une **donnée**, pas du Python. Trois fichiers, et un seul par
+question :
+
+| Ce qui change | Où | Prend effet |
+|---|---|---|
+| un composant en moins / en plus | `bamboo4WD_V4_YBStm32_base/config/layout.yaml` → `groups` | au prochain lancement |
+| un **câblage** (qui parle à qui, et sous quel nom de topic) | le même fichier → `wiring` | au prochain lancement |
+| une valeur **physique** (géométrie, PID, bornes servo) | `bamboo4WD_V4_YBStm32_base/config/bamboo4WD_V4_YBStm32.yaml` — **et l'URDF suit**, par les arguments xacro | au prochain lancement |
+| un fait de **machine** (port série, `/dev/videoN`, manette) | le YAML d'hôte du groupe, ou `docker/.env` | au prochain `up -d` |
+
+Les cinq `enable_*` restent des **surcharges de ligne de commande** : leur défaut vient de `layout.yaml`,
+un `enable_video:=false` explicite gagne. Un groupe inconnu ou un câblage inconnu **font échouer le
+bringup en le nommant** — un câblage ignoré en silence est le pire des cas, car le bringup passe, le
+topic n'existe pas, et on cherche une panne DDS.
+
+**L'invariant qui rend les modules réutilisables** : un module ne va **jamais chercher** la configuration
+d'un robot — le bringup la lui **pousse** en arguments. Le nom **logique** d'un flux appartient au nœud,
+le nom **réel** au robot, exactement comme `servo_axes`, où un producteur nomme un **axe** et jamais une
+voie de carte. C'est ce qui permet de brancher la même carte sur une manette ici et sur un module de
+navigation ailleurs, sans toucher une ligne de code.
+
+```yaml
+# extrait de config/layout.yaml
+wiring:
+  videotracking: {servo_cmd: /servo/cmd}   # producteur
+  driver:        {servo_cmd: /servo/cmd}   # consommateur (carte Yahboom v3)
+```
+
+> ⚠️ **Les deux lignes doivent porter le même nom.** Le tracking publie, la carte écoute : les séparer
+> laisse les deux nœuds contents et la caméra **immobile**. Le bringup le signale par une ligne
+> `ATTENTION`, mais ne refuse pas — deux cartes se partageant des axes serait légitime.
+
+`cmd_vel` **ne figure pas** dans `wiring`, et c'est délibéré : le driver expose bien l'argument, mais sa
+souscription n'est créée qu'à l'**armement moteur**, donc invisible tant que `enable_cmd_vel` est faux.
+Et `bamboo_control` n'expose pas de sortie de traction, parce que son `teleop_node` ne publie **aucun**
+`cmd_vel` : un remappage sans clé correspondante est ignoré **en silence**, soit un point de
+configuration qui a l'air de marcher.
+
+Enfin, l'argument `robot` **n'a pas de défaut** dans les modules génériques. Un module lancé seul
+`échoue en nommant l'argument` — préféré à un module qui charge en silence la géométrie et les **bornes
+servo** d'un autre robot, ce qui vaut une butée sur un SG90.
+
 ### Capacités : déclarées dans un fichier, vérifiées avant tout nœud
 
 Chaque module de contrôleur livre `config/capabilities.yaml`. Ce n'est **pas** un fichier de paramètres
@@ -205,6 +249,72 @@ et `overlay_node`, la composition **n'a pas pris** et tout le gain du C++ est pe
 > construction**, et les **quatre** composables mouraient sur **une seule** entité fautive. Le correctif
 > est **par entité** (`SubscriptionOptions` + `IntraProcessSetting::Disable`), pas par nœud, pour que les
 > images restent en zero-copy. Contraint **toute** future entité latchée du groupe.
+
+### Le réglage du suivi est celui du prototype, noms compris
+
+Le portage ROS des nœuds de suivi doit rester **transposable** depuis le prototype
+`robot_controlv3` : un essai fait au banc se rejoue sous ROS **sans retraduction**. Deux règles en
+découlent, et elles ont chacune coûté un essai raté (T7) avant d'être écrites ici.
+
+**1. La bonne couche de défauts.** `RobotServoMotor.__init__` porte des défauts de classe
+(`panGain` 18, `tiltGain` 10, `deadzone` 0,08, `maxStep` 6) que **`RobotMain.py` écrase tous** par
+ses défauts argparse (10, 6, 0,25, 4). Le prototype étant **toujours** lancé par `RobotMain`, ce
+sont ces derniers qui sont calibrés. Avoir lu la couche constructeur est la cause **unique** de la
+divergence numérique du premier essai ROS.
+
+**2. Les mêmes noms.** Renommer un paramètre se fait **simultanément** dans
+`servocam_node.cpp` / `tracking_node.cpp`, `config/videotracking.yaml` et
+`launch/videotracking.launch.py` : un paramètre poussé sous un nom que le nœud ne déclare pas est
+ignoré **en silence**, et le nœud retombe sur son défaut compilé.
+
+Ligne de lancement de référence du prototype :
+
+```
+robot_controlv3.RobotMain --no-motion --invert-tilt --track-max-grow 4.5 --flip h \
+                          --index 1 --robot bamboo4WD_V4_bench --protocol mavlink
+```
+
+| Prototype | ROS 2 | Valeur | Pourquoi ce n'est pas un détail |
+|---|---|---|---|
+| `--pan-gain` / `--tilt-gain` | `pan_gain` / `tilt_gain` | 10 / 6 | défauts **argparse**, pas constructeur |
+| `--deadzone` | `deadzone` | 0,25 | 0,08 (constructeur) → caméra 3× trop nerveuse |
+| `--max-step` | `max_step` | 4,0 | pas maximal par tick |
+| `--dead-hyst`, `--max-vel`, `--max-accel` | `dead_hyst`, `max_vel`, `max_accel` | 0,05 / 120 / 400 | déjà conformes |
+| `--pan-min/max/home` | `pan_min` / `pan_max` / `pan_home` | fichier canonique | poussés par le launch, **jamais** dans le YAML de groupe |
+| `--invert-pan` / `--invert-tilt` | `invert_pan` / `invert_tilt` | false / **true** | voir le triplet ci-dessous |
+| `--flip` | `flip` (sur `tracking_node`) | **`h`** | miroir appliqué **à la trame**, avant détection |
+| (`aspect` dérivé de `--size`) | `aspect` | dérivé **h/w** | voir ci-dessous |
+| `--track-hold-ms` | `hold_ms` | 5000 | à ~5 fps, 600 ms ne valent que **trois trames** |
+| `--track-hold-score-min` | `hold_score_min` | 0,60 | n'était pas exposé |
+| `--track-score-min` | `score_min` | 0,30 | |
+| `iou_reanchor` (défaut de classe) | `iou_reanchor` | 0,20 | |
+| `--track-max-grow` | `max_grow` (ex-`area_ratio_max`) | **4,5** | rapport d'**aire**, même grandeur qu'au prototype |
+| `--track-max-area` | `max_area_frac` | 0,5 | garde **absolue**, était absente |
+| `--predict-lead-ms` / `--predict-ms` | `predict_horizon_s` / `coast_max_s` | 0,12 / 0,7 | noms **SI** conservés, valeurs alignées |
+
+**Le triplet `(flip, invert_pan, invert_tilt)` est indivisible.** Le miroir est appliqué **à la
+capture**, en amont de `nx`/`ny`, et le prototype ne le compense **nulle part** dans sa loi de
+commande — le mot `flip` n'apparaît pas une fois dans `device/motion/`. Le suivi lui-même est
+**insensible** au miroir (un visage en miroir reste un visage, détecteur, tracker et Kalman
+compris) ; c'est le **signe de la consigne servo** qui ne l'est pas. Changer l'un des trois sans
+les deux autres met un axe à l'envers.
+
+**`aspect` vaut `hauteur / largeur`, et le sens compte.** `nx` est normalisé par `w/2` et `ny` par
+`h/2` : une zone morte **carrée à l'écran** demande donc un seuil de pan multiplié par `h/w`. Le
+rapport inverse **élargit** la zone morte du pan au lieu de la resserrer — c'est ce qui laissait la
+caméra immobile sur un visage à `nx = −0,13` sans qu'aucun seuil ne paraisse fautif. Il est
+désormais **dérivé** de `camera_width` / `camera_height` du fichier canonique par le launch, les
+deux mêmes nombres dont `bamboo_video` fait ses caps gstreamer : un seul cadrage déclaré dans tout
+le dépôt.
+
+> ⚠️ **Dette ouverte** : ces deux nombres valent `640 × 480` (4:3) alors que la webcam délivre du
+> 16:9. Tant que la résolution réellement capturée n'est pas verrouillée, l'`aspect` dérivé est
+> cohérent avec ce qui est **déclaré**, pas forcément avec ce qui **arrive**. Corriger
+> `camera_height` changerait aussi les caps de `bamboo_video` : c'est un lot à part.
+
+**Ce qui reste absent du portage**, consigné pour ne pas le redécouvrir : `--target-size` et les
+touches `+`/`−` (distance de consigne 0,03–0,45), `predict_min_speed` (0,4), `redetect_ms` (400) et
+`min_size` (24).
 
 ### URLs de diffusion — le piège qui coûte une heure
 
@@ -293,6 +403,7 @@ chacun ; c'est ce découpage qui permet d'arrêter le tracking sans couper la vi
 cd /home/dietpi/prj_robotique/Bamboo4WD_V4/linorobot2/docker
 sudo -n docker compose --profile boot up -d          # bamboo_video + driver.stm32
 sudo -n docker compose up -d bamboo_videotracking    # à armer À LA MAIN (§6.7)
+sudo -n docker compose --profile bench up -d bringup.stm32   # banc, EXCLUSIF des ci-dessus
 ```
 
 **Banc / mise au point — un seul processus**, la définition lisible de « tous les nœuds du robot » :
@@ -302,6 +413,13 @@ ros2 launch bamboo4WD_V4_YBStm32_base bringup.launch.py
 ros2 launch bamboo4WD_V4_YBStm32_base bringup.launch.py enable_tracking:=true
 ros2 launch bamboo4WD_V4_YBStm32_base bringup.launch.py enable_video:=false   # carte seule
 ```
+
+Le service de banc est sous **profil `bench`** : un `up -d` nu ne peut plus le lever par mégarde,
+et tout `stop`/`logs`/`exec` sur lui exige `--profile bench`, faute de quoi compose répond
+**`no such service`** en laissant l'ancien conteneur tourner. Son `build/` et son `install/` sont des
+**volumes nommés** : un conteneur neuf ne reconstruit plus à froid (8 à 12 min mesurées), mais un
+fichier qui **déménage** laisse un lien symbolique mort qu'il faut purger par
+`docker volume rm bamboov4_humble_bench_build bamboov4_humble_bench_install`.
 
 Les deux chemins incluent les **mêmes** launch de groupe : il n'y a pas deux configurations à maintenir.
 Et ils sont **exclusifs** — le service `bringup.stm32` et les trois services de groupe se disputeraient

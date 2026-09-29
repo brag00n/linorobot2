@@ -62,12 +62,20 @@ double FaceDetection::interFrac(const cv::Rect & r, int w, int h)
 
 bool FaceDetection::implausible(const cv::Rect & r, int w, int h) const
 {
-  // Vraisemblance RELATIVE au verrou, pas absolue : un visage proche et un visage lointain
-  // sont tous deux plausibles, mais un visage qui QUADRUPLE d'aire en quelques trames ne
-  // l'est pas -- c'est un tracker qui vient d'avaler l'arriere-plan.
+  // D'abord les deux gardes ABSOLUES du prototype (FaceDetection._implausible), et dans
+  // cet ordre : le rapport d'aire ne protege de rien quand l'aire de REFERENCE est deja
+  // fausse -- une boite gonflee des l'ancrage donne un ref_area_ enorme, donc un rapport
+  // eternellement sage, et le verrou suit l'arriere-plan sans qu'aucun seuil ne bronche.
+  if (r.width > w * 0.9 || r.height > h * 0.9) { return true; }
+  if (static_cast<double>(r.area()) > cfg_.max_area_frac * static_cast<double>(w) * h) {
+    return true;
+  }
+  // Puis la vraisemblance RELATIVE au verrou : un visage proche et un visage lointain sont
+  // tous deux plausibles, mais un visage qui QUADRUPLE d'aire en quelques trames ne l'est
+  // pas -- c'est un tracker qui vient d'avaler l'arriere-plan.
   if (ref_area_ > 0.0) {
     const double ratio = static_cast<double>(r.area()) / ref_area_;
-    if (ratio > cfg_.area_ratio_max || ratio < cfg_.area_ratio_min) { return true; }
+    if (ratio > cfg_.max_grow || ratio < cfg_.area_ratio_min) { return true; }
   }
   return interFrac(r, w, h) < cfg_.inter_frac_min;
 }

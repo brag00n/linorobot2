@@ -22,8 +22,14 @@ est le SEUL endroit du depot qui lie un axe a une carte et a ses butees, et elle
 IMBRIQUEE (`servo_axes.pan.min_deg`). Un `parameters=[fichier]` ne la verrait pas -- ROS
 ignore en silence les cles qu'un noeud ne declare pas -- et `servocam_node` retomberait sur
 ses defauts compiles. On resout donc la table ici, a l'ouverture du launch, et on injecte
-`pan_min_deg` / `pan_max_deg` / ... : c'est ce qui protege reellement les SG90 de la butee
+`pan_min` / `pan_max` / ... : c'est ce qui protege reellement les SG90 de la butee
 (a 180 deg, ~700 mA continus dans des pignons plastique).
+
+Le meme convoi porte `aspect`, pour la meme raison de source unique : il vaut HAUTEUR sur
+LARGEUR du cadrage, donc il se DERIVE de `camera_width` / `camera_height`, les deux memes
+nombres dont `bamboo_video` fait ses caps gstreamer. Ecrit a la main dans le YAML du groupe,
+il y avait fini a l'ENVERS (w/h), ce qui ELARGIT la zone morte du pan au lieu de la resserrer
+-- une camera qui ne suit pas horizontalement sans qu'aucun seuil ne paraisse fautif.
 
 Ce groupe ne depend d'AUCUN module de controleur : il publie /servo/cmd en nommant les axes
 (`pan`, `tilt`) et tourne sans executeur -- c'est ce qui rend le banc V6.3 possible robot
@@ -51,7 +57,7 @@ _AXES = ("pan", "tilt")
 
 
 def _servoLimits(robot, config_path=""):
-    """Derive les parametres de course de servocam_node depuis la table `servo_axes`.
+    """Derive course des servos ET aspect du cadrage depuis le fichier canonique du robot.
 
     `config_path` est POUSSE par le bringup du robot (E2) : ce module est generique et n'a
     pas a savoir ou vit la configuration d'une machine. Vide, resolveRobotConfig cherche,
@@ -82,14 +88,55 @@ def _servoLimits(robot, config_path=""):
         if not spec:
             raise RuntimeError(
                 "axe '%s' absent de servo_axes dans %s" % (axis, path))
-        for key, suffix in (("min_deg", "min_deg"),
-                            ("max_deg", "max_deg"),
-                            ("rest_deg", "home_deg")):
+        # Les SUFFIXES sont les noms de parametres du prototype (`--pan-min`, `--tilt-max`,
+        # `--pan-home`) et non des noms en `_deg` : un essai du banc se transpose ainsi au
+        # ROS sans retraduction. Le renommage doit rester SIMULTANE avec `servocam_node.cpp`
+        # et `videotracking.yaml` -- un parametre pousse sous un nom que le noeud ne declare
+        # pas est ignore EN SILENCE, et le noeud retombe sur son defaut compile.
+        for key, suffix in (("min_deg", "min"),
+                            ("max_deg", "max"),
+                            ("rest_deg", "home")):
             if key not in spec:
                 raise RuntimeError(
                     "axe '%s' : cle '%s' absente dans %s" % (axis, key, path))
             out["%s_%s" % (axis, suffix)] = float(spec[key])
+
+    # aspect = HAUTEUR / LARGEUR, et le SENS compte : nx est normalise par w/2 et ny par h/2,
+    # donc une zone morte CARREE A L'ECRAN demande un seuil de pan multiplie par h/w. Derive
+    # des memes deux nombres que les caps gstreamer de bamboo_video : un seul cadrage declare
+    # dans tout le depot, quelle que soit la resolution retenue.
+    for key in ("camera_width", "camera_height"):
+        if key not in params:
+            raise RuntimeError(
+                "'%s' absent de %s : impossible de deriver l'aspect du cadrage, donc la "
+                "zone morte du pan" % (key, path))
+    width = float(params["camera_width"])
+    if width <= 0.0:
+        raise RuntimeError("camera_width = %r dans %s : cadrage impossible" % (width, path))
+    out["aspect"] = float(params["camera_height"]) / width
     return out
+
+
+def _deadzone(group_cfg):
+    """Zone morte de la loi, lue LA OU elle est declaree : `servocam_node` du YAML du groupe.
+
+    Un parametre appartient a un noeud : `overlay_node` ne peut pas aller lire celui de
+    `servocam_node` a l'execution. C'est donc le launch qui relaie l'UNIQUE valeur declaree
+    aux deux noeuds. La redeclarer sous `overlay_node:` serait le pire des cas -- deux
+    valeurs qui divergent en silence, et un reticule qui dessine une zone morte que la loi
+    n'applique pas.
+
+    Echoue en NOMMANT le fichier : sans zone morte, overlay_node retomberait sur son defaut
+    compile et dessinerait une boite plausible mais fausse, ce qui est pire qu'aucune boite.
+    """
+    with open(group_cfg, "r", encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh) or {}
+    params = (doc.get("servocam_node") or {}).get("ros__parameters") or {}
+    if "deadzone" not in params:
+        raise RuntimeError(
+            "'deadzone' absent de servocam_node dans %s : le reticule d'overlay_node ne "
+            "pourrait pas dire la zone morte reellement appliquee" % group_cfg)
+    return float(params["deadzone"])
 
 
 def _launchSetup(context, *args, **kwargs):
@@ -109,6 +156,14 @@ def _launchSetup(context, *args, **kwargs):
     hot = [group_cfg, {"models_dir": models_dir, "input_topic": input_topic}]
     recog = [group_cfg, {"models_dir": models_dir, "faces_dir": faces_dir}]
     servo = [group_cfg, limits]
+    # HUD : le reticule doit suivre la MEME zone morte et le MEME `aspect` que la loi -- donc
+    # la meme source, `servocam_node` du YAML de groupe pour l'une, le fichier canonique du
+    # robot pour l'autre. Et le nom du topic servo est celui REELLEMENT en vigueur (le meme
+    # que le remappage de servocam_node plus bas), sinon le HUD n'y verrait jamais passer une
+    # consigne et la contre-epreuve de la zone morte serait impossible.
+    overlay = hot + [{"deadzone": _deadzone(group_cfg),
+                      "aspect": limits["aspect"],
+                      "servo_cmd_topic": servo_cmd}]
 
     container = ComposableNodeContainer(
         name=container_name,
@@ -137,7 +192,7 @@ def _launchSetup(context, *args, **kwargs):
                 package="bamboo_videotracking",
                 plugin="bamboo_videotracking::OverlayNode",
                 name="overlay_node",
-                parameters=hot,
+                parameters=overlay,
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
             ComposableNode(
@@ -181,9 +236,14 @@ def generate_launch_description():
               "resources/Other/face_detection_model")
     return LaunchDescription([
         DeclareLaunchArgument(
-            "robot", default_value="bamboo4WD_V4_YBStm32",
-            description="Nom du robot (sans .yaml). Sert a nommer le fichier canonique "
-                        "quand robot_config n'est pas pousse."),
+            "robot",
+            # PAS de default_value (E6) : un module GENERIQUE ne choisit pas un robot en
+            # silence. Sans defaut, launch refuse et NOMME l'argument manquant ; avec un
+            # defaut, un module lance seul chargeait la geometrie et les bornes servo d'un
+            # AUTRE robot sans un mot -- donc des butees possibles sur les SG90.
+            description="Nom du robot (sans .yaml), OBLIGATOIRE. Sert a nommer le fichier "
+                        "canonique quand robot_config n'est pas pousse. C'est le bringup "
+                        "du robot qui le fournit (ou docker/.env, ROBOT=)."),
         DeclareLaunchArgument(
             "robot_config", default_value="",
             description="Chemin COMPLET du fichier canonique du robot, pousse par son "

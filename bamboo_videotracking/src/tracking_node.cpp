@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include <opencv2/core.hpp>        // cv::flip (miroir de trame, cf. parametre `flip`)
 #include <opencv2/imgcodecs.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
@@ -48,8 +49,20 @@ public:
     const std::string in_topic =
       declare_parameter<std::string>("input_topic", "/video/raw/compressed");
     predict_mode_ = declare_parameter<std::string>("predict_mode", "anticip");
-    predict_horizon_s_ = declare_parameter<double>("predict_horizon_s", 0.15);
-    coast_max_s_ = declare_parameter<double>("coast_max_s", 0.6);
+    predict_horizon_s_ = declare_parameter<double>("predict_horizon_s", 0.12);
+    coast_max_s_ = declare_parameter<double>("coast_max_s", 0.7);
+    // MIROIR DE TRAME, equivalent de `--flip h` du prototype, applique la ou le prototype
+    // l'applique : a la CAPTURE (RobotSensorWebCam.read), donc en amont de tout. Memes
+    // valeurs que lui : none | v | h | 180. Le prototype ne compense PAS le miroir dans sa
+    // loi de commande -- le mot `flip` n'apparait nulle part dans device/motion/ -- et c'est
+    // pour cela que le triplet (flip, invert_pan, invert_tilt) se regle ENSEMBLE.
+    flip_ = declare_parameter<std::string>("flip", "h");
+    if (flip_ != "none" && flip_ != "v" && flip_ != "h" && flip_ != "180") {
+      // Bruyant, pas de repli muet : un miroir ignore en silence met le pan a l'envers, et
+      // une camera qui fuit son sujet ne ressemble pas a une faute de configuration.
+      RCLCPP_FATAL(get_logger(), "flip '%s' inconnu (none|v|h|180)", flip_.c_str());
+      throw std::runtime_error("flip invalide : " + flip_);
+    }
 
     DetectConfig cfg;
     cfg.detector = declare_parameter<std::string>("detector", cfg.detector);
@@ -59,7 +72,10 @@ public:
     cfg.iou_reanchor = declare_parameter<double>("iou_reanchor", cfg.iou_reanchor);
     cfg.score_min = declare_parameter<double>("score_min", cfg.score_min);
     cfg.hold_ms = declare_parameter<double>("hold_ms", cfg.hold_ms);
+    cfg.hold_score_min = declare_parameter<double>("hold_score_min", cfg.hold_score_min);
     cfg.max_det_misses = declare_parameter<int>("max_det_misses", cfg.max_det_misses);
+    cfg.max_grow = declare_parameter<double>("max_grow", cfg.max_grow);
+    cfg.max_area_frac = declare_parameter<double>("max_area_frac", cfg.max_area_frac);
 
     std::string err;
     if (!det_.build(models_dir_, cfg, err)) {
@@ -76,7 +92,17 @@ public:
     // --- interfaces ROS -------------------------------------------------------------
     // Le flux d'entree est BEST-EFFORT, et c'est un choix : une trame perdue vaut mieux
     // qu'une trame en retard. Un suivi qui rattrape une file d'attente suit le passe.
-    auto img_qos = rclcpp::SensorDataQoS();
+    //
+    // PROFONDEUR 1, et NON `SensorDataQoS()` qui en garde 5 : sur un flux a 30 Hz consomme a
+    // 3 Hz, une file de 5 est en permanence PLEINE, donc chaque trame traitee a cinq trames
+    // de retard -- la file GARANTIT le retard, elle ne l'absorbe pas. Mesure : l'age de
+    // l'en-tete valait 9 ms en sortie de gscam2 et 2461 ms en mediane ici, avec 188 trames
+    // perdues. Un asservissement dont la mesure a 2,5 s de retard oscille par construction :
+    // il corrige une position que le visage a deja quittee. C'etait la cause du pompage
+    // pan/tilt observe a T10, alors que la loi de commande et ses gains etaient justes.
+    // Avec une profondeur de 1, l'intergiciel ECRASE la trame en attente : on traite
+    // toujours la plus recente, et le retard retombe a une periode de detection.
+    auto img_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort();
     sub_ = create_subscription<sensor_msgs::msg::CompressedImage>(
       in_topic, img_qos,
       [this](sensor_msgs::msg::CompressedImage::ConstSharedPtr msg) {onImage(msg);});
@@ -121,6 +147,18 @@ private:
         get_logger(), *get_clock(), 2000, "imdecode a echoue (%u trames perdues)",
         decode_fail_);
       return;
+    }
+
+    // MIROIR AVANT TOUT LE RESTE : detection, reconnaissance, incrustation et Foxglove
+    // partagent ainsi la MEME image, celle que l'operateur voit. Le flux brut publie par
+    // bamboo_video, lui, n'est pas touche. cv::flip : 0 = haut/bas, 1 = gauche/droite,
+    // -1 = les deux -- memes codes que RobotSensorWebCam.applyFlip du prototype.
+    if (flip_ == "v") {
+      cv::flip(bgr, bgr, 0);
+    } else if (flip_ == "h") {
+      cv::flip(bgr, bgr, 1);
+    } else if (flip_ == "180") {
+      cv::flip(bgr, bgr, -1);
     }
 
     // HORODATAGE DE CAPTURE, repris de l'amont et JAMAIS remplace par l'heure courante :
@@ -351,8 +389,24 @@ private:
         cfg.score_min = p.as_double(); touch_det = true;
       } else if (n == "hold_ms") {
         cfg.hold_ms = p.as_double(); touch_det = true;
+      } else if (n == "hold_score_min") {
+        cfg.hold_score_min = p.as_double(); touch_det = true;
       } else if (n == "max_det_misses") {
         cfg.max_det_misses = static_cast<int>(p.as_int()); touch_det = true;
+      } else if (n == "max_grow") {
+        cfg.max_grow = p.as_double(); touch_det = true;
+      } else if (n == "max_area_frac") {
+        cfg.max_area_frac = p.as_double(); touch_det = true;
+      } else if (n == "flip") {
+        // REJET NOMME plutot qu'un repli muet : un miroir inconnu accepte en silence
+        // mettrait le pan a l'envers, et la camera fuirait le sujet sans un mot.
+        const std::string v = p.as_string();
+        if (v != "none" && v != "v" && v != "h" && v != "180") {
+          res.successful = false;
+          res.reason = "flip doit valoir none, v, h ou 180";
+          return res;
+        }
+        flip_ = v;
       }
       // models_dir est volontairement absent : recharger les modeles sous une autre
       // racine en marche est une operation de deploiement, pas un reglage.
@@ -377,9 +431,10 @@ private:
 
   // --- etat -------------------------------------------------------------------------
   std::string models_dir_;
+  std::string flip_{"h"};
   std::string predict_mode_;
-  double predict_horizon_s_{0.15};
-  double coast_max_s_{0.6};
+  double predict_horizon_s_{0.12};
+  double coast_max_s_{0.7};
 
   FaceDetection det_;
   KalmanPredictor kal_;
