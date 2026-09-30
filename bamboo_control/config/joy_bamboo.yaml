@@ -7,27 +7,49 @@
 # envoie des PAS RELATIFS sur des axes NOMMES et laisse l'executeur borner.
 #
 # ---------------------------------------------------------------------------
-# AVERTISSEMENT QUI COUTE UNE HEURE SI ON LE SAUTE : LES INDEX CI-DESSOUS SONT
-# << A RELEVER AU jstest >>, ILS NE SONT PAS REPRIS DU PROTOTYPE.
+# RELEVE DU 2026-09-30, essai T20 de bambooSTM32YB. LES INDEX CI-DESSOUS SONT
+# MESURES, ET ILS NE VALENT QUE POUR CETTE MANETTE DANS CE MODE :
 #
-# Le prototype (tools/robot_controlv3/nodes/GamepadNode.py:36-55) porte bien des
-# index MESURES sur cette manette, mais il lit la manette par PYGAME/SDL, la ou
-# joy_linux_node lit l'API joystick du NOYAU. Les deux numerotations DIFFERENT,
-# et pas d'un decalage constant :
+#   manette   "GamepadX" (Under Control 2919), Bluetooth, MAC 00:90:E3:AF:7F:1E
+#   mode      XInput -- Home appui long pour eteindre, puis Home+X
+#   identite  VID 045E / PID 02E0 ; noyau 6.1.21-v8+, HID generique (pas xpad)
+#   methode   chaque controle actionne DEUX FOIS, le jeton double portant sa
+#             propre confirmation. Une passe simplement ORDONNEE avait donne une
+#             table FAUSSE (un controle muet decale tous les suivants d'un rang
+#             sans que rien ne le signale) : ne pas y revenir.
 #
-#   role            SDL / pygame (prototype)   joy_linux / xpad (attendu ici)
-#   LX / LY         axes 0 / 1                 axes 0 / 1
-#   gachettes LT/RT axes 4 / 5                 axes 2 / 5
-#   RX / RY         axes 2 / 3                 axes 3 / 4
-#   croix (D-pad)   get_hat(0), un HAT         axes 6 / 7, DEUX AXES
-#   clic stick D    bouton 9                   bouton 10 (le bouton Guide
-#                                              occupe l'index 8)
+# Table relevee -- AXES :
+#   0  stick GAUCHE X    droite = +
+#   1  stick GAUCHE Y    haut   = -
+#   2  ZL                REPOS = -32767, appui = +32767  (gachette TOUT OU RIEN)
+#   3  stick DROIT X     droite = +
+#   4  stick DROIT Y     haut   = -
+#   5  ZR                REPOS = -32767, appui = +32767
+#   6  croix X           droite = +
+#   7  croix Y           BAS    = +   <-- le CONTRAIRE de ce que disait ce
+#                                         fichier avant le releve
 #
-# Les valeurs ecrites ici sont donc la convention xpad ATTENDUE, marquee comme
-# non verifiee : un relevé `jstest /dev/input/js0` (ou `ros2 topic echo /joy`)
-# doit les confirmer AVANT de figer ce fichier, et le mode d'appairage change le
-# resultat -- XInput (Home+X) et DirectInput (Home+Y) ne donnent pas la meme
-# table. C'est l'essai T9 de bambooSTM32YB.
+# Table relevee -- BOUTONS (l'ordre Xbox pose sur une face Nintendo : le B
+# PHYSIQUE occupe la place du A Xbox, d'ou une numerotation contre-intuitive) :
+#   0 = B      1 = A      2 = Y      3 = X      4 = L      5 = R
+#   6 = -      7 = +
+#
+# CE QUE CETTE MANETTE N'A PAS, et c'est structurel : son descripteur declare
+# 10 codes (BTN_A..BTN_TR2) SANS BTN_THUMBL/BTN_THUMBR. Les deux CLICS DE STICK
+# N'EXISTENT PAS dans ce mode -- ce n'est pas un releve manque, c'est absent du
+# descripteur. Or le prototype leur confie deux fonctions (L3 = armer les
+# moteurs, R3 = recentrer la camera), et les 14 controles restants sont deja
+# tous pris par les 14 autres fonctions. D'ou les DEUX APPUIS LONGS ci-dessous,
+# seule divergence de ce portage, imposee par la MANETTE et non par ROS.
+#
+# Les modes ecartes, pour qu'on ne les re-explore pas :
+#   Home+Y  "Pro Controller" -- descripteur PARFAIT (16 boutons, stick droit en
+#           axes 2/3, exactement le prototype) mais il se declare VID 057E/2009
+#           et hid-nintendo N'EXISTE PAS dans ce noyau (absent de modules.dep,
+#           CONFIG_HID_NINTENDO jamais active ; reinstaller le paquet noyau n'y
+#           changerait RIEN). Bind sur hid-generic, donc js0 existe et AUCUN
+#           rapport n'arrive.
+#   Home+B  "Android" -- la manette n'apparait meme plus au scan Bluetooth.
 # ============================================================================
 
 joy_linux_node:
@@ -57,27 +79,49 @@ joy_linux_node:
 bamboo_teleop:
   ros__parameters:
 
-    # --- index des commandes (cf. AVERTISSEMENT en tete) -----------------
-    # << A RELEVER >> convention joy_linux / xpad.
+    # --- camera (cf. RELEVE en tete) --------------------------------------
     axis_pan: 3            # stick DROIT X   (- gauche / + droite)
     axis_tilt: 4           # stick DROIT Y   (- haut   / + bas)
     axis_dpad_x: 6         # croix horizontale (joy_linux la donne en AXE)
-    axis_dpad_y: 7         # croix verticale, +1 = haut, -1 = bas
-    button_tracking: 2     # X -> bascule le suivi          (touche F du prototype)
-    button_recognition: 3  # Y -> bascule la reconnaissance (touche R)
-    button_acquisition: 0  # A -> bascule l'acquisition     (touche A)
-    button_tracker: 4      # LB -> cycle de tracker         (none/mil/vit)
-    button_predict: 5      # RB -> cycle de prediction      (off/anticip/coast)
-    button_recenter: 10    # clic stick DROIT -> recentrage des axes
-    # Deplacement du robot. Memes reserves d'index : << A RELEVER >>.
+    axis_dpad_y: 7         # croix verticale, +1 = BAS, -1 = HAUT (releve)
+
+    # --- vision et modes -------------------------------------------------
+    button_tracking: 3     # X -> bascule le suivi          (touche F du prototype)
+    button_recognition: 2  # Y -> bascule la reconnaissance (touche R)
+    button_acquisition: 1  # A -> bascule l'acquisition     (touche A)
+    button_tracker: 4      # L -> cycle de tracker          (none/mil/vit)
+    button_predict: 5      # R -> cycle de prediction       (off/anticip/coast)
+
+    # --- deplacement du robot --------------------------------------------
     axis_drive_x: 0        # stick GAUCHE X  (- gauche / + droite)
     axis_drive_y: 1        # stick GAUCHE Y  (- haut   / + bas)
-    axis_trigger_l: 2      # ZL / LT, REPOS = -1 (lecture brute, pas de zone morte)
-    axis_trigger_r: 5      # ZR / RT, idem
-    button_stop: 1         # B  -> STOP franc, meme moteurs DESARMES
-    button_motion: 9       # clic stick GAUCHE -> armer / desarmer (touche O du proto)
-    button_speed_min_up: 7    # + (Start) -> plancher de vitesse +1
-    button_speed_min_down: 6  # - (Back)  -> plancher de vitesse -1
+    axis_trigger_l: 2      # ZL -> plafond de vitesse -1. REPOS = -1 : lecture
+                           # BRUTE, jamais par la zone morte, qui lirait
+                           # "enfoncee" une gachette au repos.
+    axis_trigger_r: 5      # ZR -> plafond de vitesse +1, idem
+    button_stop: 0         # B  -> STOP franc, DES L'APPUI, meme moteurs desarmes
+    button_speed_min_up: 7    # + -> plancher de vitesse +1
+    button_speed_min_down: 6  # - -> plancher de vitesse -1
+
+    # --- les deux APPUIS LONGS -------------------------------------------
+    # Les clics de stick n'existent pas dans ce mode (cf. RELEVE) : leurs deux
+    # fonctions passent en appui LONG sur un bouton qui garde par ailleurs son
+    # role. Les noms de parametre restent CEUX DU PROTOTYPE, ils designent
+    # desormais le bouton dont l'appui LONG declenche l'action.
+    #
+    # B (0) : court = STOP, long = armer/desarmer. L'ordre n'est pas un detail
+    # de confort -- un appui n'est "court" qu'une fois RELACHE, donc mettre le
+    # STOP en action courte le retarderait de long_press_s. Le STOP part donc au
+    # front, et l'armement s'AJOUTE a 0,6 s. Consequence assumee : armer emet un
+    # zero au passage, inoffensif moteurs desarmes, et un geste TENU est une
+    # vertu pour le verrou de la traction.
+    button_motion: 0       # B appui LONG -> armer / desarmer (touche O du proto)
+    # X (3) : long = recentrage. Seul bouton dont l'action COURTE part au
+    # RELACHEMENT (on ne peut pas savoir avant), tous les autres gardent le front
+    # a l'appui comme le prototype. "Desarmer le suivi puis recentrer" devient un
+    # seul bouton, ce qui est le geste reel.
+    button_recenter: 3     # X appui LONG -> recentrage des axes
+    long_press_s: 0.6
 
     # --- axes de servo pilotes a la manette ------------------------------
     # NOMS, jamais de numero de voie : c'est le contrat ServoCmd/Nudge. Changer
@@ -85,9 +129,8 @@ bamboo_teleop:
     pan_axis_name: "pan"
     tilt_axis_name: "tilt"
     # Le tilt d'une nacelle est presque toujours a inverser par rapport au stick
-    # (pousser en haut doit lever la camera, et l'axe Y du noyau est + vers le
-    # bas). Mis en parametre plutot qu'en dur : le signe depend du montage
-    # mecanique, qui est un fait d'hote.
+    # (pousser en haut doit lever la camera). RELEVE : haut = -1 sur l'axe 4,
+    # donc l'inversion est bien necessaire.
     invert_tilt: true
     invert_pan: false
 
@@ -120,7 +163,7 @@ bamboo_teleop:
     # --- deplacement du robot --------------------------------------------
     # DEUX VERROUS EN SERIE, et c'est voulu :
     #   1. `motion_enabled` ci-dessous, etat LOCAL du noeud : a false, il ne
-    #      publie RIEN sur cmd_vel, pas meme un zero. Le clic du stick gauche
+    #      publie RIEN sur cmd_vel, pas meme un zero. L'appui LONG sur B
     #      l'arme en cours de route.
     #   2. `enable_cmd_vel` du DRIVER, a false sur ce robot (pack 12,6 V brut sur
     #      des moteurs 7,4 V nominaux) : meme arme, la carte ignore la consigne.

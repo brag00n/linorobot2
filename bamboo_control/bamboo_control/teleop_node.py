@@ -97,8 +97,11 @@ class TeleopNode(Node):
         super().__init__("bamboo_teleop")
 
         # --- index des commandes : faits d'HOTE, tous parametres --------------
-        # Aucun index en dur : la table depend du mode d'appairage (XInput/DirectInput)
-        # et du pilote. Defauts = convention joy_linux/xpad, << A RELEVER a T9 >>.
+        # Defauts = table MESUREE le 2026-09-30 sur la "GamepadX" en mode XInput
+        # (essai T20 de bambooSTM32YB, cf. config/joy_bamboo.yaml, qui porte le releve
+        # complet et les signes). Ils ne valent que pour CETTE manette dans CE mode :
+        # le mode d'appairage change la table, et une passe ORDONNEE en avait produit
+        # une fausse -- chaque controle a donc ete actionne DEUX FOIS.
         self._axPan = self.declare_parameter("axis_pan", 3).value
         self._axTilt = self.declare_parameter("axis_tilt", 4).value
         self._axDpadX = self.declare_parameter("axis_dpad_x", 6).value
@@ -108,18 +111,31 @@ class TeleopNode(Node):
         self._axDriveY = self.declare_parameter("axis_drive_y", 1).value
         self._axTrigL = self.declare_parameter("axis_trigger_l", 2).value
         self._axTrigR = self.declare_parameter("axis_trigger_r", 5).value
+        # Face Nintendo numerotee a la Xbox : le B PHYSIQUE prend l'index 0, la ou on
+        # attendrait A. Releve, pas deduit.
         self._btn = {
-            "tracking": self.declare_parameter("button_tracking", 2).value,
-            "recognition": self.declare_parameter("button_recognition", 3).value,
-            "acquisition": self.declare_parameter("button_acquisition", 0).value,
+            "tracking": self.declare_parameter("button_tracking", 3).value,
+            "recognition": self.declare_parameter("button_recognition", 2).value,
+            "acquisition": self.declare_parameter("button_acquisition", 1).value,
             "tracker": self.declare_parameter("button_tracker", 4).value,
             "predict": self.declare_parameter("button_predict", 5).value,
-            "recenter": self.declare_parameter("button_recenter", 10).value,
-            "stop": self.declare_parameter("button_stop", 1).value,
-            "motion": self.declare_parameter("button_motion", 9).value,
+            "recenter": self.declare_parameter("button_recenter", 3).value,
+            "stop": self.declare_parameter("button_stop", 0).value,
+            "motion": self.declare_parameter("button_motion", 0).value,
             "speed_min_up": self.declare_parameter("button_speed_min_up", 7).value,
             "speed_min_down": self.declare_parameter("button_speed_min_down", 6).value,
         }
+        # Cette manette ne DECLARE PAS de clic de stick (descripteur a 10 codes, sans
+        # BTN_THUMBL/BTN_THUMBR) : les deux fonctions que le proto leur confie n'ont plus
+        # de bouton libre, les 14 autres etant pris. Elles passent donc en appui LONG sur
+        # un bouton qui garde son role court -- armement sur B, recentrage sur X. Le
+        # partage est DEDUIT de l'egalite des index, pas code en dur : sur une manette
+        # qui declare ses clics de stick, il suffit de donner des index distincts et les
+        # deux fronts redeviennent independants, sans toucher a ce fichier.
+        self._longPress = max(0.1, float(
+            self.declare_parameter("long_press_s", 0.6).value))
+        self._sharedMotion = (self._btn["motion"] == self._btn["stop"])
+        self._sharedRecenter = (self._btn["recenter"] == self._btn["tracking"])
 
         # --- axes de servo : des NOMS, jamais un numero de voie ---------------
         self._panName = self.declare_parameter("pan_axis_name", "pan").value
@@ -163,6 +179,7 @@ class TeleopNode(Node):
         # --- etat d'entree ----------------------------------------------------
         self._prev = {}          # nom logique -> etat precedent (0/1)
         self._lastFire = {}      # nom logique -> horodatage du dernier declenchement
+        self._hold = {}          # nom logique -> {t0, fired} de l'appui long en cours
         self._velPan = 0.0
         self._velTilt = 0.0
         self._pendPan = 0.0
@@ -249,6 +266,31 @@ class TeleopNode(Node):
         self._lastFire[name] = now
         return True
 
+    def _holdEdge(self, name, value, now):
+        """Discrimine appui COURT et appui LONG sur un MEME bouton.
+
+        Retourne "long" des que le seuil est franchi, bouton TOUJOURS enfonce -- l action
+        longue part donc sous le doigt, sans attendre le relachement. Retourne "short" au
+        RELACHEMENT seulement, et c est une contrainte, pas un choix : on ne peut pas
+        savoir qu un appui sera court avant qu il ne finisse. D ou la regle du YAML -- une
+        action qui ne doit JAMAIS etre retardee (le STOP) reste sur le front montant et
+        n emprunte pas ce chemin.
+        """
+        st = self._hold.setdefault(name, {"t0": None, "fired": False})
+        if value:
+            if st["t0"] is None:
+                st["t0"] = now
+            elif not st["fired"] and now - st["t0"] >= self._longPress:
+                st["fired"] = True
+                return "long"
+            return None
+        if st["t0"] is None:
+            return None
+        court = not st["fired"]
+        st["t0"] = None
+        st["fired"] = False
+        return "short" if court else None
+
     def _onJoy(self, msg):
         now = time.monotonic()
         self._lastJoy = now
@@ -265,7 +307,15 @@ class TeleopNode(Node):
             # est la seule chose qu on veut pouvoir emettre sans reflechir.
             self._stopMotion()
 
-        if self._edge("motion", self._button(msg, self._btn["motion"]), now):
+        # Armement. Sur cette manette le bouton est le MEME que le STOP (pas de clic de
+        # stick a lui donner) : le STOP garde son front montant juste au-dessus et
+        # l armement s AJOUTE en appui long. Consequence assumee : armer emet un zero au
+        # passage -- inoffensif moteurs desarmes -- et un geste TENU est une vertu pour le
+        # verrou de la traction.
+        armer = (self._holdEdge("motion", self._button(msg, self._btn["motion"]),
+                                now) == "long") if self._sharedMotion else \
+            self._edge("motion", self._button(msg, self._btn["motion"]), now)
+        if armer:
             self._motionOn = not self._motionOn
             if not self._motionOn:
                 self._stopMotion()               # desarmer ARRETE, il ne fige pas
@@ -288,7 +338,19 @@ class TeleopNode(Node):
             self._bumpSpeedMax(-1)
 
         # --- boutons de mode : toujours une valeur ABSOLUE -------------------
-        if self._edge("tracking", self._button(msg, self._btn["tracking"]), now):
+        # Suivi et recentrage partagent X sur cette manette : appui court = suivi, appui
+        # long = recentrage. X est donc le SEUL bouton dont l action parte au relachement.
+        # "Desarmer le suivi puis recentrer" tient alors dans un seul bouton, ce qui est
+        # le geste reel -- tant que le suivi verrouille un visage, onTrack reecrit la cible
+        # a chaque detection et un recentrage serait aussitot efface.
+        if self._sharedRecenter:
+            ev = self._holdEdge("tracking", self._button(msg, self._btn["tracking"]), now)
+            if ev == "long":
+                self._sendMode("recenter", "now")
+            elif ev == "short":
+                self._trackingOn = not self._trackingOn
+                self._sendMode("tracking", "on" if self._trackingOn else "off")
+        elif self._edge("tracking", self._button(msg, self._btn["tracking"]), now):
             self._trackingOn = not self._trackingOn
             self._sendMode("tracking", "on" if self._trackingOn else "off")
 
@@ -315,18 +377,23 @@ class TeleopNode(Node):
             self._predict = self._next(_PREDICTS, self._predict)
             self._sendMode("predict", self._predict)
 
-        if self._edge("recenter", self._button(msg, self._btn["recenter"]), now):
-            # Consomme par servocam_node SEUL : sans le groupe tracking il n'y a pas de
-            # notion de position de repos cote hote, donc rien ne bouge. C'est coherent,
-            # pas un bug.
+        # Recentrage a bouton PROPRE : seulement si on ne le partage pas avec le suivi
+        # (sinon il est deja traite en appui long, plus haut). Consomme par servocam_node
+        # SEUL : sans le groupe tracking il n'y a pas de notion de position de repos cote
+        # hote, donc rien ne bouge. C'est coherent, pas un bug.
+        if not self._sharedRecenter and self._edge(
+                "recenter", self._button(msg, self._btn["recenter"]), now):
             self._sendMode("recenter", "now")
 
         # --- croix directionnelle, vue comme deux boutons virtuels -----------
+        # SIGNE RELEVE, et il est CONTRE-INTUITIF : sur l'axe 7 le HAUT vaut -1 et le BAS
+        # +1 (convention du noyau, comme pour l'axe vertical d'un stick). Ce fichier avait
+        # l'inverse avant la mesure -- le detecteur et l'apprentissage etaient echanges.
         dy = self._axis(msg, self._axDpadY)
-        if self._edge("dpad_up", 1 if dy > 0.5 else 0, now):
+        if self._edge("dpad_up", 1 if dy < -0.5 else 0, now):
             self._detector = self._next(_DETECTORS, self._detector)
             self._sendMode("detector", self._detector)
-        if self._edge("dpad_down", 1 if dy < -0.5 else 0, now):
+        if self._edge("dpad_down", 1 if dy > 0.5 else 0, now):
             self._startTraining()
 
         # Taille de la surface cible (proto : _resize_target, pas de 0,01). La valeur porte
