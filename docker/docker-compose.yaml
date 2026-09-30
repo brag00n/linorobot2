@@ -19,6 +19,20 @@ volumes:
   # `docker volume rm bamboov4_humble_bench_build bamboov4_humble_bench_install`.
   bench_build:
   bench_install:
+  # Espace de travail colcon PARTAGE par les services du robot bambooSTM32YB (bamboo_video,
+  # bamboo_videotracking, bamboo_control, driver.stm32). Meme motif que bench_build, plus deux
+  # raisons apparues le 2026-09-29 :
+  #  - la compilation etant desormais A LA DEMANDE (docker/rosbuild.sh) et non plus faite par
+  #    les `command:`, elle doit survivre au conteneur : un `compose run --rm` a sa propre
+  #    couche inscriptible, et un `exec` exige un conteneur en marche que la garde de la
+  #    `command:` fait sortir aussitot si install/ est vide -- sans volume, aucun moyen de
+  #    construire ;
+  #  - PARTAGE et non un volume par service : les quatre services construisent les MEMES
+  #    bamboo_interfaces et bamboo_base. Quatre copies, c est quatre fois la meme compilation
+  #    et quatre occasions de divergence d ABI sur les messages.
+  # Un seul build a la fois (il est manuel et serie) : pas de colcon concurrent sur ce volume.
+  ws_build:
+  ws_install:
 
 services:   
   base:
@@ -260,11 +274,24 @@ services:
 #    LECTURE SEULE par defaut (enable_cmd_vel:=false du YAML) ; L6 : enable_cmd_vel:=true.
   driver.real:
     extends: base
-    # Au boot, mais en LECTURE SEULE (enable_cmd_vel:=false du YAML) : un robot qui demarre
-    # deja arme n'est acceptable qu'avec un homme-mort valide. Le service d'actuation
-    # (`drive.real`, manette) restera donc HORS du profil `boot` jusqu'a cette validation.
-    profiles: ["boot"]
-    restart: unless-stopped
+    # LECTURE SEULE (enable_cmd_vel:=false du YAML) : un robot qui demarre deja arme n'est
+    # acceptable qu'avec un homme-mort valide. Le service d'actuation de ce meme robot
+    # (`drive.real`, manette) est pour la meme raison sous son propre profil `drive`.
+    # Profil DEDIE et NON `boot`, revu le 2026-09-29 : ce service est le driver de BambooWS
+    # (defaut `robot:=bamboo4WD_V4_WSEsp32` de bamboo_base/launch/driver.launch.py), robot dont
+    # le chantier est EN PAUSE et dont la carte ESP32 n est pas sur ce montage. Il tournait donc
+    # au boot en parlant a un port absent : 35 pour cent d un coeur brules pour rien, mesures a
+    # T17 de bambooSTM32YB -- soit 40 pour cent de la cadence de suivi et un tiers de la latence
+    # du groupe videotracking, sur une machine a 4 coeurs deja saturee. Rien de fautif dans le
+    # service : il est simplement au mauvais endroit depuis que ROBOT= designe l autre robot.
+    # Il reste lancable en le NOMMANT (`compose up -d driver.real`, ou l outil MCP `start`, qui
+    # active implicitement le profil) le jour ou BambooWS revient -- meme motif que drive.real.
+    profiles: ["real"]
+    # PAS de restart: unless-stopped -- et le retrait est la moitie utile du correctif. Un profil
+    # ne bride que le DEMARRAGE par compose : une politique de redemarrage, elle, est appliquee
+    # par dockerd au conteneur qui EXISTE, quel que soit son profil. Constate le 2026-09-29 :
+    # apres une coupure d alimentation, ce service explicitement arrete etait de nouveau en
+    # marche. Sans cette ligne, un arret reste un arret.
     # Monte linorobot2_hardware pour importer tools/ (codec Esp32ComSerial) + firmware/
     # (hacks sys.path du codec resolus via __file__ -> l'arbre firmware doit etre present).
     volumes:
@@ -278,7 +305,8 @@ services:
     # echappe pour que ce soit bash (et non compose) qui le developpe.
     command: >
       bash -lc "cd /root/linorobot2_ws &&
-      colcon build --packages-select bamboo_interfaces bamboo_base --symlink-install &&
+      test -f install/setup.bash || echo 'ESPACE DE TRAVAIL NON CONSTRUIT -- lancer docker/rosbuild.sh dans ce conteneur (voir son en-tete)' >&2 &&
+      test -f install/setup.bash &&
       source install/setup.bash &&
       (python3 -c 'import serial' 2>/dev/null || (apt-get update && apt-get install -y python3-serial)) &&
       export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
@@ -319,7 +347,8 @@ services:
     # et tracee, jamais un etat par defaut du fichier.
     command: >
       bash -lc "cd /root/linorobot2_ws &&
-      colcon build --packages-select bamboo_interfaces bamboo_base --symlink-install &&
+      test -f install/setup.bash || echo 'ESPACE DE TRAVAIL NON CONSTRUIT -- lancer docker/rosbuild.sh dans ce conteneur (voir son en-tete)' >&2 &&
+      test -f install/setup.bash &&
       source install/setup.bash &&
       (python3 -c 'import serial' 2>/dev/null || (apt-get update && apt-get install -y python3-serial)) &&
       export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
@@ -352,9 +381,17 @@ services:
     # BAMBOO_CAM n'est PAS /dev/bamboocam par defaut, et c'est une mesure : la regle udev
     # 99-bambooSTM32YB.rules n'est pas encore posee sur ce RPi (constate a T10, le symlink
     # etait absent). Poser la regle puis mettre BAMBOO_CAM=/dev/bamboocam dans .env.
+      # Build PERSISTANT et PARTAGE par les services de ce robot : voir ws_build en tete
+      # de fichier. Sans lui, build/ et install/ vivent dans la couche inscriptible du
+      # conteneur -- toute recreation jette la compilation, et la compilation A LA DEMANDE
+      # (docker/rosbuild.sh) serait impossible : un `compose run --rm` a sa propre couche,
+      # et un `exec` exige un conteneur en marche que la garde ci-dessous fait sortir.
+      - ws_build:/root/linorobot2_ws/build
+      - ws_install:/root/linorobot2_ws/install
     command: >
       bash -lc "cd /root/linorobot2_ws &&
-      colcon build --packages-select bamboo_interfaces bamboo_base bamboo_video --symlink-install &&
+      test -f install/setup.bash || echo 'ESPACE DE TRAVAIL NON CONSTRUIT -- lancer docker/rosbuild.sh dans ce conteneur (voir son en-tete)' >&2 &&
+      test -f install/setup.bash &&
       source install/setup.bash &&
       ros2 launch bamboo_video video.launch.py
       robot:=${ROBOT} stream_mode:=mjpg video_device:=${BAMBOO_CAM:-/dev/video0}"
@@ -375,17 +412,28 @@ services:
       # driver.real, a ne pas diverger -- deux chemins pour un meme depot est un piege.
       - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:ro
       - bamboo_faces:/root/data/faces
-    # MAKEFLAGS=-j3 : SEUL paquet C++ lourd du depot (7 unites de compilation, OpenCV dans
-    # chacune) et `make` compile en serie par defaut -- 19 min en un fil, ~7 min en trois.
-    # 3 et non 4 : un coeur reste pour les autres conteneurs, et le RPi n'a pas de swap.
-    # A ne pas confondre avec le VRAI probleme de duree : l'horloge de l'HOTE Windows (pas
-    # celle du RPi, mesuree juste) est ~9 h DANS LE FUTUR, jamais synchronisee (source
-    # "Local CMOS Clock"). Les sources arrivent donc datees du futur, chaque .cpp est
-    # toujours "plus recent que son .o", et TOUT se recompile a chaque demarrage -- `make`
-    # le dit : "Clock skew detected. Your build may be incomplete."
+    # PLUS DE COMPILATION ICI (2026-09-29) : ce service LANCE, il ne construit plus. Le build
+    # est passe dans docker/rosbuild.sh, a declencher explicitement par `docker exec`. Motif
+    # mesure : ce paquet est le seul C++ lourd du depot (7 unites de compilation, OpenCV dans
+    # chacune), le construire au demarrage coutait ~17 min pendant lesquelles les noeuds ne
+    # sont PAS adressables -- et deux services relances coup sur coup lancaient DEUX colcon
+    # concurrents, saturant les 4 coeurs au point que sshd ne repondait plus a la poignee de
+    # main (machine injoignable, ping toujours a 25 ms).
+    # Le second facteur de duree est LEVE : l'horloge de l'HOTE Windows, ~9 h dans le futur
+    # (source "Local CMOS Clock"), datait les sources du futur -- chaque .cpp etait toujours
+    # "plus recent que son .o" et TOUT se recompilait ("Clock skew detected"). Recalee le
+    # 2026-09-29 : un build incremental est desormais reellement incremental.
+      # Build PERSISTANT et PARTAGE par les services de ce robot : voir ws_build en tete
+      # de fichier. Sans lui, build/ et install/ vivent dans la couche inscriptible du
+      # conteneur -- toute recreation jette la compilation, et la compilation A LA DEMANDE
+      # (docker/rosbuild.sh) serait impossible : un `compose run --rm` a sa propre couche,
+      # et un `exec` exige un conteneur en marche que la garde ci-dessous fait sortir.
+      - ws_build:/root/linorobot2_ws/build
+      - ws_install:/root/linorobot2_ws/install
     command: >
       bash -lc "cd /root/linorobot2_ws &&
-      MAKEFLAGS=-j3 colcon build --packages-select bamboo_interfaces bamboo_base bamboo_videotracking --symlink-install &&
+      test -f install/setup.bash || echo 'ESPACE DE TRAVAIL NON CONSTRUIT -- lancer docker/rosbuild.sh dans ce conteneur (voir son en-tete)' >&2 &&
+      test -f install/setup.bash &&
       source install/setup.bash &&
       ros2 launch bamboo_videotracking videotracking.launch.py robot:=${ROBOT}"
 
@@ -401,9 +449,18 @@ services:
 #      docker compose up -d bamboo_control
   bamboo_control:
     extends: base
+    volumes:
+      # Build PERSISTANT et PARTAGE par les services de ce robot : voir ws_build en tete
+      # de fichier. Sans lui, build/ et install/ vivent dans la couche inscriptible du
+      # conteneur -- toute recreation jette la compilation, et la compilation A LA DEMANDE
+      # (docker/rosbuild.sh) serait impossible : un `compose run --rm` a sa propre couche,
+      # et un `exec` exige un conteneur en marche que la garde ci-dessous fait sortir.
+      - ws_build:/root/linorobot2_ws/build
+      - ws_install:/root/linorobot2_ws/install
     command: >
       bash -lc "cd /root/linorobot2_ws &&
-      colcon build --packages-select bamboo_interfaces bamboo_base bamboo_control --symlink-install &&
+      test -f install/setup.bash || echo 'ESPACE DE TRAVAIL NON CONSTRUIT -- lancer docker/rosbuild.sh dans ce conteneur (voir son en-tete)' >&2 &&
+      test -f install/setup.bash &&
       source install/setup.bash &&
       ros2 launch bamboo_control control.launch.py
       robot:=${ROBOT} joy_dev:=${BAMBOO_JOY:-/dev/input/js0}"
@@ -423,9 +480,17 @@ services:
       # rw et non ro, contrairement au tracking : le codec de robot_control/ resout ses hacks
       # de sys.path par __file__, l'arbre firmware doit etre present et inscriptible.
       - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:rw
+      # Build PERSISTANT et PARTAGE par les services de ce robot : voir ws_build en tete
+      # de fichier. Sans lui, build/ et install/ vivent dans la couche inscriptible du
+      # conteneur -- toute recreation jette la compilation, et la compilation A LA DEMANDE
+      # (docker/rosbuild.sh) serait impossible : un `compose run --rm` a sa propre couche,
+      # et un `exec` exige un conteneur en marche que la garde ci-dessous fait sortir.
+      - ws_build:/root/linorobot2_ws/build
+      - ws_install:/root/linorobot2_ws/install
     command: >
       bash -lc "cd /root/linorobot2_ws &&
-      colcon build --packages-select bamboo_interfaces bamboo_base bamboo_controler_YBStm32v3 --symlink-install &&
+      test -f install/setup.bash || echo 'ESPACE DE TRAVAIL NON CONSTRUIT -- lancer docker/rosbuild.sh dans ce conteneur (voir son en-tete)' >&2 &&
+      test -f install/setup.bash &&
       source install/setup.bash &&
       (python3 -c 'import serial' 2>/dev/null || (apt-get update && apt-get install -y python3-serial)) &&
       export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
@@ -463,8 +528,8 @@ services:
       - bench_install:/root/linorobot2_ws/install
     command: >
       bash -lc "cd /root/linorobot2_ws &&
-      colcon build --packages-select bamboo_interfaces bamboo_base bamboo_controler_YBStm32v3
-      bamboo_video bamboo_videotracking bamboo_control bamboo4WD_V4_YBStm32_base --symlink-install &&
+      test -f install/setup.bash || echo 'ESPACE DE TRAVAIL NON CONSTRUIT -- lancer docker/rosbuild.sh dans ce conteneur (voir son en-tete)' >&2 &&
+      test -f install/setup.bash &&
       source install/setup.bash &&
       (python3 -c 'import serial' 2>/dev/null || (apt-get update && apt-get install -y python3-serial)) &&
       export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
