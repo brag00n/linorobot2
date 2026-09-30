@@ -39,6 +39,13 @@ tracking_node:
     # lui-meme est insensible au miroir (un visage en miroir reste un visage) ; c'est le
     # SIGNE de la consigne servo qui ne l'est pas.
     flip: "h"
+    # PORTE DE RE-DETECTION (`--redetect-ms` du prototype). Sous verrou, le detecteur ne
+    # repasse qu'a cette periode ; entre deux passages le tracker seul fournit la boite.
+    # C'est le plus gros levier de cadence du chemin chaud, mesure au banc T15b : la
+    # reinitialisation du tracker sur une detection coute 218,2 ms contre 167,8 ms pour un
+    # update seul, et YuNet 41,9 ms de plus -- soit ~92 ms de moins par trame hors cycle.
+    # A 0, le detecteur repasse a chaque trame (ancien comportement de ce noeud).
+    redetect_ms: 400.0
     iou_reanchor: 0.2
     score_min: 0.3
     # 5000 ms, pas 600 : a la cadence reelle de detection (~5 fps) 600 ms valent TROIS

@@ -312,137 +312,66 @@ Landmarks FaceDetection::landmarksFor(const cv::Rect & box) const
   return Landmarks{};
 }
 
-// ---------------------------------------------------------------------------
-// Machine a etats du verrou. LE COEUR DE L'ALGORITHME.
-
-TrackStateOut FaceDetection::trackStep(const cv::Mat & frame, double now_s)
+// Un CYCLE de detection, et la mise a jour de tout ce qui se compte PAR CYCLE. La porte
+// redetect_ms fait que ces cycles sont maintenant plus rares que les trames : tout ce qui
+// se comptait par trame doit donc passer ici, sinon max_det_misses et det_fps mesureraient
+// la cadence video et non celle de la detection.
+void FaceDetection::runDetect(const cv::Mat & frame, double now_s)
 {
-  TrackStateOut st;
-  if (frame.empty()) { return st; }
-  const int fw = frame.cols;
-  const int fh = frame.rows;
-
-  tickFps(now_s);
-
-  // --- 1. Detection de la trame -----------------------------------------------------
   std::vector<Landmarks> lms;
   std::vector<float> scores;
-  const std::vector<cv::Rect> boxes = detect(frame, lms, scores);
-  st.n_faces = static_cast<int>(boxes.size());
-  if (!boxes.empty()) { last_det_s_ = now_s; }
+  detect(frame, lms, scores);
+  det_scores_ = scores;
+  tickFps(now_s);
+  last_redetect_s_ = now_s;
+  last_n_faces_ = static_cast<int>(det_boxes_.size());
+}
 
-  // --- 2. Interpolation par le tracker, si un verrou existe -------------------------
-  // On la fait AVANT d'examiner les detections : si le detecteur a vu quelque chose il
-  // ecrasera ce resultat de toute facon (il gagne toujours), et si le tracker vient de
-  // divergier on veut le savoir maintenant pour pouvoir liberer le verrou au bon motif.
-  bool track_ok = false;
-  cv::Rect tracked;
-  if (locked_ && tracker_) {
-    cv::Rect upd;
-    bool ok = false;
-    try {
-      ok = tracker_->update(frame, upd);
-    } catch (const cv::Exception &) {
-      ok = false;
-    }
-    if (!ok) {
-      releaseLock("update_ko");
-    } else if (degenerate(upd)) {
-      releaseLock("degenerate");
-    } else if (implausible(upd, fw, fh)) {
-      releaseLock("implausible");
-    } else {
-      track_ok = true;
-      tracked = upd;
-    }
-  }
+double FaceDetection::scoreOf(size_t i) const
+{
+  // Haar ne rend aucune confiance : detect() annonce alors 1.0, et c'est cette valeur-la
+  // qu'on relaie ici plutot qu'une valeur intermediaire inventee.
+  return (i < det_scores_.size()) ? static_cast<double>(det_scores_[i]) : 1.0;
+}
 
-  // --- 3. Le detecteur gagne toujours ----------------------------------------------
+int FaceDetection::pickLargest() const
+{
+  // Verrou LIBRE : la plus GRANDE boite, donc le visage le plus proche. Critere du
+  // prototype, et le bon pour une camera de suivi : le sujet qui s'adresse au robot est
+  // celui qui s'en approche.
   int best = -1;
-  if (!boxes.empty()) {
-    if (locked_) {
-      // On suit LA MEME cible : on prend la detection qui recouvre le plus la position
-      // courante, jamais la plus grande ni la plus confiante -- ces deux criteres feraient
-      // sauter le verrou sur un passant qui entre dans le cadre.
-      const cv::Rect ref = track_ok ? tracked : cur_;
-      double best_iou = -1.0;
-      for (size_t i = 0; i < boxes.size(); ++i) {
-        const double v = iou(boxes[i], ref);
-        if (v > best_iou) { best_iou = v; best = static_cast<int>(i); }
-      }
-      if (best >= 0) {
-        st.src = (best_iou < cfg_.iou_reanchor) ? "recenter" : "reanchor";
-      }
-    } else {
-      // Pas de verrou : on prend la plus GRANDE boite, c'est-a-dire le visage le plus
-      // proche. Critere du prototype, et c'est le bon pour une camera de suivi : le sujet
-      // qui s'adresse au robot est celui qui s'en approche.
-      int best_area = -1;
-      for (size_t i = 0; i < boxes.size(); ++i) {
-        if (boxes[i].area() > best_area) { best_area = boxes[i].area(); best = static_cast<int>(i); }
-      }
-      // Pas de branche "redetect" ici : on n'y arrive que verrou LIBRE, la
-      // reacquisition apres perte passe donc par "detect" comme une premiere prise.
-      st.src = "detect";
+  int best_area = -1;
+  for (size_t i = 0; i < det_boxes_.size(); ++i) {
+    if (scoreOf(i) < cfg_.score_min) { continue; }
+    if (det_boxes_[i].area() > best_area) {
+      best_area = det_boxes_[i].area();
+      best = static_cast<int>(i);
     }
   }
+  return best;
+}
 
-  if (best >= 0) {
-    const double sc = (best < static_cast<int>(scores.size())) ? scores[best] : 1.0;
-    if (sc < cfg_.score_min) {
-      // Detection trop faible : on ne l'utilise pas pour (re)poser un verrou. Si un verrou
-      // existait, on le laisse vivre sur l'interpolation -- c'est le role du tracker.
-      best = -1;
-      if (!locked_) { st.src = "off"; }
-    } else {
-      const bool was_locked = locked_;
-      cur_ = boxes[best];
-      cur_score_ = sc;
-      cur_landmarks_ = (best < static_cast<int>(lms.size())) ? lms[best] : Landmarks{};
-      miss_streak_ = 0;
-      if (!was_locked) {
-        locked_ = true;
-        lost_reason_.clear();
-        ++lock_id_;          // NOUVEL EPISODE : c'est ce numero qui fait vider l'EMA de
-        lock_t0_ = now_s;    // facerecog_node, donc il ne doit changer QU'ICI.
-        st.src = "detect";
-      }
-      // Le tracker est (re)initialise sur la verite terrain a chaque detection retenue :
-      // c'est ce qui l'empeche d'accumuler la derive entre deux detections.
-      if (!initTracker(frame, cur_)) {
-        tracker_.release();   // pas de tracker => pas d'interpolation, le verrou tient
-      }
-      if (was_locked) { ref_area_ = ref_area_ > 0.0 ? ref_area_ : cur_.area(); }
+int FaceDetection::pickNearest(const cv::Rect & ref, double & best_iou) const
+{
+  // Verrou TENU : la detection qui recouvre le plus la position courante, jamais la plus
+  // grande ni la plus confiante -- ces deux criteres feraient sauter le verrou sur un
+  // passant qui entre dans le cadre. DIVERGENCE ASSUMEE avec le prototype, qui reprend la
+  // plus grande meme sous verrou.
+  best_iou = -1.0;
+  int best = -1;
+  for (size_t i = 0; i < det_boxes_.size(); ++i) {
+    if (scoreOf(i) < cfg_.score_min) { continue; }
+    const double v = iou(det_boxes_[i], ref);
+    if (v > best_iou) {
+      best_iou = v;
+      best = static_cast<int>(i);
     }
   }
+  return best;
+}
 
-  // --- 4. Aucune detection retenue : on vit sur l'interpolation, sous surveillance ---
-  if (best < 0 && locked_) {
-    ++miss_streak_;
-    // LIBERATION ANTI-DERIVE, PRIORITAIRE sur tout le reste : un tracker qui s'est accroche
-    // a un mur suit le mur avec une confiance parfaite. Le detecteur muet trop longtemps est
-    // le seul signal disponible que la cible n'est plus la.
-    if (miss_streak_ >= cfg_.max_det_misses) {
-      releaseLock("det_miss");
-    } else if (track_ok) {
-      cur_ = tracked;
-      cur_landmarks_.clear();   // boite INTERPOLEE : aucun point de repere valide
-      st.src = "track";
-    } else {
-      // Ni detection ni tracker : on tient sur la derniere position connue, mais pas
-      // indefiniment. hold_score_min assouplit le delai pour un verrou qui etait FRANC --
-      // un bon verrou merite plus de patience qu'un verrou limite.
-      const double hold_ms = (cur_score_ >= cfg_.hold_score_min) ? cfg_.hold_ms * 2.0
-                                                                 : cfg_.hold_ms;
-      if ((now_s - last_det_s_) * 1000.0 > hold_ms) {
-        releaseLock("hold_timeout");
-      } else {
-        st.src = "track";
-      }
-    }
-  }
-
-  // --- 5. Sortie, en pixels de la trame PLEINE --------------------------------------
+TrackStateOut & FaceDetection::publish(TrackStateOut & st, double now_s, int fw, int fh) const
+{
   st.locked = locked_;
   st.lost_reason = lost_reason_;
   st.lock_id = lock_id_;
@@ -456,6 +385,158 @@ TrackStateOut FaceDetection::trackStep(const cv::Mat & frame, double now_s)
     st.src = "off";
   }
   return st;
+}
+
+// ---------------------------------------------------------------------------
+// Machine a etats du verrou. LE COEUR DE L'ALGORITHME.
+//
+// ORDRE DES ETAGES, et c'est tout l'objet du lot H5 : le TRACKER passe AVANT le detecteur,
+// et le detecteur ne repasse qu'a la periode redetect_ms (ou immediatement si le tracker a
+// lache). Avant, le detecteur tournait a CHAQUE trame et le tracker etait reinitialise
+// juste apres -- soit les deux etages les plus chers du chemin chaud payes ensemble a
+// chaque trame, pour un detecteur dont la sortie etait ecrasee dans la foulee.
+// Mesure au banc T15b (640x480, YuNet a det_width 320, MIL) : YuNet 41,9 ms et MIL
+// init+update 218,2 ms, contre MIL update SEUL 167,8 ms. La porte retire donc ~92 ms de la
+// trame courante quatre fois sur cinq a 400 ms de periode.
+// Le detecteur reste le MAITRE : il fait foi des qu'il parle, le tracker n'est qu'un
+// interpolateur entre deux de ses passages -- jamais une source de verite.
+
+TrackStateOut FaceDetection::trackStep(const cv::Mat & frame, double now_s)
+{
+  TrackStateOut st;
+  if (frame.empty()) { return st; }
+  const int fw = frame.cols;
+  const int fh = frame.rows;
+
+  // --- 1. VERROU LIBRE : le detecteur est le PORTIER --------------------------------
+  // On ne verrouille QUE sur un visage detecte. Un tracker initialise sur autre chose
+  // suivrait cette autre chose avec une confiance parfaite, et la camera irait la regarder.
+  if (!locked_) {
+    runDetect(frame, now_s);
+    st.n_faces = last_n_faces_;
+    miss_streak_ = 0;
+    const int best = pickLargest();
+    if (best >= 0 && initTracker(frame, det_boxes_[best])) {
+      locked_ = true;
+      lost_reason_.clear();
+      cur_ = det_boxes_[best];
+      cur_score_ = scoreOf(static_cast<size_t>(best));
+      cur_landmarks_ = det_landmarks_[best];
+      last_confirm_s_ = now_s;
+      ++lock_id_;          // NOUVEL EPISODE : seule transition libre -> verrouille. C'est
+      lock_t0_ = now_s;    // ce numero qui vide l'EMA de facerecog_node, donc il ne doit
+      st.src = "detect";   // changer QU'ICI -- un redetect garde le meme episode.
+    }
+    return publish(st, now_s, fw, fh);
+  }
+
+  // --- 2. VERROU TENU : le TRACKER D'ABORD ------------------------------------------
+  bool track_ok = false;
+  cv::Rect tracked;
+  std::string lost_reason;
+  if (tracker_) {
+    cv::Rect upd;
+    bool ok = false;
+    try {
+      ok = tracker_->update(frame, upd);
+    } catch (const cv::Exception &) {
+      ok = false;
+    }
+    // Ordre des tests = ordre de SEVERITE, et on retient le PREMIER motif declencheur :
+    // c'est lui qui part dans lost_reason et qui rend le decrochage lisible au HUD.
+    if (!ok) {
+      lost_reason = "update_ko";
+    } else if (degenerate(upd)) {
+      lost_reason = "degenerate";
+    } else if (implausible(upd, fw, fh)) {
+      lost_reason = "implausible";
+    } else {
+      track_ok = true;
+      tracked = upd;
+    }
+  }
+  const bool lost = !lost_reason.empty();
+
+  // --- 3. LA PORTE DE RE-DETECTION --------------------------------------------------
+  // Immediate si le tracker a lache (il faut rattraper le verrou tout de suite), sinon
+  // periodique. Mode "none" : aucun tracker, donc aucune interpolation possible et la
+  // detection reprend a chaque trame -- ce mode garde son comportement historique.
+  const bool do_redetect = lost || !tracker_ ||
+    (now_s - last_redetect_s_) * 1000.0 >= cfg_.redetect_ms;
+  int best = -1;
+  // Hors cycle de detection, le nombre de visages est celui du DERNIER cycle : c'est une
+  // mesure par cycle, pas par trame. Le HUD affiche ainsi la derniere valeur MESUREE et non
+  // zero, qui se lirait comme "personne devant la camera".
+  st.n_faces = last_n_faces_;
+  if (do_redetect) {
+    runDetect(frame, now_s);
+    st.n_faces = last_n_faces_;
+    double best_iou = -1.0;
+    best = pickNearest(track_ok ? tracked : cur_, best_iou);
+    // Echecs detecteur CONSECUTIFS comptes en CYCLES de re-detection, comme au prototype :
+    // max_det_misses devient ainsi une duree (~max_det_misses x redetect_ms) independante
+    // de la cadence video, au lieu de dependre du nombre de trames traitees.
+    miss_streak_ = (best >= 0) ? 0 : miss_streak_ + 1;
+    if (best >= 0) {
+      st.src = (best_iou < cfg_.iou_reanchor) ? "recenter" : "reanchor";
+    }
+  }
+
+  // --- 4. LE DETECTEUR FAIT FOI : on se recale dessus -------------------------------
+  if (best >= 0) {
+    const cv::Rect box = det_boxes_[best];
+    // Le tracker est REINITIALISE sur la verite terrain a chaque recalage : c'est ce qui
+    // l'empeche de cumuler sa derive entre deux passages du detecteur.
+    if (initTracker(frame, box)) {
+      cur_ = box;
+      cur_score_ = scoreOf(static_cast<size_t>(best));
+      cur_landmarks_ = det_landmarks_[best];
+      last_confirm_s_ = now_s;
+      // Le verrou etait perdu et la detection le RATTRAPE : meme episode, meme personne,
+      // donc lock_id_ ne bouge pas -- seule la source le dit.
+      if (lost) { st.src = "redetect"; }
+      return publish(st, now_s, fw, fh);
+    }
+  }
+
+  // --- 5. Perdu, et aucune detection pour rattraper -> on LACHE ----------------------
+  if (lost) {
+    releaseLock(lost_reason);
+    return publish(st, now_s, fw, fh);
+  }
+
+  // --- 6. Detecteur muet mais tracker qui tient : decision de maintien --------------
+  // Ces deux gardes ne sont evaluees QUE sur un cycle de re-detection : hors cycle le
+  // detecteur ne s'est pas tu, il n'a pas ete consulte, et compter ce silence relacherait
+  // le verrou pour une raison inexistante.
+  if (do_redetect) {
+    // SECURITE ANTI-DERIVE, PRIORITAIRE sur tout le reste : un tracker accroche a un mur
+    // suit le mur avec une confiance parfaite. Le detecteur muet trop longtemps est le seul
+    // signal disponible que la cible est partie.
+    if (miss_streak_ >= cfg_.max_det_misses) {
+      releaseLock("det_miss");
+      return publish(st, now_s, fw, fh);
+    }
+    // HOLD borne par hold_ms, assoupli pour un verrou qui etait FRANC : un bon verrou
+    // merite plus de patience qu'un verrou limite (suivi de profil).
+    const double hold_ms = (cur_score_ >= cfg_.hold_score_min) ? cfg_.hold_ms * 2.0
+                                                               : cfg_.hold_ms;
+    if ((now_s - last_confirm_s_) * 1000.0 > hold_ms) {
+      releaseLock("hold_timeout");
+      return publish(st, now_s, fw, fh);
+    }
+  }
+
+  if (!track_ok) {
+    // Ni detection ni interpolation (mode "none") : on tient sur la DERNIERE position
+    // connue, bornee par les deux gardes ci-dessus. cur_ reste tel quel.
+    st.src = "track";
+    return publish(st, now_s, fw, fh);
+  }
+  cur_ = tracked;
+  cur_landmarks_.clear();   // boite INTERPOLEE : aucun point de repere valide
+  st.src = "track";
+  return publish(st, now_s, fw, fh);
 }
 
 }  // namespace bamboo_videotracking

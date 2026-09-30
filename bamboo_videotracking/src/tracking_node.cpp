@@ -69,6 +69,7 @@ public:
     cfg.track_mode = declare_parameter<std::string>("track_mode", cfg.track_mode);
     cfg.det_width = declare_parameter<int>("det_width", cfg.det_width);
     cfg.det_conf = declare_parameter<double>("det_conf", cfg.det_conf);
+    cfg.redetect_ms = declare_parameter<double>("redetect_ms", cfg.redetect_ms);
     cfg.iou_reanchor = declare_parameter<double>("iou_reanchor", cfg.iou_reanchor);
     cfg.score_min = declare_parameter<double>("score_min", cfg.score_min);
     cfg.hold_ms = declare_parameter<double>("hold_ms", cfg.hold_ms);
@@ -383,6 +384,8 @@ private:
         cfg.det_width = static_cast<int>(p.as_int()); touch_det = true;
       } else if (n == "det_conf") {
         cfg.det_conf = p.as_double(); touch_det = true;
+      } else if (n == "redetect_ms") {
+        cfg.redetect_ms = p.as_double(); touch_det = true;
       } else if (n == "iou_reanchor") {
         cfg.iou_reanchor = p.as_double(); touch_det = true;
       } else if (n == "score_min") {

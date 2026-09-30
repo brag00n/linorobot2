@@ -19,6 +19,12 @@
 // mur suit le mur avec une confiance parfaite -- la derive silencieuse est le mode de
 // panne dominant de ce genre de chaine, d'ou la liberation prioritaire sur det_miss.
 //
+// CADENCE : sous verrou le tracker passe a CHAQUE trame et le detecteur seulement toutes les
+// `redetect_ms` (400 ms par defaut, le defaut du prototype). C'est ce qui rend la chaine
+// abordable : les deux etages les plus chers ne sont plus payes ensemble a chaque trame.
+// Consequence a garder en tete en lisant la suite : tout ce qui compte des "detections
+// manquees" compte des CYCLES, pas des trames.
+//
 // ---------------------------------------------------------------------------
 // cv::TrackerVit EST ABSENT de l'OpenCV 4.5.4 de Humble/Jammy -- verifie DANS le
 // conteneur, pas suppose (absent des en-tetes C++ ET du binding Python ; il arrive en
@@ -65,11 +71,17 @@ struct DetectConfig
   double det_conf{0.6};            ///< seuil de confiance du detecteur
 
   // --- machine a etats de verrou ---
+  // PORTE DE RE-DETECTION (nom et defaut du prototype, `--redetect-ms`). Sous verrou, le
+  // detecteur ne repasse qu'a cette periode ; entre deux passages c'est le tracker seul qui
+  // fournit la boite. A 0 le detecteur repasse a chaque trame, ce qui est l'ancien
+  // comportement de ce noeud -- et son cout : ~92 ms de plus par trame (banc T15b).
+  double redetect_ms{400.0};       ///< periode de re-detection pendant le verrou
   double iou_reanchor{0.2};        ///< en dessous : le detecteur a trouve AILLEURS -> recentrage
   double score_min{0.3};           ///< score tracker sous lequel on lache
   double hold_ms{5000.0};          ///< duree de survie sans detection
   double hold_score_min{0.6};      ///< au-dela de ce score, hold_ms est assoupli
-  int max_det_misses{8};           ///< detections manquees avant liberation ANTI-DERIVE
+  int max_det_misses{8};           ///< CYCLES de re-detection muets avant liberation
+                                   ///< ANTI-DERIVE (donc une duree, ~ x redetect_ms)
   // --- vraisemblance de la boite ---
   // max_grow est le nom du prototype (`--track-max-grow`) et compare des AIRES, comme lui.
   double max_grow{4.5};            ///< boite > 4,5x l'aire de reference -> invraisemblable
@@ -157,6 +169,23 @@ private:
   void releaseLock(const std::string & reason);
   void tickFps(double now_s);
 
+  /// Un CYCLE de detection : remplit det_boxes_ / det_landmarks_ / det_scores_ et met a jour
+  /// tout ce qui se compte PAR CYCLE (cadence, horodatage de la porte, nombre de visages).
+  /// Depuis la porte redetect_ms, les cycles sont plus rares que les trames : ce qui se
+  /// compte ici ne doit PAS se compter dans trackStep, sous peine de mesurer la cadence
+  /// video au lieu de celle de la detection.
+  void runDetect(const cv::Mat & frame, double now_s);
+  /// Confiance de la detection i, ou 1.0 pour un detecteur qui n'en rend pas (Haar).
+  double scoreOf(size_t i) const;
+  /// Index de la plus GRANDE detection admissible, ou -1. Critere de PRISE de verrou.
+  int pickLargest() const;
+  /// Index de la detection qui recouvre le plus `ref`, ou -1, et l'IoU obtenu. Critere de
+  /// MAINTIEN de verrou : suivre la meme cible, pas la plus grosse.
+  int pickNearest(const cv::Rect & ref, double & best_iou) const;
+  /// Recopie l'etat interne dans `st`. Un seul endroit ou l'etat sort, parce que la machine
+  /// a etats a six sorties et qu'un champ oublie dans l'une d'elles serait invisible.
+  TrackStateOut & publish(TrackStateOut & st, double now_s, int fw, int fh) const;
+
   DetectConfig cfg_;
   std::string models_dir_;
 
@@ -176,14 +205,22 @@ private:
   cv::Mat det_rows_;
   std::vector<cv::Rect> det_boxes_;
   std::vector<Landmarks> det_landmarks_;
+  std::vector<float> det_scores_;
+  /// Nombre de visages du DERNIER cycle de detection. Conserve parce que la porte
+  /// redetect_ms fait des trames sans detection : publier 0 sur celles-la se lirait comme
+  /// "personne devant la camera" alors que le verrou tient.
+  int last_n_faces_{0};
 
   bool locked_{false};
   cv::Rect cur_;
   double cur_score_{0.0};
   Landmarks cur_landmarks_;
   double ref_area_{0.0};       ///< aire a l'instant du verrou, reference du test de vraisemblance
+  /// Cycles de re-detection CONSECUTIFS sans visage (et non trames : c'est ce qui rend
+  /// max_det_misses independant de la cadence video).
   int miss_streak_{0};
-  double last_det_s_{0.0};
+  double last_redetect_s_{0.0};   ///< t du dernier passage du detecteur (porte redetect_ms)
+  double last_confirm_s_{0.0};    ///< t du dernier recalage sur une DETECTION (borne hold_ms)
   uint32_t lock_id_{0};
   double lock_t0_{0.0};
   std::string lost_reason_;
