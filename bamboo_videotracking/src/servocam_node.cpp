@@ -27,6 +27,7 @@
 #include <chrono>
 #include <cmath>
 #include <memory>
+#include <stdexcept>   // std::stod jette sur une valeur ModeCmd non numerique
 #include <string>
 
 #include <rclcpp/rclcpp.hpp>
@@ -186,7 +187,34 @@ private:
       }
     } else if (m->target == "recenter") {
       returnHome();
+    } else if (m->target == "deadzone") {
+      applyDeadzoneDelta(m->value);
     }
+  }
+
+  /// Taille de la surface cible, portage de _resize_target du prototype.
+  ///
+  /// La valeur porte un DELTA SIGNE ("+0.010") et non un absolu : l'etat de reference vit
+  /// ICI, et la manette ne le duplique donc pas -- deux producteurs qui s'incrementent
+  /// chacun de leur cote ne peuvent pas divergier. overlay_node consomme la MEME commande,
+  /// sans quoi le reticule dessinerait une zone morte qui n'est plus celle appliquee.
+  void applyDeadzoneDelta(const std::string & value)
+  {
+    if (value.empty()) {return;}                  // rien a deviner : un delta vide est nul
+    double delta = 0.0;
+    try {
+      delta = std::stod(value);
+    } catch (const std::exception &) {
+      RCLCPP_WARN(get_logger(), "deadzone refuse : \"%s\" n'est pas un nombre",
+        value.c_str());
+      return;
+    }
+    // Bornes du prototype (TARGET_MIN/TARGET_MAX) : en dessous la surface cible est quasi
+    // nulle et la boucle pompe, au-dessus elle couvre presque le cadre et le suivi ne part
+    // plus jamais.
+    const double dz = std::min(0.45, std::max(0.03, pan_.dead + delta));
+    pan_.dead = tilt_.dead = dz;
+    RCLCPP_INFO(get_logger(), "surface cible : zone morte %.3f (delta %+.3f)", dz, delta);
   }
 
   void onNudge(bamboo_interfaces::srv::Nudge::Request::SharedPtr req,

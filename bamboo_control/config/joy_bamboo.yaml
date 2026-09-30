@@ -40,11 +40,16 @@ joy_linux_node:
     # obtient un mouvement continu tant que le stick est pousse, et c'est aussi
     # ce qui permettra au futur chemin de traction de nourrir son watchdog.
     autorepeat_rate: 25.0
-    # Zone morte materielle de cette manette. Les sticks de la Under Control
-    # 2919 ne reviennent pas exactement a 0 : sans zone morte la camera derive
-    # toute seule, ce qui est exactement le defaut qu'on ne veut pas sur un
-    # servo a butee.
-    deadzone: 0.12
+    # DELIBEREMENT NEUTRALISEE -- NE PAS LA REMETTRE ICI. La zone morte existe
+    # bien (les sticks de la Under Control 2919 ne reviennent pas exactement a 0,
+    # et sans elle la camera derive toute seule), mais elle est appliquee UNE
+    # SEULE FOIS, dans bamboo_teleop, sous la forme du prototype : hors zone
+    # morte on RENORMALISE la plage utile sur [0, 1]. Laisser 0.12 ici ferait
+    # ecraser a zero par le noyau la plage meme que la renormalisation sert a
+    # etaler : la zone morte compterait deux fois et la marche qu'on veut
+    # supprimer resterait. Le reglage vit desormais dans `deadzone` de
+    # bamboo_teleop, plus bas.
+    deadzone: 0.0
     # Regroupe les evenements du noyau arrivant dans la meme fenetre en UN
     # message : evite une rafale de /joy quand deux axes bougent ensemble.
     coalesce_interval: 0.02
@@ -64,6 +69,15 @@ bamboo_teleop:
     button_tracker: 4      # LB -> cycle de tracker         (none/mil/vit)
     button_predict: 5      # RB -> cycle de prediction      (off/anticip/coast)
     button_recenter: 10    # clic stick DROIT -> recentrage des axes
+    # Deplacement du robot. Memes reserves d'index : << A RELEVER >>.
+    axis_drive_x: 0        # stick GAUCHE X  (- gauche / + droite)
+    axis_drive_y: 1        # stick GAUCHE Y  (- haut   / + bas)
+    axis_trigger_l: 2      # ZL / LT, REPOS = -1 (lecture brute, pas de zone morte)
+    axis_trigger_r: 5      # ZR / RT, idem
+    button_stop: 1         # B  -> STOP franc, meme moteurs DESARMES
+    button_motion: 9       # clic stick GAUCHE -> armer / desarmer (touche O du proto)
+    button_speed_min_up: 7    # + (Start) -> plancher de vitesse +1
+    button_speed_min_down: 6  # - (Back)  -> plancher de vitesse -1
 
     # --- axes de servo pilotes a la manette ------------------------------
     # NOMS, jamais de numero de voie : c'est le contrat ServoCmd/Nudge. Changer
@@ -94,6 +108,47 @@ bamboo_teleop:
     # Coupe-circuit du chemin servo, sans toucher aux modes : utile pour essayer
     # les boutons de mode sans qu'un frolement de stick bouge la camera.
     nudge_enabled: true
+
+    # --- loi d'axe (commune aux QUATRE axes de stick) --------------------
+    # Transposition de RobotMain._axis du prototype, memes noms, memes valeurs.
+    # Zone morte renormalisee (la sortie repart de ZERO au franchissement, pas de
+    # marche) puis expo cubique (fin au centre, pleine echelle au bord). C'est
+    # pour elle que `deadzone` de joy_linux_node est a 0.0, plus haut.
+    deadzone: 0.12
+    expo: 0.35
+
+    # --- deplacement du robot --------------------------------------------
+    # DEUX VERROUS EN SERIE, et c'est voulu :
+    #   1. `motion_enabled` ci-dessous, etat LOCAL du noeud : a false, il ne
+    #      publie RIEN sur cmd_vel, pas meme un zero. Le clic du stick gauche
+    #      l'arme en cours de route.
+    #   2. `enable_cmd_vel` du DRIVER, a false sur ce robot (pack 12,6 V brut sur
+    #      des moteurs 7,4 V nominaux) : meme arme, la carte ignore la consigne.
+    # La manette ne peut donc pas contourner le second.
+    motion_enabled: false
+    # Plafonds du prototype (TELE_LIN / TELE_ANG de RobotMotorDrive) : ce sont
+    # eux que la poussee a fond atteint, au niveau de vitesse maximal.
+    tele_lin: 0.5
+    tele_ang: 1.5
+    # Plancher et plafond de vitesse, en niveaux 0..9 -> fraction (niveau+1)/10.
+    # Le PLANCHER n'est pas un reglage de confort : il sert a DECOLLER malgre la
+    # friction des motoreducteurs. Poussee nulle donne quand meme 0, il ne rampe
+    # donc pas au repos. Invariant tenu par le noeud : plancher <= plafond.
+    speed_min_level: 1
+    speed_max_level: 3
+    # Cadence de republication de la consigne tant que le stick est pousse. Au
+    # RELACHEMENT le noeud emet un STOP franc (trois zeros) puis SE TAIT : tenir
+    # un zero en permanence empecherait tout autre producteur (navigation, MCP)
+    # de piloter, ce que le prototype evite explicitement en "rendant la main".
+    cmd_vel_rate_hz: 10.0
+    # Silence de /joy au-dela duquel on considere la MANETTE PERDUE : on emet alors un STOP
+    # franc si on etait en poussee. C'est `autorepeat_rate` de joy_linux_node qui rend ce
+    # raisonnement valide -- il republie un stick TENU, donc ne plus rien recevoir ne peut
+    # pas vouloir dire "stick immobile". Vaut aussi pour les pas servo.
+    joy_timeout_s: 0.5
+    # Pas de la taille de surface cible (croix gauche/droite), envoye en DELTA
+    # SIGNE sur la cible ModeCmd `deadzone` : l'etat vit cote serveur.
+    target_step: 0.01
 
     # --- modes -----------------------------------------------------------
     # Le service de nudge est cherche a cette adresse ; les modes partent sur ce

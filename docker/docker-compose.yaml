@@ -437,18 +437,23 @@ services:
       source install/setup.bash &&
       ros2 launch bamboo_videotracking videotracking.launch.py robot:=${ROBOT}"
 
-#--- Groupe MANETTE (paquet bamboo_control, lot V5) : joy_linux_node + bamboo_teleop.
-#    NE COMMANDE AUCUN MOTEUR DE TRACTION -- c'est un choix de perimetre, pas un oubli : il
-#    produit des commandes de MODE pour le groupe tracking et des pas relatifs sur les axes
-#    servo NOMMES (service /servo/nudge). Il n'a donc AUCUN besoin du port serie et peut
-#    tourner sans driver : les nudges sont alors refuses proprement.
-#    HORS du profil `boot`, meme motif que bamboo_videotracking : le stick droit bouge les
-#    servos, et rien ne doit bouger tout seul au demarrage avant T6/T7 de bambooSTM32YB.
+#--- Groupe MANETTE (paquet bamboo_control, lot MANETTE) : joy_linux_node + bamboo_teleop.
+#    PORTE TOUS LES CONTROLES DU PROTOTYPE : stick droit -> pas relatifs sur les axes servo
+#    NOMMES (service /servo/nudge), boutons -> modes du groupe videotracking, stick gauche ->
+#    consigne de DEPLACEMENT sur cmd_vel. Aucun besoin du port serie : sans driver, les
+#    nudges sont refuses proprement et la consigne de deplacement ne trouve pas d'abonne.
+#    PROFIL `hmi` EXPLICITE, ET C'EST UNE CORRECTION : sans clef `profiles:` ce service est
+#    dans le groupe `default`, donc un `docker compose up -d` NU le demarrait -- stick droit
+#    en prise directe sur les servos, et desormais stick gauche a un clic du cmd_vel. Il
+#    faut donc le NOMMER pour le lancer, comme bamboo_videotracking.
+#    La traction reste derriere DEUX verrous en serie : `motion_enabled: false` (etat local
+#    du noeud, arme au clic du stick gauche) et `enable_cmd_vel: false` du driver.
 #    /dev est deja monte par `base` (privileged) -> la manette /dev/input/js0 est visible.
-#    BAMBOO_JOY permet de suivre l'ordre d'appairage sans editer ce fichier (a relever a T9).
+#    BAMBOO_JOY permet de suivre l'ordre d'appairage sans editer ce fichier (a relever a T20).
 #      docker compose up -d bamboo_control
   bamboo_control:
     extends: base
+    profiles: ["hmi"]
     volumes:
       # Build PERSISTANT et PARTAGE par les services de ce robot : voir ws_build en tete
       # de fichier. Sans lui, build/ et install/ vivent dans la couche inscriptible du

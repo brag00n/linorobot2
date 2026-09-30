@@ -115,6 +115,14 @@ def generate_launch_description():
             description="Peripherique manette. Fait de MACHINE : visible dans le "
                         "conteneur par `privileged` + /dev:/dev. Le numero depend de "
                         "l'ordre d'appairage -- a relever a T9 de bambooSTM32YB."),
+        DeclareLaunchArgument(
+            "cmd_vel_out_topic", default_value="/cmd_vel",
+            description="Topic de consigne de deplacement publie par la manette. Expose "
+                        "en argument parce qu'un remappage dont la clef ne correspond a "
+                        "aucun nom declare est ignore EN SILENCE : le nom logique du "
+                        "noeud est `cmd_vel`, et c'est celui-la qu'on remappe ici. Les "
+                        "roues ne tournent pas pour autant -- le driver garde son propre "
+                        "verrou `enable_cmd_vel`, a false sur ce robot."),
 
         OpaqueFunction(function=_checkAxes),
 
@@ -128,6 +136,7 @@ def generate_launch_description():
         Node(
             package="bamboo_control", executable="teleop_node", name="bamboo_teleop",
             parameters=[config],
+            remappings=[("cmd_vel", LaunchConfiguration("cmd_vel_out_topic"))],
             output="screen",
         ),
     ])

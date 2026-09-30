@@ -376,6 +376,17 @@ private:
       if (!m->value.empty()) {predict_mode_ = m->value;}
     } else if (m->target == "detector") {
       if (!m->value.empty()) {detector_ = m->value;}
+    } else if (m->target == "deadzone") {
+      // DELTA signe, memes bornes que servocam_node : le reticule doit montrer la zone
+      // morte REELLEMENT appliquee, sinon le HUD mentirait des le premier appui.
+      if (!m->value.empty()) {
+        try {
+          deadzone_ = std::min(0.45, std::max(0.03, deadzone_ + std::stod(m->value)));
+        } catch (const std::exception &) {
+          RCLCPP_WARN(get_logger(), "deadzone refuse : \"%s\" n'est pas un nombre",
+            m->value.c_str());
+        }
+      }
     }
   }
 

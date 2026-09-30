@@ -1,11 +1,26 @@
 #!/usr/bin/env python3
 """bamboo_teleop -- /joy -> modes du groupe videotracking et pas relatifs des axes servo.
 
-PERIMETRE, ET C'EST UN CHOIX EXPLICITE : ce noeud ne publie AUCUN /cmd_vel et ne
-commande AUCUN moteur de traction. La traction a la manette est le lot 5 du chantier 1
-(`teleop_twist_joy`, robot BambooWS, en pause) ; ici les moteurs sont verrouilles
-(`enable_cmd_vel: false`, pack 12,6 V brut sur des moteurs 7,4 V nominaux). Ajouter ce
-chemin maintenant serait du code d'actuation non testable.
+PORTAGE INTEGRAL DES CONTROLES DU PROTO `robot_controlv3` : stick gauche = deplacement,
+stick droit = camera, boutons = modes du groupe videotracking. Meme loi d'axe, memes noms
+de parametres (`deadzone`, `expo`, `tele_lin`, `tele_ang`), pour qu'un essai au banc se
+transpose sans retraduction. Les equivalents proto sont cites en regard de chaque bloc.
+
+TRACTION : PRESENTE, MAIS DERRIERE DEUX VERROUS EN SERIE. Ce noeud publie /cmd_vel comme
+le proto (poussee du stick = vitesse, portage de RobotMotorDrive.holdVelocityAnalog).
+Deux verrous INDEPENDANTS empechent une roue de tourner par surprise :
+  1. `motion_on`, etat LOCAL de ce noeud, a `false` au demarrage : desarme, RIEN n'est
+     publie -- pas meme un zero. Le clic du stick gauche l'arme (touche O du proto).
+  2. `enable_cmd_vel` du driver, a `false` sur ce robot (pack 12,6 V brut sur des moteurs
+     7,4 V nominaux) : meme arme, le driver ignore la consigne.
+La manette ne peut donc pas contourner le second : c'est voulu, et c'est ce qui rend
+l'essai "au topic" possible sans toucher a l'alimentation.
+
+RELACHER LE STICK REND LA MAIN, il ne tient pas un zero. Au front descendant on emet un
+STOP FRANC (trois cmd_vel nuls, ce que la carte lit comme Motion_Stop) puis on SE TAIT.
+Republier zero en permanence empecherait tout autre producteur (navigation, MCP) de
+piloter : le proto evite exactement cela, et c'est pourquoi le silence est la position de
+repos de ce noeud.
 
 TROIS DIVERGENCES REELLES ENTRE CONSOMMATEURS, TROUVEES EN LISANT LEUR CODE -- elles
 expliquent la seule regle non evidente de ce fichier :
@@ -34,6 +49,15 @@ L'APPRENTISSAGE N'EST PAS UN MODE, C'EST UNE ACTION. `face_train_node` sert une 
 fois) ; le ModeCmd `training` ne circule QUE dans l'autre sens, en `value: "done"`, pour
 faire recharger la galerie. Un bouton qui publierait `training` ne lancerait donc rien.
 
+LA LOI D'AXE EST CELLE DU PROTO, ET ELLE NE S'APPLIQUE QU'UNE FOIS. `_axis()` est le
+portage ligne a ligne de RobotMain._axis : hors zone morte on RENORMALISE l'amplitude
+utile, puis on courbe par une expo cubique (fin au centre, pleine echelle au bord). D'ou
+une consequence non evidente : `joy_linux_node` doit avoir `deadzone: 0.0`, sinon le
+noyau ecrase a zero la plage meme que la renormalisation sert a etaler -- la zone morte
+serait appliquee DEUX FOIS et la marche qu'on veut supprimer resterait.
+Les gachettes ont leur propre lecture (`_axisRaw`) : au repos elles valent -1, pas 0, et
+les passer dans la zone morte les ferait lire "enfoncees" en permanence.
+
 LE NUDGE EST UN SERVICE, PAS UN TOPIC, et cela dicte la cadence. `/servo/nudge` est un
 `bamboo_interfaces/srv/Nudge` (requete/reponse) : l'appeler aux 25 Hz du stick empilerait
 les futures. On integre donc la vitesse du stick, on n'appelle qu'a `nudge_rate_hz`, et
@@ -51,6 +75,7 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Joy
 
 from bamboo_interfaces.action import TrainFaces
@@ -78,6 +103,11 @@ class TeleopNode(Node):
         self._axTilt = self.declare_parameter("axis_tilt", 4).value
         self._axDpadX = self.declare_parameter("axis_dpad_x", 6).value
         self._axDpadY = self.declare_parameter("axis_dpad_y", 7).value
+        # Deplacement : stick gauche, et les deux gachettes analogiques.
+        self._axDriveX = self.declare_parameter("axis_drive_x", 0).value
+        self._axDriveY = self.declare_parameter("axis_drive_y", 1).value
+        self._axTrigL = self.declare_parameter("axis_trigger_l", 2).value
+        self._axTrigR = self.declare_parameter("axis_trigger_r", 5).value
         self._btn = {
             "tracking": self.declare_parameter("button_tracking", 2).value,
             "recognition": self.declare_parameter("button_recognition", 3).value,
@@ -85,6 +115,10 @@ class TeleopNode(Node):
             "tracker": self.declare_parameter("button_tracker", 4).value,
             "predict": self.declare_parameter("button_predict", 5).value,
             "recenter": self.declare_parameter("button_recenter", 10).value,
+            "stop": self.declare_parameter("button_stop", 1).value,
+            "motion": self.declare_parameter("button_motion", 9).value,
+            "speed_min_up": self.declare_parameter("button_speed_min_up", 7).value,
+            "speed_min_down": self.declare_parameter("button_speed_min_down", 6).value,
         }
 
         # --- axes de servo : des NOMS, jamais un numero de voie ---------------
@@ -98,6 +132,19 @@ class TeleopNode(Node):
         self._minDeg = float(self.declare_parameter("nudge_min_deg", 0.3).value)
         self._nudgeOn = bool(self.declare_parameter("nudge_enabled", True).value)
         self._debounce = float(self.declare_parameter("debounce_s", 0.25).value)
+        # Loi d'axe du proto (RobotMain._axis) : memes noms, memes defauts.
+        self._deadzone = min(0.9, max(0.0, float(
+            self.declare_parameter("deadzone", 0.12).value)))
+        self._expo = min(1.0, max(0.0, float(
+            self.declare_parameter("expo", 0.35).value)))
+        # Deplacement : plafonds du proto (TELE_LIN / TELE_ANG) et plage de niveaux.
+        self._teleLin = float(self.declare_parameter("tele_lin", 0.5).value)
+        self._teleAng = float(self.declare_parameter("tele_ang", 1.5).value)
+        self._speedMin = int(self.declare_parameter("speed_min_level", 1).value)
+        self._speedMax = int(self.declare_parameter("speed_max_level", 3).value)
+        self._cmdHz = max(1.0, float(self.declare_parameter("cmd_vel_rate_hz", 10.0).value))
+        self._motionOn = bool(self.declare_parameter("motion_enabled", False).value)
+        self._targetStep = float(self.declare_parameter("target_step", 0.01).value)
         self._joyTimeout = float(self.declare_parameter("joy_timeout_s", 0.5).value)
 
         modeTopic = self.declare_parameter("mode_topic", "/videotracking/mode_cmd").value
@@ -121,6 +168,10 @@ class TeleopNode(Node):
         self._pendPan = 0.0
         self._pendTilt = 0.0
         self._lastJoy = 0.0
+        # Deplacement : consigne courante et memoire du front descendant du stick.
+        self._lin = 0.0
+        self._ang = 0.0
+        self._gpDriving = False
         self._inFlight = False
         self._trainGoal = None
         self._warned = set()
@@ -134,21 +185,49 @@ class TeleopNode(Node):
         self._modeSub = self.create_subscription(
             ModeCmd, modeTopic, self._onModeEcho, latched)
 
+        # Nom LOGIQUE : c'est `control.launch.py` qui le remappe (argument
+        # `cmd_vel_out_topic`). Un remappage sans clef correspondante est ignore EN
+        # SILENCE, d'ou l'exposition explicite de celle-ci.
+        self._velPub = self.create_publisher(Twist, "cmd_vel", 10)
+
         self._joySub = self.create_subscription(Joy, "joy", self._onJoy, 10)
         self._nudgeCli = self.create_client(Nudge, nudgeSrv)
         self._trainCli = ActionClient(self, TrainFaces, trainAction)
 
         self._timer = self.create_timer(1.0 / self._nudgeHz, self._onNudgeTick)
+        self._velTimer = self.create_timer(1.0 / self._cmdHz, self._onDriveTick)
         self.get_logger().info(
             "bamboo_teleop pret : modes -> %s, nudge -> %s (%.0f deg/s a fond, %.0f Hz), "
-            "apprentissage -> %s. AUCUN /cmd_vel."
-            % (modeTopic, nudgeSrv, self._maxDegS, self._nudgeHz, trainAction))
+            "apprentissage -> %s, deplacement -> %s a %.0f Hz (moteurs %s au demarrage)."
+            % (modeTopic, nudgeSrv, self._maxDegS, self._nudgeHz, trainAction,
+               self._velPub.topic_name, self._cmdHz,
+               "ARMES" if self._motionOn else "desarmes"))
 
     # ---------------------------------------------------------------- entrees
     @staticmethod
-    def _axis(msg, idx):
-        """Lecture TOLERANTE : une manette plus pauvre que la table ne fait pas crasher."""
-        return float(msg.axes[idx]) if 0 <= idx < len(msg.axes) else 0.0
+    def _axisRaw(msg, idx):
+        """Lecture BRUTE, pour les gachettes.
+
+        Defaut -1.0 et non 0.0 : une gachette au repos vaut -1, et l'absence d'axe doit
+        donc se lire "relachee". Ne passe PAS par la loi d'axe (cf. en-tete).
+        """
+        return float(msg.axes[idx]) if 0 <= idx < len(msg.axes) else -1.0
+
+    def _axis(self, msg, idx):
+        """Loi d'axe du proto (RobotMain._axis), transposee telle quelle.
+
+        Lecture TOLERANTE : une manette plus pauvre que la table ne fait pas crasher.
+        """
+        v = float(msg.axes[idx]) if 0 <= idx < len(msg.axes) else 0.0
+        m = abs(v)
+        if m <= self._deadzone:
+            return 0.0
+        # Renormalisation : la plage utile [dz, 1] est etalee sur [0, 1], donc la sortie
+        # repart de ZERO au franchissement et non de dz -- c est ce qui supprime la marche.
+        s = (m - self._deadzone) / (1.0 - self._deadzone)
+        # Expo cubique : fin autour du centre, pleine echelle conservee au bord.
+        s = (1.0 - self._expo) * s + self._expo * s ** 3
+        return s if v > 0.0 else -s
 
     @staticmethod
     def _button(msg, idx):
@@ -177,6 +256,36 @@ class TeleopNode(Node):
         # --- vitesse des axes servo (integree par le timer) ------------------
         self._velPan = self._invPan * self._axis(msg, self._axPan) * self._maxDegS
         self._velTilt = self._invTilt * self._axis(msg, self._axTilt) * self._maxDegS
+
+        # --- deplacement : stick gauche --------------------------------------
+        self._driveFromJoy(msg)
+
+        if self._edge("stop", self._button(msg, self._btn["stop"]), now):
+            # STOP inconditionnel : il vaut meme moteurs DESARMES, parce qu un zero franc
+            # est la seule chose qu on veut pouvoir emettre sans reflechir.
+            self._stopMotion()
+
+        if self._edge("motion", self._button(msg, self._btn["motion"]), now):
+            self._motionOn = not self._motionOn
+            if not self._motionOn:
+                self._stopMotion()               # desarmer ARRETE, il ne fige pas
+            self.get_logger().warning(
+                "moteurs %s a la manette (le verrou `enable_cmd_vel` du driver reste "
+                "maitre)" % ("ARMES" if self._motionOn else "desarmes"))
+
+        if self._edge("speed_min_up", self._button(msg, self._btn["speed_min_up"]), now):
+            self._bumpSpeedMin(+1)
+        if self._edge("speed_min_down",
+                      self._button(msg, self._btn["speed_min_down"]), now):
+            self._bumpSpeedMin(-1)
+
+        # Gachettes : lecture BRUTE (repos -1), front a > 0.5.
+        if self._edge("trigger_r",
+                      1 if self._axisRaw(msg, self._axTrigR) > 0.5 else 0, now):
+            self._bumpSpeedMax(+1)
+        if self._edge("trigger_l",
+                      1 if self._axisRaw(msg, self._axTrigL) > 0.5 else 0, now):
+            self._bumpSpeedMax(-1)
 
         # --- boutons de mode : toujours une valeur ABSOLUE -------------------
         if self._edge("tracking", self._button(msg, self._btn["tracking"]), now):
@@ -219,6 +328,107 @@ class TeleopNode(Node):
             self._sendMode("detector", self._detector)
         if self._edge("dpad_down", 1 if dy < -0.5 else 0, now):
             self._startTraining()
+
+        # Taille de la surface cible (proto : _resize_target, pas de 0,01). La valeur porte
+        # un DELTA SIGNE : l etat vit cote serveur, ce noeud ne le duplique pas. Une cible
+        # ModeCmd inconnue etant ignoree EN SILENCE, ce D-pad est sans effet tant que
+        # servocam_node et overlay_node ne la consomment pas.
+        dx = self._axis(msg, self._axDpadX)
+        if self._edge("dpad_right", 1 if dx > 0.5 else 0, now):
+            self._sendMode("deadzone", "%+.3f" % self._targetStep)
+        if self._edge("dpad_left", 1 if dx < -0.5 else 0, now):
+            self._sendMode("deadzone", "%+.3f" % -self._targetStep)
+
+    # ----------------------------------------------------------- deplacement
+    @staticmethod
+    def _levelFrac(level):
+        """Niveau 0..9 -> fraction (niveau+1)/10, comme RobotMotorDrive._levelFrac."""
+        return (max(0, min(9, int(level))) + 1) / 10.0
+
+    @staticmethod
+    def _scaleAxis(v, fmin, fmax):
+        """Poussee -> fraction entre plancher et plafond ; poussee nulle -> ZERO.
+
+        Le plancher ne rampe donc pas au repos : il sert a DECOLLER malgre la friction
+        des motoreducteurs, pas a garantir une vitesse minimale permanente.
+        """
+        if v == 0.0:
+            return 0.0
+        f = fmin + (fmax - fmin) * min(1.0, abs(v))
+        return f if v > 0.0 else -f
+
+    def _holdVelocityAnalog(self, fwd, turn):
+        """Portage de RobotMotorDrive.holdVelocityAnalog : memes bornes, memes plafonds."""
+        fmin = self._levelFrac(self._speedMin)
+        fmax = self._levelFrac(self._speedMax)
+        self._lin = self._scaleAxis(fwd, fmin, fmax) * self._teleLin
+        self._ang = self._scaleAxis(turn, fmin, fmax) * self._teleAng
+
+    def _bumpSpeedMin(self, delta):
+        self._speedMin = max(0, min(9, self._speedMin + int(delta)))
+        if self._speedMin > self._speedMax:      # invariant min <= max
+            self._speedMax = self._speedMin
+        self._logSpeed("plancher")
+
+    def _bumpSpeedMax(self, delta):
+        self._speedMax = max(0, min(9, self._speedMax + int(delta)))
+        if self._speedMax < self._speedMin:
+            self._speedMin = self._speedMax
+        self._logSpeed("plafond")
+
+    def _logSpeed(self, which):
+        self.get_logger().info(
+            "vitesse (%s) : niveaux %d..%d -> %.2f..%.2f m/s"
+            % (which, self._speedMin, self._speedMax,
+               self._levelFrac(self._speedMin) * self._teleLin,
+               self._levelFrac(self._speedMax) * self._teleLin))
+
+    def _publishTwist(self):
+        t = Twist()
+        t.linear.x = self._lin
+        t.angular.z = self._ang
+        self._velPub.publish(t)
+
+    def _stopMotion(self):
+        """STOP FRANC : trois consignes nulles, ce que la carte lit comme Motion_Stop.
+
+        Puis on SE TAIT -- on rend la main a un autre producteur au lieu de tenir un zero.
+        """
+        self._lin = 0.0
+        self._ang = 0.0
+        for _ in range(3):
+            self._publishTwist()
+        self._gpDriving = False
+
+    def _driveFromJoy(self, msg):
+        """Portage de RobotMain._drive_from_gamepad, front descendant compris."""
+        fwd = turn = 0.0
+        if self._motionOn:
+            fwd = -self._axis(msg, self._axDriveY)   # avant = stick vers le HAUT (LY < 0)
+            turn = -self._axis(msg, self._axDriveX)  # gauche = + (angular.z anti-horaire)
+        driving = (fwd != 0.0 or turn != 0.0)
+        if driving:
+            self._holdVelocityAnalog(fwd, turn)
+            if not self._gpDriving:                  # front montant : demarrage franc
+                self._publishTwist()
+            self._gpDriving = True
+        elif self._gpDriving:                        # front descendant : stop puis silence
+            self._stopMotion()
+
+    def _onDriveTick(self):
+        """Republie la consigne tant que le stick est pousse ; l absence de manette arrete.
+
+        Le silence de /joy vaut perte de manette : `autorepeat_rate` republie un stick
+        TENU, donc ne plus rien recevoir ne peut pas vouloir dire "stick immobile".
+        """
+        if time.monotonic() - self._lastJoy > self._joyTimeout:
+            if self._gpDriving:
+                self._warnOnce("joy_lost_drive",
+                               "manette perdue en pleine poussee : STOP franc")
+                self._stopMotion()
+            return
+        if self._gpDriving:
+            self._publishTwist()
 
     @staticmethod
     def _next(values, current):
@@ -343,10 +553,16 @@ def main(argv=None):
     except KeyboardInterrupt:
         pass
     finally:
-        # Aucun "frein" a envoyer : ce noeud ne commande pas de moteur et un servo garde
-        # sa position. Recentrer en sortant ferait bouger la camera a l'instant ou
-        # l'operateur coupe l'outil -- exactement ce que servocam_node evite deja en
+        # Un STOP franc SI et seulement si on etait en train de pousser : couper l outil
+        # ne doit pas laisser une derniere consigne non nulle en vol. En revanche on ne
+        # recentre PAS la camera -- un servo garde sa position, et la bouger a l instant
+        # ou l operateur coupe l outil est exactement ce que servocam_node evite deja en
         # desarmant le suivi.
+        try:
+            if node._gpDriving:
+                node._stopMotion()
+        except Exception:                        # noeud deja a moitie detruit : on passe
+            pass
         node.destroy_node()
         rclpy.try_shutdown()
 
