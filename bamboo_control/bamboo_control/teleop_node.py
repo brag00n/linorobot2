@@ -75,6 +75,7 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rcl_interfaces.msg import SetParametersResult
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Joy
 
@@ -213,12 +214,35 @@ class TeleopNode(Node):
 
         self._timer = self.create_timer(1.0 / self._nudgeHz, self._onNudgeTick)
         self._velTimer = self.create_timer(1.0 / self._cmdHz, self._onDriveTick)
+        # `nudge_enabled` est un COUPE-CIRCUIT de securite : il doit obeir A CHAUD. Sans
+        # ce rappel il n'etait lu qu'A LA CONSTRUCTION, donc `ros2 param set` repondait
+        # "Set parameter successful" et ne changeait RIEN -- un succes MENSONGER, et c'est
+        # le pire defaut possible pour un interrupteur de securite : on croit avoir coupe.
+        self.add_on_set_parameters_callback(self._onParamSet)
         self.get_logger().info(
             "bamboo_teleop pret : modes -> %s, nudge -> %s (%.0f deg/s a fond, %.0f Hz), "
             "apprentissage -> %s, deplacement -> %s a %.0f Hz (moteurs %s au demarrage)."
             % (modeTopic, nudgeSrv, self._maxDegS, self._nudgeHz, trainAction,
                self._velPub.topic_name, self._cmdHz,
                "ARMES" if self._motionOn else "desarmes"))
+
+    def _onParamSet(self, params):
+        """Prise a chaud des SEULS parametres qu'il est sur de changer en marche.
+
+        On ne generalise deliberement pas a tous les parametres : les index d'axes et de
+        boutons decrivent un MATERIEL (cf. le releve en tete de joy_bamboo.yaml) et les
+        changer en marche ferait repondre la manette autrement sans que rien ne le dise.
+        """
+        for p in params:
+            if p.name == "nudge_enabled":
+                self._nudgeOn = bool(p.value)
+                # On JETTE les pas deja accumules. Sans cela, couper le chemin laisserait
+                # partir un dernier nudge au reveil, sur une intention perimee -- exactement
+                # ce que la perte de manette prend soin d'eviter plus bas.
+                self._pendPan = self._pendTilt = 0.0
+                self.get_logger().info(
+                    "chemin servo %s a chaud" % ("ARME" if self._nudgeOn else "COUPE"))
+        return SetParametersResult(successful=True)
 
     # ---------------------------------------------------------------- entrees
     @staticmethod

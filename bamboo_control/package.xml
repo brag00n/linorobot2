@@ -3,11 +3,13 @@
 <package format="3">
   <name>bamboo_control</name>
   <version>0.0.0</version>
-  <description>Groupe manette du robot bamboo4WD_V4 : traduit /joy en commandes de MODE du groupe videotracking et en deplacements RELATIFS des axes de servo. Ne commande AUCUN moteur de traction -- c'est un choix de perimetre, pas un oubli (voir teleop_node.py).</description>
+  <description>Groupe manette du robot bamboo4WD_V4 : traduit /joy en commandes de MODE du groupe videotracking et en deplacements RELATIFS des axes de servo. Publie aussi /cmd_vel, mais derriere DEUX verrous en serie : `motion_enabled` local au noeud, faux au demarrage, et `enable_cmd_vel` du driver, faux sur ce robot -- la manette ne peut donc pas contourner le second (voir teleop_node.py).</description>
   <maintainer email="titi28011976@users.noreply.github.com">Titi28011976</maintainer>
   <license>Apache 2.0</license>
 
   <exec_depend>rclpy</exec_depend>
+  <!-- SetParametersResult, retour du rappel qui rend `nudge_enabled` reglable a chaud. -->
+  <exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
