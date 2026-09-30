@@ -19,7 +19,7 @@
   <!-- joy_linux et non joy : le paquet apt installe dans l'image est
        ros-humble-joy-linux (couche Dockerfile de la manette, verifiee 3/3 au
        lot V1.0). Les deux exposent /joy avec le MEME type mais des index
-       d'axes differents -- ne pas substituer l'un a l'autre sans relever. -->
+       d'axes differents, donc ne pas substituer l'un a l'autre sans relever. -->
   <exec_depend>joy_linux</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
