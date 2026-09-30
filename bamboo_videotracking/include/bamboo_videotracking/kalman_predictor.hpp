@@ -56,6 +56,13 @@ public:
   /// un saut de cible, pas un mouvement.
   double lastErr() const { return last_err_; }
 
+  /// Norme de la VITESSE estimee, en unites normalisees par seconde. C est la grandeur
+  /// que le prototype lit dans le quadruplet de son `peek()` (RobotWebCamMotorized.py:263)
+  /// pour decider si une perte de cible merite une roue libre : sous `predict_min_speed`,
+  /// le visage etait immobile a la perte, donc extrapoler son elan ne fabriquerait qu une
+  /// derive. Lecture pure de l etat, aucune avance du filtre.
+  double speed() const;
+
 private:
   void setDt(double dt);
 

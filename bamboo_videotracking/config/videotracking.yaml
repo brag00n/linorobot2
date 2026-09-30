@@ -66,6 +66,11 @@ tracking_node:
     predict_mode: "anticip"
     predict_horizon_s: 0.12
     coast_max_s: 0.7
+    # Sous ce seuil de vitesse (unites normalisees par seconde), un visage perdu n a pas
+    # d elan a extrapoler : pas de roue libre, retour au repos immediat. Valeur du prototype
+    # (--predict-min-speed 0.4). La phase terminale s appelle "home" et c est elle qui
+    # declenche le recentrage doux de servocam_node.
+    predict_min_speed: 0.4
 
 facerecog_node:
   ros__parameters:

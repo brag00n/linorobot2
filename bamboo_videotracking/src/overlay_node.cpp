@@ -477,7 +477,11 @@ private:
     // Le proto se garde sur `pred_nx is None` ; en ROS le champ existe toujours, donc
     // c'est `pred_phase` qui dit si la prediction est armee. Dessiner un vecteur en mode
     // off ferait croire a une anticipation alors que la consigne suit la mesure brute.
-    if (ts.pred_phase.empty() || ts.pred_phase == "off") {return;}
+    // "home" est traite comme "off" : le prototype renvoie None pour le point predit quand
+    // la roue libre est finie, donc il ne dessine rien. Sans ce garde, nos champs pred_*
+    // restes a zero feraient pointer une fleche sur le CENTRE de l image, qu on lirait comme
+    // une prediction alors qu il n y a plus de cible du tout.
+    if (ts.pred_phase.empty() || ts.pred_phase == "off" || ts.pred_phase == "home") {return;}
     const int fw = im.cols;
     const int fh = im.rows;
     int px = static_cast<int>(std::lround(fw / 2.0 + ts.pred_nx * fw / 2.0));

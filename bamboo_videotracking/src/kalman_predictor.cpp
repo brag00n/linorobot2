@@ -127,4 +127,15 @@ void KalmanPredictor::peek(double horizon_s, double & out_nx, double & out_ny) c
   out_ny = kf_.statePost.at<float>(1) + kf_.statePost.at<float>(3) * h;
 }
 
+double KalmanPredictor::speed() const
+{
+  // Etat = [nx, ny, vnx, vny] : les indices 2 et 3 SONT les vitesses estimees, en
+  // unites normalisees par seconde. Non initialise, on renvoie zero, ce qui vaut
+  // "immobile" -- le bon defaut, puisque sans filtre il n y a rien a extrapoler.
+  if (!init_) {return 0.0;}
+  return std::hypot(
+    static_cast<double>(kf_.statePost.at<float>(2)),
+    static_cast<double>(kf_.statePost.at<float>(3)));
+}
+
 }  // namespace bamboo_videotracking

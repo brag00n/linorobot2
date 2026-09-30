@@ -51,6 +51,10 @@ public:
     predict_mode_ = declare_parameter<std::string>("predict_mode", "anticip");
     predict_horizon_s_ = declare_parameter<double>("predict_horizon_s", 0.12);
     coast_max_s_ = declare_parameter<double>("coast_max_s", 0.7);
+    // predict_min_speed : NOM ET VALEUR du prototype (--predict-min-speed, defaut 0,4), en
+    // unites normalisees par seconde. Sous ce seuil, une perte de cible ne declenche aucune
+    // roue libre et passe directement en phase "home".
+    predict_min_speed_ = declare_parameter<double>("predict_min_speed", 0.4);
     // MIROIR DE TRAME, equivalent de `--flip h` du prototype, applique la ou le prototype
     // l'applique : a la CAPTURE (RobotSensorWebCam.read), donc en amont de tout. Memes
     // valeurs que lui : none | v | h | 180. Le prototype ne compense PAS le miroir dans sa
@@ -267,26 +271,42 @@ private:
     m.pred_ny = static_cast<float>(pny);
   }
 
+  // Transposition LIGNE A LIGNE de la fin de _predictStep (RobotWebCamMotorized.py:255-272).
+  // Trois conditions doivent TOUTES tenir pour meriter une roue libre : un filtre initialise,
+  // un visage qui bougeait a la perte, et une perte encore recente. Sinon -> phase "home",
+  // qui est le NOM DU PROTOTYPE et le contrat avec servocam_node : la camera rentre au repos.
   void predictLost(double now_s, bamboo_interfaces::msg::TrackState & m)
   {
-    if (predict_mode_ != "coast" || !kal_.initialised()) {
+    // Le SEUL court-circuit du prototype. En particulier il coaste AUSSI en "anticip" :
+    // ce qui vivait ici avant exigeait predict_mode == "coast", donc dans notre defaut
+    // (anticip) il n y avait ni roue libre NI phase terminale -- rien a quoi accrocher un
+    // retour au centre. "coast" ne nomme pas la roue libre, il nomme ce que le servo suit
+    // pendant le verrouillage (mesure brute la, point anticipe en "anticip").
+    if (predict_mode_ == "off") {
       m.pred_phase = "off";
       return;
     }
-    if (now_s - last_seen_s_ > coast_max_s_) {
-      // BORNE DE ROUE LIBRE, et c'est la protection essentielle du mode : sans elle le
-      // filtre extrapolerait indefiniment une vitesse mesuree avant la perte, et la
-      // camera partirait en butee en suivant un fantome.
-      kal_.resetUninit();
-      m.pred_phase = "expired";
+    // BORNE DE ROUE LIBRE, et c'est la protection essentielle du mode : sans elle le
+    // filtre extrapolerait indefiniment une vitesse mesuree avant la perte, et la
+    // camera partirait en butee en suivant un fantome.
+    const bool within = (now_s - last_seen_s_) <= coast_max_s_;
+    // SEUIL DE VITESSE, nom et valeur du prototype. Un visage immobile a l instant de la
+    // perte n a pas d elan a extrapoler : le coaster ferait deriver la cible sur du bruit
+    // de filtre. Sous le seuil, on rentre tout de suite.
+    const bool moving = kal_.speed() >= predict_min_speed_;
+    if (kal_.initialised() && moving && within) {
+      double pnx = 0.0;
+      double pny = 0.0;
+      kal_.coast(dtSince(now_s), pnx, pny);
+      m.pred_phase = "coast";
+      m.pred_nx = static_cast<float>(pnx);
+      m.pred_ny = static_cast<float>(pny);
       return;
     }
-    double pnx = 0.0;
-    double pny = 0.0;
-    kal_.coast(dtSince(now_s), pnx, pny);
-    m.pred_phase = "coast";
-    m.pred_nx = static_cast<float>(pnx);
-    m.pred_ny = static_cast<float>(pny);
+    // Plus de cible : on le dit, et servocam_node en deduit le retour au repos. Le filtre
+    // est remis a zero pour que la prochaine acquisition reparte d une page blanche.
+    kal_.resetUninit();
+    m.pred_phase = "home";
   }
 
   double dtSince(double now_s)
@@ -376,6 +396,13 @@ private:
         predict_horizon_s_ = p.as_double();
       } else if (n == "coast_max_s") {
         coast_max_s_ = p.as_double();
+      } else if (n == "predict_min_speed") {
+        if (p.as_double() < 0.0) {
+          res.successful = false;
+          res.reason = "predict_min_speed doit etre >= 0";
+          return res;
+        }
+        predict_min_speed_ = p.as_double();
       } else if (n == "detector") {
         cfg.detector = p.as_string(); touch_det = true;
       } else if (n == "track_mode") {
@@ -438,6 +465,7 @@ private:
   std::string predict_mode_;
   double predict_horizon_s_{0.12};
   double coast_max_s_{0.7};
+  double predict_min_speed_{0.4};
 
   FaceDetection det_;
   KalmanPredictor kal_;
