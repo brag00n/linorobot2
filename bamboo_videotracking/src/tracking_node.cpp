@@ -17,6 +17,7 @@
 // 1280x720 ne doit pas demander de retoucher un gain.
 
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -108,9 +109,21 @@ public:
     // Avec une profondeur de 1, l'intergiciel ECRASE la trame en attente : on traite
     // toujours la plus recente, et le retard retombe a une periode de detection.
     auto img_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort();
+    // GROUPE DE RAPPELS DEDIE A L'IMAGE, et ce n'est pas une optimisation : la detection
+    // occupe 130 a 230 ms par trame pour une cadence de 6 Hz, donc elle SATURE son groupe.
+    // Le groupe par defaut etant MUTUELLEMENT EXCLUSIF, tout ce qui y vivait aussi --
+    // l'abonnement aux modes ET les services de parametres que rclcpp y installe -- n'a
+    // JAMAIS obtenu de creneau : le noeud publiait son TrackState en restant SOURD a toute
+    // commande, sans le moindre message d'erreur. Mesure a l'essai T22 de bambooSTM32YB :
+    // `ros2 param get` sans reponse, et un `predict` volontairement invalide qui ne
+    // journalisait meme pas son refus. Le conteneur est multi-thread (component_container_mt),
+    // donc deux groupes distincts tournent en parallele et le defaut redevient libre.
+    img_cbg_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    rclcpp::SubscriptionOptions img_opts;
+    img_opts.callback_group = img_cbg_;
     sub_ = create_subscription<sensor_msgs::msg::CompressedImage>(
       in_topic, img_qos,
-      [this](sensor_msgs::msg::CompressedImage::ConstSharedPtr msg) {onImage(msg);});
+      [this](sensor_msgs::msg::CompressedImage::ConstSharedPtr msg) {onImage(msg);}, img_opts);
 
     // TrackState en RELIABLE profondeur 1 : c'est un message de COMMANDE (servocam_node en
     // derive des consignes servo) et il doit etre lisible a travers rosbridge, que
@@ -189,6 +202,10 @@ private:
     // verrous d'un coup.
     const double now_s = static_cast<double>(now_steady_.now().nanoseconds()) * 1e-9;
 
+    // Verrouille pour TOUTE la suite : trackStep, la lecture de config() et le filtre de
+    // Kalman forment un seul etat coherent, et le relacher entre deux laisserait une
+    // reconfiguration s'inserer au milieu d'une trame.
+    std::lock_guard<std::mutex> lk(state_mu_);
     TrackStateOut st = det_.trackStep(*f.mat, now_s);
     publishState(st, *f.mat, stamp, now_s);
   }
@@ -334,6 +351,7 @@ private:
     // allumait donc la pastille du HUD sans rien changer au comportement du suivi -- defaut
     // silencieux, et le pire des deux mondes. On accepte les deux, les noms du contrat
     // d'abord ; les anciens restent valides pour ne casser aucun script existant.
+    std::lock_guard<std::mutex> lk(state_mu_);
     if (msg->target == "predict" || msg->target == "predict_mode") {
       if (msg->value != "off" && msg->value != "anticip" && msg->value != "coast") {
         RCLCPP_WARN(get_logger(), "predict_mode inconnu : '%s'", msg->value.c_str());
@@ -373,6 +391,7 @@ private:
     // ⚠️ EN HUMBLE CE RAPPEL EST APPELE *AVANT* APPLICATION (add_pre/post_set_parameters
     // n'existent qu'a partir d'Iron) : l'effet de bord doit donc se faire ICI, et la
     // valeur lue dans `ps` est la seule qui vaille -- get_parameter() rendrait l'ANCIENNE.
+    std::lock_guard<std::mutex> lk(state_mu_);
     DetectConfig cfg = det_.config();
     bool touch_det = false;
 
@@ -480,6 +499,15 @@ private:
   uint32_t last_mode_seq_{0};
   unsigned decode_fail_{0};
 
+  // VERROU DE L'ETAT DE SUIVI : `det_` (detecteur + tracker OpenCV) et `kal_` sont
+  // touches par TROIS rappels -- onImage dans son groupe dedie, onMode et onParams dans le
+  // groupe par defaut. Tant que tout vivait dans UN groupe mutuellement exclusif, la
+  // serialisation etait ACCIDENTELLE et ce verrou inutile ; separer les groupes a rendu la
+  // concurrence reelle, et l'essai T22 de bambooSTM32YB l'a payee d'un SIGSEGV immediat
+  // (reconfigure() pendant un trackStep()). Le verrou fait donc partie du meme correctif,
+  // pas d'une precaution ajoutee apres coup.
+  std::mutex state_mu_;
+  rclcpp::CallbackGroup::SharedPtr img_cbg_;
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr sub_;
   rclcpp::Subscription<bamboo_interfaces::msg::ModeCmd>::SharedPtr mode_sub_;
   rclcpp::Publisher<bamboo_interfaces::msg::TrackState>::SharedPtr pub_;
