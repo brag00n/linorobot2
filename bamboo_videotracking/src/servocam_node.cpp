@@ -47,7 +47,7 @@ struct Axis
   double gain{18.0};       // deg par unite d'erreur normalisee
   double dead{0.08};       // zone morte en erreur normalisee
   double dead_hyst{0.05};  // relachement : on ressort de la zone morte plus tard
-  double max_step{6.0};    // deg par cycle, avant limitation de vitesse
+  double max_step{6.0};    // deg par SECONDE de cible (voir trackAxis), pas par cycle
   double min_deg{8.0};
   double max_deg{172.0};
   double home{88.0};
@@ -98,6 +98,8 @@ public:
 
     const double dz = declare_parameter<double>("deadzone", 0.25);
     const double dh = declare_parameter<double>("dead_hyst", 0.05);
+    // max_step : MEME NOM et MEME VALEUR que le prototype (`--max-step`), mais lu ici en
+    // budget par SECONDE et non par cycle -- voir trackAxis, ou ce choix est justifie.
     const double ms = declare_parameter<double>("max_step", 4.0);
     pan_.dead = tilt_.dead = dz;
     pan_.dead_hyst = tilt_.dead_hyst = dh;
@@ -183,8 +185,7 @@ private:
         tilt_.target = tilt_.angle;
       }
     } else if (m->target == "recenter") {
-      pan_.target = clampAxis(pan_, pan_.home);
-      tilt_.target = clampAxis(tilt_, tilt_.home);
+      returnHome();
     }
   }
 
@@ -214,15 +215,53 @@ private:
     res->reason = "";
   }
 
+  /// Vise le repos en laissant la rampe y glisser -- transposition de
+  /// RobotServoMotor.returnHome (RobotServoMotor.py:142-158). Deux proprietes portent tout :
+  /// on NE SAUTE PAS au centre (on pose la cible et slew() l atteint, meme profil de vitesse
+  /// que le suivi, VITESSE COURANTE INTACTE pour ne pas casser l elan en cours) ; et c est
+  /// IDEMPOTENT, donc appelable a chaque trame sans a-coup. Le prototype remet aussi son
+  /// `_settled` a faux ; nous n avons pas d equivalent a rouvrir, `emit()` ne se bloquant que
+  /// sur un angle entier inchange, ce que la rampe fait varier d elle-meme.
+  void returnHome()
+  {
+    pan_.target = clampAxis(pan_, pan_.home);
+    tilt_.target = clampAxis(tilt_, tilt_.home);
+  }
+
   void onTrack(bamboo_interfaces::msg::TrackState::ConstSharedPtr ts)
   {
-    last_track_ = now_steady_.now();
-    if (!enabled_ || !ts->locked) {return;}
-    if (ts->bbox_w <= 0 || ts->bbox_h <= 0) {return;}
+    // CADENCE REELLE de la mesure, calculee AVANT d ecraser last_track_. C est le pas de
+    // temps de l etage 1, et il n a rien a voir avec rate_hz_ qui cadence l etage 2 : le
+    // TrackState arrive a la cadence de DETECTION, qui suit la charge du RPi (4,4 Hz
+    // mesures a T17, contre 15 a 30 Hz sur le prototype). Borne a idle_timeout_s_ par le
+    // haut : au-dela, onTick gele la cible de toute facon, donc un pas plus grand ne
+    // decrirait aucun mouvement reel.
+    const rclcpp::Time t = now_steady_.now();
+    dt_track_ = std::min(idle_timeout_s_, std::max(1.0e-3, (t - last_track_).seconds()));
+    last_track_ = t;
+    if (!enabled_) {return;}
+    // CIBLE PERDUE POUR DE BON. tracking_node publie un TrackState a chaque trame, verrouille
+    // ou non, donc la phase terminale du predicteur nous parvient bel et bien -- c est notre
+    // propre sortie sur !locked qui l interceptait avant, et le retour au centre n existait
+    // donc pas. Le prototype fait ce depart ici meme (RobotWebCamMotorized.py:200-204) :
+    // cible presente -> track(), phase "home" -> returnHome(), et RIEN sinon.
+    if (ts->pred_phase == "home") {
+      returnHome();
+      return;
+    }
+    // ROUE LIBRE : le verrou est DEJA retombe (c'est justement ce qui la declenche), donc
+    // exiger `locked` la tuait -- un trou qui ne se voyait pas tant que predictLost ne
+    // coastait qu en mode "coast", que personne n utilise. La bbox est vide pendant la roue
+    // libre, d'ou un chemin qui ne la consulte pas : la cible est le point extrapole.
+    const bool coasting = (ts->pred_phase == "coast");
+    if (!coasting) {
+      if (!ts->locked) {return;}
+      if (ts->bbox_w <= 0 || ts->bbox_h <= 0) {return;}
+    }
 
     // On suit la PREDICTION quand elle est disponible : c'est tout l'interet du mode
     // anticip, qui compense le retard de la chaine de detection. Sinon la mesure.
-    const bool use_pred = (ts->pred_phase == "anticip" || ts->pred_phase == "coast");
+    const bool use_pred = (ts->pred_phase == "anticip" || coasting);
     const double nx = use_pred ? ts->pred_nx : ts->nx;
     const double ny = use_pred ? ts->pred_ny : ts->ny;
 
@@ -251,9 +290,24 @@ private:
     const double sgn = (err >= 0.0) ? 1.0 : -1.0;
     const double eff = err - dz * sgn;
     double step = eff * a.gain;
-    step = std::min(a.max_step, std::max(-a.max_step, step));
+    // PLAFOND DU PAS, exprime en deg par SECONDE et non par cycle. DIVERGENCE ASSUMEE de
+    // forme avec le prototype, qui borne a `max_step` par appel tout court -- et qui a
+    // raison de le faire chez lui, ou l appel vient a 15-30 Hz. Ici la detection tourne a
+    // 4,4 Hz (T17) : le meme 4 deg par appel plafonnait l avance de la cible a 17,6 deg/s,
+    // soit SEPT fois moins que la rampe (max_vel 120) n en demandait. La camera etait donc
+    // lente non par un gain trop faible mais par un plafond compte dans la mauvaise unite,
+    // et les 30 pour cent de gigue de la cadence se lisaient directement en saccade.
+    // On garde donc le NOMBRE du prototype et sa signification A 30 Hz (4 x 30 = 120 deg/s,
+    // exactement max_vel) et on le ramene au temps reellement ecoule.
+    const double cap = a.max_step * rate_hz_ * dt_track_;
+    step = std::min(cap, std::max(-cap, step));
     if (a.invert) {step = -step;}
-    a.target = clampAxis(a, a.target + step);
+    // REBASE SUR L ANGLE COURANT (`before + step` du prototype, before = angle emis) et
+    // NON sur la cible precedente : en cumulant sur la cible, celle-ci prend de l avance
+    // sur la rampe des que l etage 2 ne suit pas, et la camera court vers une cible
+    // perimee -- un depassement que le freinage anticipe ne peut pas rattraper puisque la
+    // cible elle-meme est fausse.
+    a.target = clampAxis(a, a.angle + step);
   }
 
   void onTick()
@@ -297,10 +351,13 @@ private:
     const double dv_max = max_accel_ * dt;
     a.vel += std::min(dv_max, std::max(-dv_max, v_want - a.vel));
 
-    // AMORTISSEMENT en demi-vie de 0,3 s, repris du prototype : il tue le residu de
-    // vitesse quand la cible ne bouge plus, sans dependre de la cadence du timer.
-    const double decay = std::pow(0.5, dt / 0.3);
-    if (std::fabs(d) < 0.05) {a.vel *= decay;}
+    // ARRET FRANC, a l identique du prototype : arrive a moins de 0,05 deg de la cible avec
+    // moins de 1 deg/s, on annule la vitesse au lieu de la laisser tendre vers zero.
+    // Ce qui vivait ici avant etait un amortissement en demi-vie de 0,3 s applique a la
+    // VITESSE, annonce comme repris du prototype : il ne l etait pas. Le `0.5 ** (dt/0.3)`
+    // du prototype decroit `_stepPeak`, une metrique de HUD a maintien de crete, et pas la
+    // vitesse de la rampe. Applique a la vitesse, il faisait tramer la fin de course.
+    if (std::fabs(d) < 0.05 && std::fabs(a.vel) < 1.0) {a.vel = 0.0;}
 
     double next = a.angle + a.vel * dt;
     // On ne DEPASSE pas la cible : si le pas la franchit, on s'y arrete.
@@ -343,6 +400,10 @@ private:
   double aspect_{1.0};
   double rate_hz_{30.0};
   double idle_timeout_s_{0.5};
+  // Pas de temps de l ETAGE 1, mesure entre deux TrackState (et non rate_hz_, qui cadence
+  // l etage 2). Defaut = la periode nominale de 30 Hz, donc comportement du prototype tant
+  // qu aucune mesure n est arrivee.
+  double dt_track_{1.0 / 30.0};
   bool smooth_{true};
   // DESARME au demarrage : un groupe tracking qui demarre en bougeant la camera tout
   // seul n'est pas acceptable (meme raison qui le tient hors du profil `boot`).
