@@ -32,8 +32,10 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <diagnostic_updater/diagnostic_updater.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <diagnostic_msgs/msg/diagnostic_status.hpp>
 
 #include "bamboo_interfaces/msg/mode_cmd.hpp"
 #include "bamboo_interfaces/msg/recognition_result.hpp"
@@ -136,6 +138,32 @@ int gamepadPill(cv::Mat & im, int x, int y, int state, double u = 1.0)
   cv::putText(im, label, cv::Point(x + pad, y + pad + ts.height - 1),
     cv::FONT_HERSHEY_SIMPLEX, sc, kInk, 1, cv::LINE_AA);
   const cv::Scalar col = state < 0 ? kOff : (state > 0 ? kOn : kBad);
+  cv::circle(im, cv::Point(x + pad + ts.width + dot_gap + dot_r, y + r.height / 2), dot_r,
+    col, cv::FILLED, cv::LINE_AA);
+  return x + r.width + std::max(2, static_cast<int>(std::lround(5 * u)));
+}
+
+/// Pastille SANTE : le niveau GLOBAL du robot, lu dans /diagnostics_toplevel_state que
+/// publie diagnostic_aggregator (service bamboo_diagnostics). Le PIRE niveau de tous les
+/// modules, donc une seule pastille suffit a dire "quelque chose ne va pas" -- le detail se
+/// lit dans Foxglove (panneau Diagnostics) ou par l'outil MCP `diagnostics`.
+///   0 vert OK ; 1 orange WARN ; 2 rouge ERROR ; 3 ou -1 gris : PERIME, ou aucun etat recu
+///   (service de diagnostic arrete). Gris et non rouge : on ne SAIT pas, on ne crie pas.
+int healthPill(cv::Mat & im, int x, int y, int level, double u = 1.0)
+{
+  const double sc = 0.4 * u;
+  const int pad = std::max(2, static_cast<int>(std::lround(6 * u)));
+  const int dot_r = std::max(2, static_cast<int>(std::lround(4 * u)));
+  const int dot_gap = std::max(2, static_cast<int>(std::lround(8 * u)));
+  const std::string label = "SANTE";   // sans accent : la police Hershey n'en a pas
+  int base = 0;
+  const cv::Size ts = cv::getTextSize(label, cv::FONT_HERSHEY_SIMPLEX, sc, 1, &base);
+  const cv::Rect r(x, y, ts.width + dot_gap + 2 * dot_r + 2 * pad, ts.height + 2 * pad);
+  cv::rectangle(im, r, cv::Scalar(90, 90, 90), 1, cv::LINE_AA);
+  cv::putText(im, label, cv::Point(x + pad, y + pad + ts.height - 1),
+    cv::FONT_HERSHEY_SIMPLEX, sc, kInk, 1, cv::LINE_AA);
+  // Orange = `_C_WARN` du prototype (0,165,255), soit kZoneOut ici.
+  const cv::Scalar col = level == 0 ? kOn : level == 1 ? kZoneOut : level == 2 ? kBad : kOff;
   cv::circle(im, cv::Point(x + pad + ts.width + dot_gap + dot_r, y + r.height / 2), dot_r,
     col, cv::FILLED, cv::LINE_AA);
   return x + r.width + std::max(2, static_cast<int>(std::lround(5 * u)));
@@ -327,6 +355,14 @@ public:
     // point de fusion COMPLET du groupe (~9 Hz, message minuscule, cout nul). Sans elle,
     // impossible de montrer a l'ecran que la loi se TAIT quand la cible est dans la zone
     // morte -- or c'est la contre-epreuve qui prouve que le reticule dit la verite.
+    // Niveau GLOBAL du robot (pastille SANTE), publie par l'agregateur a 1 Hz.
+    health_sub_ = create_subscription<diagnostic_msgs::msg::DiagnosticStatus>(
+      declare_parameter<std::string>("health_topic", "/diagnostics_toplevel_state"),
+      rclcpp::QoS(1).reliable(),
+      [this](diagnostic_msgs::msg::DiagnosticStatus::ConstSharedPtr m) {
+        health_level_ = static_cast<int>(m->level);
+        last_health_ = now_steady_.now();
+      });
     gamepad_sub_ = create_subscription<std_msgs::msg::Bool>(
       gamepad_state_topic_, rclcpp::QoS(1).reliable(),
       [this](std_msgs::msg::Bool::ConstSharedPtr m) {
@@ -366,6 +402,13 @@ public:
         [this]() {tryRegister();});
     }
     last_stats_ = now_steady_.now();
+    // Seuils de latence : 377 a 475 ms mesures sur ce RPi (T26).
+    lat_warn_ms_ = declare_parameter<double>("latency_warn_ms", 1000.0);
+    lat_error_ms_ = declare_parameter<double>("latency_error_ms", 3000.0);
+    diag_ = std::make_unique<diagnostic_updater::Updater>(this);
+    diag_->setHardwareID("bamboo_videotracking");
+    diag_->add("incrustation", this, &OverlayNode::diagOverlay);
+    diag_->add("enregistrement mux", this, &OverlayNode::diagMux);
     RCLCPP_INFO(get_logger(), "overlay_node -> %s", enriched_topic_.c_str());
   }
 
@@ -672,7 +715,13 @@ private:
     if (have_gamepad_ && (now_steady_.now() - last_gamepad_).seconds() <= 2.0) {
       gp_state = gamepad_ok_ ? 1 : 0;
     }
-    gamepadPill(im, pill_x0, pill_y + iu(26, u), gp_state, u);
+    const int row2_x = gamepadPill(im, pill_x0, pill_y + iu(26, u), gp_state, u);
+    // SANTE a cote de MANETTE. Gris apres 3 s de silence : l'agregateur publie a 1 Hz.
+    int health = -1;
+    if (health_level_ >= 0 && (now_steady_.now() - last_health_).seconds() <= 3.0) {
+      health = health_level_;
+    }
+    healthPill(im, row2_x, pill_y + iu(26, u), health, u);
 
     const double lat_ms = latencyMs(f.stamp_ns);
     if (lat_ms > lat_max_ms_) {lat_max_ms_ = lat_ms;}
@@ -768,6 +817,10 @@ private:
     m.cpu_percent = 0.0f;
     m.dropped_frames = dropped_;
     stats_pub_->publish(m);
+    // Retenu pour le diagnostic : ces compteurs sont REMIS A ZERO juste en dessous, et les
+    // consommer depuis le diagnostic volerait les mesures de /videotracking/stats.
+    last_lat_ms_ = m.latency_ms;
+    last_lat_max_ms_ = m.latency_ms_max;
 
     lat_sum_ms_ = 0.0;
     lat_n_ = 0;
@@ -876,6 +929,7 @@ private:
   rclcpp::Subscription<bamboo_interfaces::msg::ModeCmd>::SharedPtr mode_sub_;
   rclcpp::Subscription<bamboo_interfaces::msg::ServoCmd>::SharedPtr servo_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gamepad_sub_;
+  rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticStatus>::SharedPtr health_sub_;
   rclcpp::Client<bamboo_interfaces::srv::RegisterOverlay>::SharedPtr mux_cli_;
   rclcpp::TimerBase::SharedPtr stats_timer_;
   rclcpp::TimerBase::SharedPtr reg_timer_;
@@ -905,6 +959,9 @@ private:
   // sinon apparaitre un fps absurde, et c'est ce chiffre qu'on publie.
   rclcpp::Clock now_steady_{RCL_STEADY_TIME};
   rclcpp::Time last_gamepad_{0, 0, RCL_STEADY_TIME};
+  // -1 = jamais recu : la pastille SANTE reste grise tant que l'agregateur n'a rien dit.
+  int health_level_{-1};
+  rclcpp::Time last_health_{0, 0, RCL_STEADY_TIME};
   rclcpp::Time last_draw_;
   rclcpp::Time last_stats_;
   RateCounter overlay_rate_;
@@ -918,6 +975,56 @@ private:
   double lat_max_ms_{0.0};
   float last_overlay_fps_{0.0f};
   float last_detect_fps_{0.0f};
+
+  // --- diagnostic -------------------------------------------------------------------
+  // Aucun groupe de rappels dans ce noeud : tout est serialise, aucun verrou ici.
+  void diagOverlay(diagnostic_updater::DiagnosticStatusWrapper & stat)
+  {
+    const unsigned d_drop = dropped_ - diag_dropped_prev_;
+    diag_dropped_prev_ = dropped_;
+    stat.add("cadence_hz", last_overlay_fps_);
+    stat.add("latence_ms", last_lat_ms_);
+    stat.add("latence_max_ms", last_lat_max_ms_);
+    stat.add("trames_sautees_periode", d_drop);
+    stat.add("trames_sautees_total", dropped_);
+    stat.add("seuil_warn_ms", lat_warn_ms_);
+    stat.add("seuil_error_ms", lat_error_ms_);
+    if (last_overlay_fps_ <= 0.0f) {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "aucune trame incrustee : bus image vide ?");
+    } else if (last_lat_ms_ > lat_error_ms_) {
+      stat.summaryf(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "latence %.0f ms", last_lat_ms_);
+    } else if (last_lat_ms_ > lat_warn_ms_) {
+      stat.summaryf(diagnostic_msgs::msg::DiagnosticStatus::WARN, "latence %.0f ms", last_lat_ms_);
+    } else {
+      stat.summaryf(diagnostic_msgs::msg::DiagnosticStatus::OK, "%.1f Hz, latence %.0f ms", last_overlay_fps_,
+        last_lat_ms_);
+    }
+  }
+
+  void diagMux(diagnostic_updater::DiagnosticStatusWrapper & stat)
+  {
+    stat.add("topic_enrichi", enriched_topic_);
+    stat.add("enregistre", registered_ ? "oui" : "non");
+    stat.add("dernier_refus", last_refusal_.empty() ? "-" : last_refusal_);
+    if (!mux_cli_) {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "enregistrement au mux desactive");
+    } else if (registered_) {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "enregistre : le flux annote est servi");
+    } else if (!last_refusal_.empty()) {
+      // REFUS = erreur de DEPLOIEMENT (un autre incrusteur tient deja le mux).
+      stat.summaryf(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "refuse par le mux : %s",
+        last_refusal_.c_str());
+    } else {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "non enregistre : mux absent (bamboo_video ?)");
+    }
+  }
+
+  float last_lat_ms_{0.0f};
+  float last_lat_max_ms_{0.0f};
+  double lat_warn_ms_{1000.0};
+  double lat_error_ms_{3000.0};
+  unsigned diag_dropped_prev_{0};
+  std::unique_ptr<diagnostic_updater::Updater> diag_;
   std::string lock_source_{"none"};
   std::string unlock_reason_{""};
 

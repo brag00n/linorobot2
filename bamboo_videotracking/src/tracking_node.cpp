@@ -16,6 +16,7 @@
 // servocam_node soit independante de la resolution de capture : changer 640x480 pour
 // 1280x720 ne doit pas demander de retoucher un gain.
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -25,6 +26,7 @@
 #include <opencv2/core.hpp>        // cv::flip (miroir de trame, cf. parametre `flip`)
 #include <opencv2/imgcodecs.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <diagnostic_updater/diagnostic_updater.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
 
 #include "bamboo_interfaces/msg/mode_cmd.hpp"
@@ -50,6 +52,9 @@ public:
     const std::string in_topic =
       declare_parameter<std::string>("input_topic", "/video/raw/compressed");
     predict_mode_ = declare_parameter<std::string>("predict_mode", "anticip");
+    // Diagnostic (lot DIAGNOSTICS) : cadence de traitement sous laquelle la tache
+    // `detection` passe WARN. 4,2 a 4,4 Hz mesures sur ce RPi (T17, T22).
+    det_warn_hz_ = declare_parameter<double>("det_warn_hz", 2.0);
     predict_horizon_s_ = declare_parameter<double>("predict_horizon_s", 0.12);
     coast_max_s_ = declare_parameter<double>("coast_max_s", 0.7);
     // predict_min_speed : NOM ET VALEUR du prototype (--predict-min-speed, defaut 0,4), en
@@ -144,11 +149,66 @@ public:
 
     params_cb_ = add_on_set_parameters_callback(
       [this](const std::vector<rclcpp::Parameter> & ps) {return onParams(ps);});
+
+    // hardware_id = le SERVICE compose, c'est-a-dire le module de l'arbre de diagnostic.
+    diag_ = std::make_unique<diagnostic_updater::Updater>(this);
+    diag_->setHardwareID("bamboo_videotracking");
+    diag_->add("detection", this, &TrackingNode::diagDetect);
   }
 
   double detFps() const {return det_.detFps();}
 
 private:
+  // --- diagnostic ---------------------------------------------------------------------
+  // Le verrou n'est tenu QUE le temps de copier : ce rappel tourne en parallele de onImage,
+  // et le faire attendre derriere une mise en forme retarderait une trame pour un statut.
+  void diagDetect(diagnostic_updater::DiagnosticStatusWrapper & stat)
+  {
+    unsigned frames;
+    bool locked;
+    std::string lost, detector, tracker, predict;
+    double det_fps;
+    {
+      std::lock_guard<std::mutex> lk(state_mu_);
+      frames = diag_frames_;
+      diag_frames_ = 0;
+      locked = diag_locked_;
+      lost = diag_lost_;
+      detector = det_.config().detector;
+      tracker = det_.config().track_mode;
+      predict = predict_mode_;
+      det_fps = det_.detFps();
+    }
+    const rclcpp::Time t = now_steady_.now();
+    double dt = (diag_t_.nanoseconds() == 0) ? 1.0 : (t - diag_t_).seconds();
+    if (dt <= 0.0) {dt = 1.0;}
+    diag_t_ = t;
+    const double hz = frames / dt;
+    const unsigned dec = decode_fail_.load();
+    const unsigned d_dec = dec - diag_decode_prev_;
+    diag_decode_prev_ = dec;
+
+    stat.add("cadence_hz", hz);
+    stat.add("det_fps_detecteur", det_fps);
+    stat.add("detecteur", detector);
+    stat.add("tracker", tracker);
+    stat.add("prediction", predict);
+    stat.add("verrou", locked ? "oui" : "non");
+    stat.add("perte", lost.empty() ? "-" : lost);
+    stat.add("trames_indecodables_periode", d_dec);
+    stat.add("seuil_warn_hz", det_warn_hz_);
+    if (hz <= 0.0) {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "aucune trame traitee : flux camera absent ?");
+    } else if (hz < det_warn_hz_) {
+      stat.summaryf(diagnostic_msgs::msg::DiagnosticStatus::WARN, "detection lente : %.1f Hz", hz);
+    } else if (d_dec > 0) {
+      stat.summaryf(diagnostic_msgs::msg::DiagnosticStatus::WARN, "%u trame(s) indecodable(s) sur la periode", d_dec);
+    } else {
+      stat.summaryf(diagnostic_msgs::msg::DiagnosticStatus::OK, "%.1f Hz, %s/%s, %s", hz, detector.c_str(),
+        tracker.c_str(), locked ? "visage verrouille" : "aucun verrou");
+    }
+  }
+
   // --- reception d'une trame -------------------------------------------------------
   void onImage(const sensor_msgs::msg::CompressedImage::ConstSharedPtr & msg)
   {
@@ -163,7 +223,7 @@ private:
       // noierait exactement le message qu'on veut lire.
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000, "imdecode a echoue (%u trames perdues)",
-        decode_fail_);
+        decode_fail_.load());
       return;
     }
 
@@ -207,6 +267,9 @@ private:
     // reconfiguration s'inserer au milieu d'une trame.
     std::lock_guard<std::mutex> lk(state_mu_);
     TrackStateOut st = det_.trackStep(*f.mat, now_s);
+    ++diag_frames_;
+    diag_locked_ = st.locked;
+    diag_lost_ = st.lost_reason;
     publishState(st, *f.mat, stamp, now_s);
   }
 
@@ -497,7 +560,17 @@ private:
   double last_seen_s_{0.0};
   uint64_t seq_{0};
   uint32_t last_mode_seq_{0};
-  unsigned decode_fail_{0};
+  // ATOMIQUE : incremente dans onImage AVANT la prise du verrou, et lu par le diagnostic
+  // depuis le groupe par defaut, qui tourne en parallele depuis la separation des groupes.
+  std::atomic<unsigned> decode_fail_{0};
+  // --- diagnostic : ecrits SOUS state_mu_ dans onImage, lus sous lui dans diagDetect ---
+  double det_warn_hz_{2.0};
+  unsigned diag_frames_{0};
+  unsigned diag_decode_prev_{0};
+  bool diag_locked_{false};
+  std::string diag_lost_;
+  rclcpp::Time diag_t_{0, 0, RCL_STEADY_TIME};
+  std::unique_ptr<diagnostic_updater::Updater> diag_;
 
   // VERROU DE L'ETAT DE SUIVI : `det_` (detecteur + tracker OpenCV) et `kal_` sont
   // touches par TROIS rappels -- onImage dans son groupe dedie, onMode et onParams dans le

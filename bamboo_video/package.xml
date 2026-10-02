@@ -8,6 +8,9 @@
   <license>Apache 2.0</license>
 
   <exec_depend>rclpy</exec_depend>
+  <!-- /diagnostics de stream_mux_node (lot DIAGNOSTICS) : deja dans l'image hardware. -->
+  <exec_depend>diagnostic_updater</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>bamboo_interfaces</exec_depend>

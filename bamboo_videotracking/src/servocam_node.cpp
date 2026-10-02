@@ -31,6 +31,7 @@
 #include <string>
 
 #include <rclcpp/rclcpp.hpp>
+#include <diagnostic_updater/diagnostic_updater.hpp>
 
 #include "bamboo_interfaces/msg/mode_cmd.hpp"
 #include "bamboo_interfaces/msg/servo_cmd.hpp"
@@ -159,6 +160,9 @@ public:
     RCLCPP_INFO(get_logger(),
       "servocam_node : pan [%.0f, %.0f] repos %.0f, tilt [%.0f, %.0f] repos %.0f",
       pan_.min_deg, pan_.max_deg, pan_.home, tilt_.min_deg, tilt_.max_deg, tilt_.home);
+    diag_ = std::make_unique<diagnostic_updater::Updater>(this);
+    diag_->setHardwareID("bamboo_videotracking");
+    diag_->add("nacelle", this, &ServoCamNode::diagGimbal);
   }
 
 private:
@@ -438,6 +442,29 @@ private:
   bool enabled_{false};
   uint32_t last_mode_seq_{0};
 
+  // --- diagnostic -------------------------------------------------------------------
+  void diagGimbal(diagnostic_updater::DiagnosticStatusWrapper & stat)
+  {
+    const double age = (now_steady_.now() - last_track_).seconds();
+    stat.add("suivi", enabled_ ? "arme" : "desarme");
+    stat.add("pan_deg", pan_.angle);
+    stat.add("pan_cible_deg", pan_.target);
+    stat.add("tilt_deg", tilt_.angle);
+    stat.add("tilt_cible_deg", tilt_.target);
+    stat.add("zone_morte", pan_.dead);
+    stat.add("age_track_state_s", age);
+    // Sans TrackState, la rampe est GELEE (idle_timeout_s) : c'est sur, mais ARME il ne
+    // suit plus rien. Desarme, c'est l'etat nominal -- le stick a alors la main seul.
+    if (enabled_ && age > 4.0 * idle_timeout_s_) {
+      stat.summaryf(diagnostic_msgs::msg::DiagnosticStatus::WARN,
+        "suivi arme mais aucun TrackState depuis %.1f s : tracking_node ?", age);
+    } else {
+      stat.summaryf(diagnostic_msgs::msg::DiagnosticStatus::OK, "suivi %s, pan %.0f / tilt %.0f deg",
+        enabled_ ? "arme" : "desarme", pan_.angle, tilt_.angle);
+    }
+  }
+
+  std::unique_ptr<diagnostic_updater::Updater> diag_;
   rclcpp::Publisher<bamboo_interfaces::msg::ServoCmd>::SharedPtr pub_;
   rclcpp::Publisher<bamboo_interfaces::msg::ServoCmd>::SharedPtr state_pub_;
   rclcpp::Subscription<bamboo_interfaces::msg::TrackState>::SharedPtr track_sub_;

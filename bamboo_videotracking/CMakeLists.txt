@@ -17,6 +17,8 @@ find_package(ament_cmake_python REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(std_msgs REQUIRED)
+# /diagnostics des quatre composables (lot DIAGNOSTICS) : deja dans l'image hardware.
+find_package(diagnostic_updater REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(bamboo_interfaces REQUIRED)
 # OpenCV >= 4.10, compile depuis les sources dans /usr/local par docker/Dockerfile, A COTE
@@ -66,7 +68,7 @@ foreach(comp ${BAMBOO_VT_COMPONENTS})
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
   target_link_libraries(${comp} bamboo_vt_core ${OpenCV_LIBS})
   ament_target_dependencies(${comp}
-    rclcpp rclcpp_components std_msgs sensor_msgs bamboo_interfaces)
+    rclcpp rclcpp_components std_msgs sensor_msgs bamboo_interfaces diagnostic_updater)
 endforeach()
 
 rclcpp_components_register_node(tracking_node

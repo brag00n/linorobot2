@@ -37,6 +37,8 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
+from diagnostic_msgs.msg import DiagnosticStatus
+from diagnostic_updater import Updater
 
 from bamboo_interfaces.srv import RegisterOverlay
 
@@ -57,6 +59,10 @@ class StreamMux(Node):
         # un simple hoquet de detection.
         self.declare_parameter("overlay_timeout_s", 2.0)
         self.declare_parameter("check_period_s", 0.5)
+        # Diagnostic (lot DIAGNOSTICS) : cadence du flux BRUT sous laquelle la tache passe
+        # WARN. Ce flux EST la sortie de gscam_node : le mesurer ici, ou on le recoit deja,
+        # evite tout abonnement de plus a un flux image (memoire partagee DDS coupee).
+        self.declare_parameter("raw_warn_hz", 5.0)
 
         self._raw_topic = str(self.get_parameter("raw_topic").value)
         self._out_topic = str(self.get_parameter("out_topic").value)
@@ -87,8 +93,11 @@ class StreamMux(Node):
         self._enr_timeout = self._timeout_s
         self._last_enr = 0.0   # horloge MONOTONE : une resynchro NTP ne doit pas
                                # provoquer un retour au brut (le RPi a deja derive de 9 h)
+        # Compteurs de trames, LUS par le diagnostic et remis a zero a chaque periode.
         self._n_raw = 0
         self._n_enr = 0
+        self._diag_t = time.monotonic()
+        self._raw_warn = float(self.get_parameter("raw_warn_hz").value)
 
         self._srv = self.create_service(
             RegisterOverlay, "/video/register_overlay", self._onRegister)
@@ -96,6 +105,9 @@ class StreamMux(Node):
             float(self.get_parameter("check_period_s").value), self._onCheck)
 
         self._publishSource()
+        self._diag = Updater(self)
+        self._diag.setHardwareID("bamboo_video")
+        self._diag.add("flux video", self._diagStream)
         self.get_logger().info(
             "mux pret : %s -> %s (aucun enrichi enregistre, on sert le brut)"
             % (self._raw_topic, self._out_topic))
@@ -122,6 +134,34 @@ class StreamMux(Node):
         self._publishSource()
         self.get_logger().warn(
             "retour au flux BRUT (%s) : client '%s', topic '%s'" % (why, holder, topic))
+
+    # ------------------------------------------------------------ diagnostic
+    def _diagStream(self, stat):
+        now = time.monotonic()
+        dt, self._diag_t = max(1e-3, now - self._diag_t), now
+        raw_hz, enr_hz = self._n_raw / dt, self._n_enr / dt
+        self._n_raw = self._n_enr = 0
+        stat.add("brut_hz", "%.1f" % raw_hz)
+        stat.add("enrichi_hz", "%.1f" % enr_hz)
+        stat.add("source", self._holder if self._active else _SRC_RAW)
+        stat.add("topic_brut", self._raw_topic)
+        stat.add("seuil_warn_hz", "%.1f" % self._raw_warn)
+        if raw_hz <= 0.0:
+            stat.summary(DiagnosticStatus.ERROR,
+                         "aucune trame brute sur %s : gscam_node arrete ?" % self._raw_topic)
+        elif raw_hz < self._raw_warn:
+            stat.summary(DiagnosticStatus.WARN,
+                         "camera lente : brut de gscam_node a %.1f Hz" % raw_hz)
+        elif self._active:
+            stat.summary(DiagnosticStatus.OK,
+                         "camera %.1f Hz (gscam_node), sert l'enrichi de %s a %.1f Hz"
+                         % (raw_hz, self._holder, enr_hz))
+        else:
+            # Servir le brut est NOMINAL tant qu'aucun incrusteur ne s'est enregistre : le
+            # groupe suivi est optionnel.
+            stat.summary(DiagnosticStatus.OK, "camera %.1f Hz (gscam_node), sert le brut"
+                         % raw_hz)
+        return stat
 
     # ------------------------------------------------------------------ flux
     def _onRaw(self, msg):

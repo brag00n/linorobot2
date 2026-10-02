@@ -44,7 +44,9 @@ analyzers:
           type: diagnostic_aggregator/GenericAnalyzer
           path: gscam_node
           startswith: [ 'gscam_node:' ]
-          expected: [ 'gscam_node: presence', 'gscam_node: cadence capture' ]
+          # Presence seule : sa cadence est le flux BRUT, mesure par stream_mux_node qui le
+          # recoit (cf. health_node.py, _video).
+          expected: [ 'gscam_node: presence' ]
           timeout: 5.0
         mux:
           type: diagnostic_aggregator/GenericAnalyzer

@@ -16,11 +16,11 @@ bamboo_health:
     watched_modules: [ "bamboo_video", "bamboo_video", "bamboo_video", "bamboo_control",
                        "rosbridge", "foxglovebridge", "robotdesc" ]
 
-    # Video : cadences publiees par camera_fps (qui recoit deja le flux). A recaler a T26.
-    capture_fps_topic: "/camera/capture_fps"
+    # Video : cadence du flux WEB, publiee par camera_fps (client HTTP du flux). Elle suit la
+    # sortie du mux, donc l'ENRICHI (1 a 2 Hz mesures a T26 quand le HUD tourne) : un seuil a
+    # 5 Hz alarmerait en permanence. La cadence de la CAMERA se lit dans stream_mux_node.
     stream_fps_topic: "/camera/stream_fps"
-    capture_warn_hz: 5.0
-    stream_warn_hz: 5.0
+    stream_warn_hz: 1.0
     fps_stale_s: 3.0
 
     # Manette, couche materielle. Le NOM attendu reconnait le piege Home+Y ("Pro Controller" :

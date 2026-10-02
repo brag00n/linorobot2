@@ -7,8 +7,8 @@ un statut "bamboo_health: gscam_node" atterrirait dans le mauvais module.
 
   - noeuds tiers (gscam_node, web_video_server, joy_linux_node, rosbridge, foxglove,
     robot_state_publisher) : PRESENCE dans le graphe ;
-  - cadences deja mesurees ailleurs : /camera/capture_fps et /camera/stream_fps (publies par
-    camera_fps, qui recoit deja le flux) et /gamepad/connected (bamboo_teleop). REGLE DU LOT :
+  - cadences deja mesurees ailleurs : /camera/stream_fps (publie par camera_fps, client
+    HTTP du flux web) et /gamepad/connected (bamboo_teleop). REGLE DU LOT :
     un signal se mesure LA OU IL EST DEJA CONSOMME -- ce noeud ne s'abonne a AUCUN flux image,
     la memoire partagee DDS etant coupee entre conteneurs (une trame qui traverse coute plein
     tarif) ;
@@ -123,9 +123,8 @@ class HealthNode(Node):
             raise ValueError("watched_nodes et watched_modules doivent avoir la meme longueur")
         self._watched = list(zip(names, modules))
 
-        # Video : cadences deja mesurees par camera_fps.
-        self._capWarn = float(p("capture_warn_hz", 5.0).value)
-        self._streamWarn = float(p("stream_warn_hz", 5.0).value)
+        # Video : cadence du flux web, deja mesuree par camera_fps.
+        self._streamWarn = float(p("stream_warn_hz", 1.0).value)
         self._fpsStale = float(p("fps_stale_s", 3.0).value)
 
         # Manette : la couche materielle, du plus bas au plus haut.
@@ -155,12 +154,8 @@ class HealthNode(Node):
         self._diskErr = float(p("disk_used_error_pct", 95.0).value)
 
         self._t0 = time.monotonic()
-        self._cap = RateCounter()
         self._stream = RateCounter()
         self._gp = RateCounter()
-        self.create_subscription(
-            Float32, p("capture_fps_topic", "/camera/capture_fps").value,
-            lambda m: self._cap.tick(m.data), 10)
         self.create_subscription(
             Float32, p("stream_fps_topic", "/camera/stream_fps").value,
             lambda m: self._stream.tick(m.data), 10)
@@ -221,9 +216,13 @@ class HealthNode(Node):
         return status(name, module, OK, "%s : %.1f fps" % (what, fps), vals)
 
     def _video(self):
+        # PAS de cadence pour gscam_node ici, et c'est une correction mesuree (T26) :
+        # /camera/capture_fps de camera_fps compte en realite la SORTIE DU MUX (son
+        # `image_topic` recoit out_topic), qui suit l'enrichi des que le HUD tourne -- 1 a 2 Hz
+        # contre 20 a 29 Hz de brut. L'afficher sous gscam_node accusait la camera d'une
+        # lenteur du SUIVI. La vraie cadence de gscam est le brut recu par stream_mux_node,
+        # et elle figure dans sa tache "flux video".
         return [
-            self._rateStatus("gscam_node: cadence capture", "bamboo_video", self._cap,
-                             self._capWarn, "capture"),
             self._rateStatus("web_video_server: cadence flux", "bamboo_video", self._stream,
                              self._streamWarn, "flux web"),
         ]

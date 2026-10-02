@@ -33,6 +33,8 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from diagnostic_msgs.msg import DiagnosticStatus
+from diagnostic_updater import Updater
 
 from bamboo_interfaces.action import TrainFaces
 from bamboo_interfaces.msg import ModeCmd
@@ -89,6 +91,10 @@ class FaceTrainNode(Node):
 
         # --- etat d'unicite du goal
         self._busy = threading.Lock()
+        # Issue du DERNIER batch, pour le diagnostic : None = aucun depuis le demarrage.
+        # Une simple affectation, ecrite par le fil de l'action et lue par celui de
+        # l'updater : pas de verrou necessaire pour une reference Python.
+        self._last_batch = None
 
         # Groupe REENTRANT : sans lui, la demande d'annulation ne serait servie qu'apres
         # la fin du batch -- autrement dit jamais utile.
@@ -99,7 +105,27 @@ class FaceTrainNode(Node):
             cancel_callback=self._onCancel,
             callback_group=ReentrantCallbackGroup())
 
+        self._diag = Updater(self)
+        self._diag.setHardwareID("bamboo_videotracking")
+        self._diag.add("apprentissage", self._diagTrain)
         self.get_logger().info("face_train_node pret (faces_dir=%s)" % self._faces_dir)
+
+    def _diagTrain(self, stat):
+        model_ok = bool(self._model) and os.path.exists(self._model)
+        stat.add("modele", self._model or "<non defini>")
+        stat.add("faces_dir", self._faces_dir)
+        stat.add("dernier_batch", self._last_batch or "aucun")
+        stat.add("done_seq", str(self._done_seq))
+        if not model_ok:
+            stat.summary(DiagnosticStatus.ERROR,
+                         "modele SFace absent : tout apprentissage echouera")
+        elif self._busy.locked():
+            stat.summary(DiagnosticStatus.OK, "batch en cours")
+        elif self._last_batch and not self._last_batch.startswith("ok"):
+            stat.summary(DiagnosticStatus.WARN, "dernier batch : %s" % self._last_batch)
+        else:
+            stat.summary(DiagnosticStatus.OK, "pret")
+        return stat
 
     # --- politique de goal ---------------------------------------------------
     def _onGoal(self, goal_request):
@@ -182,6 +208,7 @@ class FaceTrainNode(Node):
                  "warning": "lots partiellement deplaces dans learning/"})
             result.done_seq = self._done_seq
             self.get_logger().warn("batch TrainFaces annule")
+            self._last_batch = "annule"
             return result
         except Exception as e:                       # noqa: BLE001 -- on remonte le motif
             goal_handle.abort()
@@ -189,9 +216,12 @@ class FaceTrainNode(Node):
             result.summary = json.dumps({"ok": False, "error": str(e)})
             result.done_seq = self._done_seq
             self.get_logger().error("batch TrainFaces en echec : %s" % e)
+            self._last_batch = "echec : %s" % e
             return result
 
         ok = bool(summary.get("ok", False))
+        self._last_batch = ("ok (%s personne(s))" % summary.get("persons", "?")
+                            if ok else "non abouti : %s" % summary.get("error", "?"))
         if ok:
             self._done_seq += 1
             self._publishDone()

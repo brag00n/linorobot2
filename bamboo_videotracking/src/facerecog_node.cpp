@@ -40,6 +40,7 @@
 #include <opencv2/objdetect/face.hpp>
 #include <builtin_interfaces/msg/time.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <diagnostic_updater/diagnostic_updater.hpp>
 
 #include "bamboo_interfaces/msg/mode_cmd.hpp"
 #include "bamboo_interfaces/msg/recognition_result.hpp"
@@ -145,6 +146,9 @@ public:
       buf, sizeof(buf), "%ld",
       static_cast<long>(now().nanoseconds() / 1000000000LL));
     session_ = buf;
+    diag_ = std::make_unique<diagnostic_updater::Updater>(this);
+    diag_->setHardwareID("bamboo_videotracking");
+    diag_->add("reconnaissance", this, &FaceRecogNode::diagRecog);
     RCLCPP_INFO(get_logger(), "facerecog_node pret (session %s)", session_.c_str());
   }
 
@@ -255,10 +259,12 @@ private:
       rec_->feature(crop, emb);
     } catch (const cv::Exception & e) {
       RCLCPP_WARN(get_logger(), "SFace feature a echoue : %s", e.what());
+      ++diag_err_;
       return;
     }
     if (emb.empty() || emb.total() != static_cast<size_t>(kEmbedDim)) {
       RCLCPP_WARN(get_logger(), "empreinte de taille %zu inattendue", emb.total());
+      ++diag_err_;
       return;
     }
     cv::Mat emb32;
@@ -345,6 +351,7 @@ private:
       det_->detect(img, faces);
     } catch (const cv::Exception & e) {
       RCLCPP_WARN(get_logger(), "YuNet plein cadre a echoue : %s", e.what());
+      ++diag_err_;
       return false;
     }
     if (faces.empty() || faces.cols < 15) {return false;}
@@ -440,6 +447,33 @@ private:
   cv::Ptr<cv::FaceDetectorYN> det_;
   Gallery gal_;
 
+  // --- diagnostic -------------------------------------------------------------------
+  // Tous les rappels de ce noeud partagent le groupe par defaut : aucun verrou ici.
+  void diagRecog(diagnostic_updater::DiagnosticStatusWrapper & stat)
+  {
+    const unsigned err = diag_err_;
+    diag_err_ = 0;
+    stat.add("mode", mode_);
+    stat.add("personnes", gal_.persons());
+    stat.add("empreintes", gal_.embeddings());
+    stat.add("echecs_periode", err);
+    // Le modele, lui, ne peut pas manquer ici : son absence fait ECHOUER la construction
+    // du noeud, qui n'apparait alors pas -- et c'est `expected` qui le rend PERIME.
+    if (err > 0) {
+      stat.summaryf(diagnostic_msgs::msg::DiagnosticStatus::WARN, "%u echec(s) SFace/YuNet sur la periode", err);
+    } else if (mode_ == "off") {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "desactivee");
+    } else if (gal_.persons() == 0) {
+      // INFORMATIF, pas une faute : un robot neuf n'a encore enrole personne.
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "galerie vide : tout visage sera inconnu");
+    } else {
+      stat.summaryf(diagnostic_msgs::msg::DiagnosticStatus::OK, "%s, %zu personne(s) connue(s)", mode_.c_str(),
+        gal_.persons());
+    }
+  }
+
+  unsigned diag_err_{0};
+  std::unique_ptr<diagnostic_updater::Updater> diag_;
   std::string mode_{"off"};
   std::string session_;
   bool idle_sent_{false};
