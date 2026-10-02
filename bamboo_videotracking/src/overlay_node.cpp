@@ -863,13 +863,25 @@ private:
       return;
     }
     reg_warned_ = false;  // reapparition : un prochain depart sera de nouveau annonce
-    if (reg_pending_) {return;}
+    if (reg_pending_) {
+      // REQUETE ORPHELINE : partie pendant que le mux redemarrait, elle n'aura JAMAIS de
+      // reponse, et sans ce delai `reg_pending_` restait vrai pour toujours -- le battement
+      // ne renvoyait plus rien et le flux annote etait perdu EN SILENCE, l'overlay se
+      // croyant toujours enregistre. Constate a l'essai T26 de bambooSTM32YB : apres une
+      // relance de bamboo_video, aucune reinscription en quatre minutes, et c'est le
+      // diagnostic qui l'a revele (mux "sert le brut", overlay "enregistre"). Trois
+      // battements sans reponse : la requete est declaree perdue, et on repart.
+      if ((now_steady_.now() - reg_sent_).seconds() < 3.0 * reg_period_s_) {return;}
+      reg_pending_ = false;
+      noteLost("requete sans reponse");
+    }
     auto req = std::make_shared<bamboo_interfaces::srv::RegisterOverlay::Request>();
     req->node_name = std::string(get_name());
     req->topic = enriched_topic_;
     req->timeout_s = static_cast<float>(overlay_timeout_s_);
     req->deregister = false;
     reg_pending_ = true;
+    reg_sent_ = now_steady_.now();
     mux_cli_->async_send_request(
       req,
       [this](rclcpp::Client<bamboo_interfaces::srv::RegisterOverlay>::SharedFuture fut) {
@@ -1031,6 +1043,7 @@ private:
   // --- enregistrement au mux ---
   bool registered_{false};
   bool reg_pending_{false};
+  rclcpp::Time reg_sent_{0, 0, RCL_STEADY_TIME};  // depart de la requete en vol
   bool reg_warned_{false};
   std::string last_refusal_;  // dernier motif de refus journalise (evite la repetition)
 };
