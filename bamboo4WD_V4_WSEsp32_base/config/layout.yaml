@@ -1,0 +1,23 @@
+# ============================================================================
+# Composition de la machine BambooWS (bamboo4WD_V4_WSEsp32)
+# ============================================================================
+# Meme format que bamboo4WD_V4_YBStm32_base/config/layout.yaml, lu par le meme chargeur
+# (bamboo_base/layout.py). Les DEFAUTS de chaque groupe sont une donnee de CE robot ; la
+# ligne de commande du bringup reste souveraine.
+#
+# Robot EN PAUSE : attache moteur N20 de M1 cassee, AUCUN essai au sol avant reparation.
+# Rien ci-dessous n'arme les moteurs : enable_cmd_vel reste faux (fichier canonique).
+groups:
+  driver:        {enable: true}    # carte WaveShare ESP32, LECTURE SEULE (cf. enable_cmd_vel)
+  description:   {enable: true}    # URDF + TF, aucun effet materiel
+  video:         {enable: true}    # acquisition MJPG + mux + diffusion HTTP
+  # CAMERA FIXE : ce robot n'a aucun servo, donc ce groupe detecte, reconnait et incruste
+  # sans jamais rien bouger. A false par defaut comme sur bambooSTM32YB, mais pour une raison
+  # de CHARGE et non de securite : il occupe plus de deux coeurs du RPi.
+  videotracking: {enable: false}
+  # Manette : le stick droit n'a rien a bouger ici, et la traction reste derriere ses deux
+  # verrous (motion_enabled local, enable_cmd_vel du driver).
+  control:       {enable: false}
+
+# PAS de section `wiring` : le seul flux recablable aujourd'hui est `servo_cmd`, et ce robot
+# n'en a pas. Absente, chaque module garde le defaut de son propre launch.

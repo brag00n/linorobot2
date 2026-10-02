@@ -117,3 +117,30 @@
     encoder_right_index: 1
     invert_left: false
     invert_right: false
+
+    # --- camera ----------------------------------------------------------
+    # Ajoutee au lot BASCULE (2026-10-02) : sans elle, bamboo_video et
+    # bamboo_videotracking levent une erreur au lancement (ils derivent la taille
+    # du flux et l'aspect du reticule de ces deux cles). Memes cles que
+    # bambooSTM32YB, et memes regles : faits PHYSIQUES du capteur ; le /dev/videoN
+    # et le format retenu sont des faits d'HOTE (groupe bamboo_video).
+    # 640x480 est la taille etablie au lot L3 de BambooWS (v4l2_camera YUYV
+    # 640x480, H.264 materiel a 30 fps) : << A CONFIRMER >> a l'essai T17 de
+    # BambooWS par `v4l2-ctl --list-formats-ext` sur la camera de CE robot.
+    # Le champ de vision n'est lu par aucun noeud (conversion pour le journal
+    # seulement) : valeur de symetrie avec bambooSTM32YB, jamais mesuree.
+    camera_width: 640
+    camera_height: 480
+    camera_fov_h_deg: 60.0
+    camera_fov_v_deg: 45.0
+
+    # PAS de `servo_axes`, et c'est la verite materielle, pas un oubli : la
+    # carte n'a aucune sortie servo PWM (son bus ST3215 n'est pas exploite, le
+    # firmware repond MAV_RESULT_UNSUPPORTED a MAV_CMD_DO_SET_SERVO). Les groupes
+    # applicatifs en deduisent le mode CAMERA FIXE (cf. videotracking.launch.py).
+
+    # --- verrou d'actuation moteur ---------------------------------------
+    # NON NEGOCIABLE ICI : robot EN PAUSE, attache moteur N20 de M1 cassee, AUCUN
+    # essai au sol avant reparation. Le meme verrou que bambooSTM32YB, pour une
+    # autre raison physique.
+    enable_cmd_vel: false

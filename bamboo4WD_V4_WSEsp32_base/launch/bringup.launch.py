@@ -1,57 +1,46 @@
-"""Bringup du ROBOT BambooWS : tous les noeuds de cette machine, en un point d'entree.
+"""Bringup du ROBOT BambooWS (bamboo4WD_V4_WSEsp32) : tous les noeuds de cette machine.
 
-/!\ ROBOT EN PAUSE ET BRINGUP JAMAIS LANCE. L'attache moteur N20 de M1 est cassee, ce qui
-fausse toute odometrie au sol, et la consigne est explicite : AUCUN ESSAI AU SOL avant
-reparation. Ce fichier existe pour que les deux robots aient la MEME forme -- c'est ce qui
-rend la bascule `ROBOT=` credible -- pas pour etre demarre aujourd'hui. Les valeurs de ce
-launch sont donc des choix de STRUCTURE, a confronter a la machine quand elle reviendra.
+JUMEAU de bamboo4WD_V4_YBStm32_base/launch/bringup.launch.py depuis le lot BASCULE
+(2026-10-02) : memes mecaniques (layout lu dans config/, fichier canonique POUSSE aux modules,
+controle des capacites avant tout noeud), memes groupes, memes arguments. Un essai se
+transpose donc d'un robot a l'autre sans retraduction. Ce qui differe est ce que la MACHINE
+differe, et rien d'autre :
 
-Pendant de bamboo4WD_V4_YBStm32_base/launch/bringup.launch.py, dont il partage la doctrine :
-aucune valeur physique ici (tout est dans bamboo_base/config/robots/<robot>.yaml, propage
-par le seul argument `robot`), et une inclusion conditionnelle par groupe.
+  * la carte : WaveShare General Driver (ESP32, CP2102, /dev/esp32), module
+    bamboo_controler_WSEsp32 ;
+  * AUCUN servo : la carte n'a pas de sortie PWM (MAV_CMD_DO_SET_SERVO -> UNSUPPORTED), le
+    fichier canonique n'a donc pas de `servo_axes`, et le groupe tracking tourne en CAMERA
+    FIXE (detection, reconnaissance, apprentissage, HUD ; servocam_node n'est pas charge).
+    Pour la meme raison il n'y a ni section `wiring` dans le layout, ni argument de cablage
+    servo ici.
 
-CE QUI DIFFERE DE bambooSTM32YB, ET POURQUOI -- c'est la seule chose interessante dans ce
-fichier, le reste est du calque :
-  * PAS de groupe tracking. Cette carte n'a AUCUN servo PWM : DO_SET_SERVO repond
-    MAV_RESULT_UNSUPPORTED (ConnectorMavlink.cpp:450). Il n'y a donc pas de camera
-    motorisee sur ce robot, et l'inclure serait affirmer le contraire. La camera motorisee
-    appartient a bambooSTM32YB -- regle de perimetre documentaire, pas un detail.
-  * groupe video a FALSE par defaut. La chaine video de ce robot existe deja, mais sous
-    forme de SERVICES compose eprouves (`camera.real`, `camera.mjpg`, `camera.h264` avec
-    MediaMTX pour le H.264 a 30 fps). `bamboo_video` les remplacerait sans rien apporter
-    ici, et son fichier canonique n'a d'ailleurs pas encore de cles `camera_*` : l'activer
-    echouerait en nommant le parametre manquant, ce qui est le bon comportement mais pas
-    une raison de l'activer.
-  * lidar, SLAM et navigation restent DEHORS, eux aussi en services compose
-    (`slam.real`, `navigation.real`). Les mettre ici demanderait de reprendre leur
-    parametrage, qui n'est pas du ressort de ce lot.
+ROBOT EN PAUSE : l'attache moteur N20 de M1 est cassee, AUCUN ESSAI AU SOL avant reparation.
+enable_cmd_vel reste false (argument ET fichier canonique).
 
-DEFAUTS
-  enable_driver       true   carte en LECTURE SEULE (cf. enable_cmd_vel)
-  enable_description  true   URDF + TF, sans effet materiel
-  enable_video        FALSE  voir ci-dessus : les services compose s'en chargent
-  enable_control      FALSE  bamboo_control existe (lot V5) mais son mapping vise la
-                             CAMERA MOTORISEE, que ce robot n'a pas (aucun servo PWM)
-  enable_cmd_vel      FALSE  et ici ce n'est pas une precaution de principe : M1 est
-                             CASSE. Aucune actuation avant remontage.
+Le lidar, le SLAM et la navigation restent des services compose distincts (slam.real,
+navigation.real), hors de ce bringup comme avant.
+
+Exemples :
+  ros2 launch bamboo4WD_V4_WSEsp32_base bringup.launch.py
+  ros2 launch bamboo4WD_V4_WSEsp32_base bringup.launch.py enable_tracking:=true
 """
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction
+from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription, LogInfo,
+                            OpaqueFunction, SetLaunchConfiguration)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
 
 from bamboo_base.capability_check import checkServoAxes
+from bamboo_base.layout import layoutDefaults
+
+_PKG = "bamboo4WD_V4_WSEsp32_base"
 
 
 def _include(package, launch_file, arguments, flag):
-    """Inclusion conditionnelle d'un launch de groupe (meme helper que l'autre bringup).
-
-    Le chemin est une SUBSTITUTION : un groupe desactive dont le paquet n'est pas installe
-    ne fait rien echouer. `.items()` et pas le dict -- IncludeLaunchDescription itere des
-    paires (nom, valeur) et un dict nu s'itere sur ses CLES.
-    """
+    """Inclusion conditionnelle d'un launch de groupe (cf. le jumeau STM32 : le chemin est
+    une SUBSTITUTION, donc un groupe desactive dont le paquet manque ne fait rien echouer)."""
     return IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([FindPackageShare(package), "launch", launch_file])),
@@ -60,74 +49,108 @@ def _include(package, launch_file, arguments, flag):
     )
 
 
-def _checkCapabilities(context, *args, **kwargs):
-    """Meme controle que sur l'autre robot, et il a ici une valeur de NON-REGRESSION.
+def _resolveLayout(context, *args, **kwargs):
+    """Donne aux arguments laisses vides le defaut ecrit dans config/layout.yaml."""
+    path = LaunchConfiguration("layout_file").perform(context)
+    flags, notes = layoutDefaults(path)
+    actions = [LogInfo(msg="layout : " + line) for line in notes]
+    for flag, value in sorted(flags.items()):
+        # `.get` et non LaunchConfiguration(flag).perform() : layoutDefaults renvoie AUSSI les
+        # noms de cablage servo par defaut, que ce bringup ne declare pas (aucun servo ici), et
+        # perform() leve sur un argument non declare. Le poser sans effet est inoffensif.
+        if context.launch_configurations.get(flag, "") == "":
+            actions.append(SetLaunchConfiguration(flag, value))
+    return actions
 
-    Le fichier canonique de ce robot n'a pas de table `servo_axes`, ce qui est exact : la
-    carte n'a pas de servo. Le controle passe donc en disant qu'il n'y a rien a verifier.
-    Le jour ou quelqu'un ajouterait un axe ici, il echouerait EN NOMMANT L'AXE au lieu
-    d'envoyer des consignes que la carte refuse tout en acquittant.
-    """
+
+def _checkCapabilities(context, *args, **kwargs):
+    """Confronte servo_axes aux capacites declarees : ici, il n'y a AUCUN axe, et c'est ce
+    controle qui le dit au lancement plutot qu'un servo qui ne bougerait pas."""
     robot = LaunchConfiguration("robot").perform(context)
-    return [LogInfo(msg="capacites : " + line) for line in checkServoAxes(robot)]
+    config = LaunchConfiguration("robot_config").perform(context)
+    return [LogInfo(msg="capacites : " + line)
+            for line in checkServoAxes(robot, config)]
 
 
 def generate_launch_description():
     robot = LaunchConfiguration("robot")
+    robot_config = LaunchConfiguration("robot_config")
 
     return LaunchDescription([
         DeclareLaunchArgument(
             "robot", default_value="bamboo4WD_V4_WSEsp32",
-            description="Nom du fichier de source unique dans bamboo_base/config/robots/ "
-                        "(sans .yaml). counts_per_rev attendu : 2100, et non 1320."),
+            description="Nom du robot (sans .yaml). Propage depuis docker/.env (ROBOT=, ecrit "
+                        "par docker/robot.sh) et transmis TEL QUEL a tous les groupes."),
         DeclareLaunchArgument(
-            "enable_driver", default_value="true",
-            description="Driver ESP32 (MAVLink sysid 2), via l'enveloppe "
-                        "bamboo_controler_WSEsp32. Proprietaire UNIQUE du CP2102."),
+            "robot_config",
+            default_value=PathJoinSubstitution([
+                FindPackageShare(_PKG), "config", [robot, ".yaml"]]),
+            description="Chemin COMPLET du fichier canonique, pousse a tous les groupes."),
         DeclareLaunchArgument(
-            "enable_description", default_value="true",
+            "layout_file",
+            default_value=PathJoinSubstitution([FindPackageShare(_PKG), "config", "layout.yaml"]),
+            description="Composition de la machine (section groups)."),
+        DeclareLaunchArgument(
+            "enable_driver", default_value="",
+            description="Driver de la carte WaveShare ESP32 (MAVLink sysid 2), LECTURE SEULE. "
+                        "Proprietaire UNIQUE de /dev/esp32."),
+        DeclareLaunchArgument(
+            "enable_description", default_value="",
             description="robot_state_publisher (URDF + TF)."),
         DeclareLaunchArgument(
-            "enable_video", default_value="false",
-            description="Groupe video generique. FALSE : ce robot a deja ses services "
-                        "compose camera.real / camera.mjpg / camera.h264."),
+            "enable_video", default_value="",
+            description="Groupe video : acquisition MJPG + mux + diffusion HTTP."),
         DeclareLaunchArgument(
-            "enable_control", default_value="false",
-            description="Groupe manette. bamboo_control existe, mais son mapping vise "
-                        "les axes servo de la camera motorisee : cette carte n'a "
-                        "aucun servo PWM, donc les nudges seraient refuses."),
+            "enable_tracking", default_value="",
+            description="Groupe tracking en CAMERA FIXE (aucun servo sur ce robot). FALSE par "
+                        "defaut : il occupe plus de deux coeurs du RPi."),
+        DeclareLaunchArgument(
+            "enable_control", default_value="",
+            description="Groupe manette (bamboo_control). Le stick droit n'a rien a bouger ; "
+                        "la traction reste derriere ses deux verrous."),
+        DeclareLaunchArgument(
+            "joy_dev", default_value="/dev/input/js0",
+            description="Peripherique manette (ordre d'appairage)."),
         DeclareLaunchArgument(
             "enable_cmd_vel", default_value="false",
-            description="Actuation MOTEUR. Reste false : l'attache moteur de M1 est "
-                        "CASSEE, aucun essai au sol avant reparation."),
+            description="Actuation MOTEUR. Robot EN PAUSE (attache M1 cassee) : reste false, "
+                        "aucun essai au sol."),
         DeclareLaunchArgument(
             "video_device", default_value="/dev/video0",
-            description="Peripherique V4L2, sans objet tant que enable_video est false."),
+            description="Peripherique V4L2 de la camera de CE robot."),
 
-        # --- controle de coherence AVANT tout noeud --------------------------------------
+        OpaqueFunction(function=_resolveLayout),
         OpaqueFunction(function=_checkCapabilities),
 
         # --- la carte -----------------------------------------------------------------
         _include("bamboo_controler_WSEsp32", "driver.launch.py",
-                 {"robot": robot,
+                 {"robot": robot, "robot_config": robot_config,
                   "enable_cmd_vel": LaunchConfiguration("enable_cmd_vel")},
                  "enable_driver"),
 
         # --- URDF / TF ----------------------------------------------------------------
         _include("linorobot2_description", "description.launch.py",
-                 {"robot": robot,
+                 {"robot": robot, "robot_config": robot_config,
                   "rviz": "false", "publish_joints": "false"},
                  "enable_description"),
 
-        # --- groupe video (desactive par defaut) ---------------------------------------
+        # --- groupe video -------------------------------------------------------------
         _include("bamboo_video", "video.launch.py",
-                 {"robot": robot,
+                 {"robot": robot, "robot_config": robot_config,
                   "stream_mode": "mjpg",
                   "video_device": LaunchConfiguration("video_device")},
                  "enable_video"),
 
-        # --- groupe manette (lot V5) ---------------------------------------------------
+        # --- groupe tracking, CAMERA FIXE --------------------------------------------
+        # Pas de servo_cmd_topic : le launch du groupe ne charge pas servocam_node quand le
+        # fichier canonique n'a pas de servo_axes, donc personne ne publierait de consigne.
+        _include("bamboo_videotracking", "videotracking.launch.py",
+                 {"robot": robot, "robot_config": robot_config},
+                 "enable_tracking"),
+
+        # --- groupe manette -----------------------------------------------------------
         _include("bamboo_control", "control.launch.py",
-                 {"robot": robot},
+                 {"robot": robot, "robot_config": robot_config,
+                  "joy_dev": LaunchConfiguration("joy_dev")},
                  "enable_control"),
     ])

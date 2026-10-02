@@ -29,7 +29,7 @@ DEFAUTS, ET POURQUOI ILS SONT PRUDENTS
 Depuis E3, les cinq defauts ci-dessous ne sont plus ecrits en Python : ils viennent de
 config/layout.yaml, section `groups`, du meme paquet. Retirer ou ajouter un groupe est donc
 une modification de DONNEE, pas de code. La ligne de commande reste souveraine, et un
-fichier absent retombe sur exactement ces valeurs (launch/layout.py, table FALLBACK).
+fichier absent retombe sur exactement ces valeurs (bamboo_base/layout.py, table FALLBACK).
 
   enable_driver       true   la carte en LECTURE SEULE (cf. enable_cmd_vel)
   enable_description  true   URDF + TF, sans effet materiel
@@ -58,9 +58,6 @@ Sous quel nom les groupes se parlent est aussi une donnee du robot : section `wi
 layout, poussee aux modules par les arguments que E4 leur a ajoutes. Le bringup est le SEUL a
 connaitre les deux bouts d'un flux -- c'est pourquoi c'est lui qui les accorde.
 """
-import os
-import sys
-
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription, LogInfo,
                             OpaqueFunction, SetLaunchConfiguration)
@@ -70,11 +67,10 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
 
 from bamboo_base.capability_check import checkServoAxes
-
-# layout.py est un module FRERE de ce fichier, pas un paquet Python installe : ros2launch
-# charge ce launch par son CHEMIN, et son dossier n'est donc pas sur sys.path.
-sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-from layout import layoutDefaults  # noqa: E402  (apres l'ajustement de sys.path)
+# Le chargeur de layout vit dans bamboo_base depuis le lot BASCULE : il ne connait aucun
+# robot, et les bringups des DEUX robots s'en servent. Il etait auparavant un module FRERE de
+# ce launch, importe par un ajustement de sys.path -- une copie par robot aurait diverge.
+from bamboo_base.layout import layoutDefaults
 
 
 def _include(package, launch_file, arguments, flag):
