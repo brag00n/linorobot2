@@ -10,6 +10,9 @@
   <exec_depend>rclpy</exec_depend>
   <!-- SetParametersResult, retour du rappel qui rend `nudge_enabled` reglable a chaud. -->
   <exec_depend>rcl_interfaces</exec_depend>
+  <!-- /diagnostics de bamboo_teleop (lot DIAGNOSTICS) : deja dans l'image hardware. -->
+  <exec_depend>diagnostic_updater</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>

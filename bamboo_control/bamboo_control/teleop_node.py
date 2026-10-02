@@ -76,6 +76,8 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rcl_interfaces.msg import SetParametersResult
+from diagnostic_msgs.msg import DiagnosticStatus
+from diagnostic_updater import Updater
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool
 from sensor_msgs.msg import Joy
@@ -196,6 +198,10 @@ class TeleopNode(Node):
         self._inFlight = False
         self._trainGoal = None
         self._warned = set()
+        # Compteurs du diagnostic, remis a zero a chaque periode de l'updater.
+        self._joyCount = 0
+        self._nudgeRefusals = 0
+        self._diagT = time.monotonic()
 
         # Latche : un noeud du groupe qui demarre APRES l'appui doit recevoir l'etat
         # demande. QoS identique cote consommateurs (profondeur 1, reliable).
@@ -232,6 +238,19 @@ class TeleopNode(Node):
         # "Set parameter successful" et ne changeait RIEN -- un succes MENSONGER, et c'est
         # le pire defaut possible pour un interrupteur de securite : on croit avoir coupe.
         self.add_on_set_parameters_callback(self._onParamSet)
+
+        # Diagnostics (lot DIAGNOSTICS) : les 4 taches du composant bamboo_teleop du module
+        # bamboo_control. Les couches SOUS ce noeud (adaptateur Bluetooth, js0) sont
+        # observees de l'exterieur par bamboo_health, qui ne peut pas ouvrir js0 sans devenir
+        # un second lecteur du peripherique de joy_linux_node.
+        # 20 Hz : joy_linux_node republie a 25 Hz (`autorepeat_rate`) un stick TENU.
+        self._joyRateWarn = float(self.declare_parameter("joy_rate_warn_hz", 20.0).value)
+        self._diag = Updater(self)
+        self._diag.setHardwareID("bamboo_control")
+        self._diag.add("manette", self._diagGamepad)
+        self._diag.add("chemin servo", self._diagServo)
+        self._diag.add("traction", self._diagTraction)
+        self._diag.add("modes", self._diagModes)
         self.get_logger().info(
             "bamboo_teleop pret : modes -> %s, nudge -> %s (%.0f deg/s a fond, %.0f Hz), "
             "apprentissage -> %s, deplacement -> %s a %.0f Hz (moteurs %s au demarrage)."
@@ -264,8 +283,92 @@ class TeleopNode(Node):
         ne peut donc pas montrer "connectee" pendant que le noeud, lui, la juge perdue.
         """
         msg = Bool()
-        msg.data = (time.monotonic() - self._lastJoy) <= self._joyTimeout
+        msg.data = self._gamepadConnected()
         self._gamepadPub.publish(msg)
+
+    def _gamepadConnected(self):
+        """LE verdict de manette connectee, et il n'y en a qu'un.
+
+        Le lisent la pastille MANETTE (/gamepad/connected) et le diagnostic : une seule
+        expression, donc les deux ne peuvent pas diverger.
+        """
+        return (time.monotonic() - self._lastJoy) <= self._joyTimeout
+
+    # ------------------------------------------------------------- diagnostics
+    def _diagPeriod(self):
+        """Duree reelle depuis le dernier passage, pour des cadences justes meme si la
+        periode de l'updater a glisse."""
+        now = time.monotonic()
+        dt, self._diagT = max(1e-3, now - self._diagT), now
+        return dt
+
+    def _diagGamepad(self, stat):
+        hz = self._joyCount / self._diagPeriod()
+        self._joyCount = 0
+        stat.add("joy_hz", "%.1f" % hz)
+        stat.add("seuil_warn_hz", "%.0f" % self._joyRateWarn)
+        stat.add("joy_timeout_s", "%.2f" % self._joyTimeout)
+        if not self._gamepadConnected():
+            # WARN et jamais ERROR : la manette est OPTIONNELLE. La dire en panne a chaque fois
+            # qu'on la range apprendrait a ignorer le diagnostic.
+            stat.summary(DiagnosticStatus.WARN, "manette absente (pastille MANETTE rouge)")
+        elif hz < self._joyRateWarn:
+            stat.summary(DiagnosticStatus.WARN, "/joy lent : %.1f Hz" % hz)
+        else:
+            stat.summary(DiagnosticStatus.OK, "manette connectee, /joy %.0f Hz" % hz)
+        return stat
+
+    def _diagServo(self, stat):
+        refusals, self._nudgeRefusals = self._nudgeRefusals, 0
+        ready = self._nudgeCli.service_is_ready()
+        stat.add("nudge_enabled", str(self._nudgeOn))
+        stat.add("serveur_pret", str(ready))
+        stat.add("service", self._nudgeCli.srv_name)
+        stat.add("refus_periode", str(refusals))
+        if not self._nudgeOn:
+            stat.summary(DiagnosticStatus.WARN, "chemin servo COUPE (nudge_enabled=false)")
+        elif not ready:
+            stat.summary(DiagnosticStatus.WARN,
+                         "aucun serveur %s : groupe suivi arrete ?" % self._nudgeCli.srv_name)
+        elif refusals:
+            stat.summary(DiagnosticStatus.ERROR,
+                         "%d nudge(s) refuse(s) par le serveur sur la periode" % refusals)
+        else:
+            stat.summary(DiagnosticStatus.OK, "arme, serveur pret")
+        return stat
+
+    def _diagTraction(self, stat):
+        subs = self._velPub.get_subscription_count()
+        stat.add("motion_enabled", str(self._motionOn))
+        stat.add("abonnes_cmd_vel", str(subs))
+        stat.add("plancher_niveau", str(self._speedMin))
+        stat.add("plafond_niveau", str(self._speedMax))
+        if not self._motionOn:
+            stat.summary(DiagnosticStatus.OK, "desarmee (etat nominal)")
+        elif subs == 0:
+            # Arme mais sans effet : le driver ne s'abonne a cmd_vel que si enable_cmd_vel est
+            # vrai, ce qui n'est pas le cas sur ce robot. A voir, pas une panne.
+            stat.summary(DiagnosticStatus.WARN,
+                         "ARMEE mais sans abonne a %s (enable_cmd_vel=false ?)"
+                         % self._velPub.topic_name)
+        else:
+            stat.summary(DiagnosticStatus.OK, "ARMEE, %d abonne(s)" % subs)
+        return stat
+
+    def _diagModes(self, stat):
+        subs = self._modePub.get_subscription_count()
+        train = self._trainCli.server_is_ready()
+        stat.add("abonnes_modes", str(subs))
+        stat.add("dernier_seq", str(self._seq))
+        stat.add("apprentissage_pret", str(train))
+        if subs == 0:
+            stat.summary(DiagnosticStatus.WARN,
+                         "aucun abonne a %s : groupe suivi arrete ?" % self._modePub.topic_name)
+        elif not train:
+            stat.summary(DiagnosticStatus.WARN, "action d'apprentissage absente")
+        else:
+            stat.summary(DiagnosticStatus.OK, "%d abonne(s), apprentissage pret" % subs)
+        return stat
 
     # ---------------------------------------------------------------- entrees
     @staticmethod
@@ -339,6 +442,7 @@ class TeleopNode(Node):
         return "short" if court else None
 
     def _onJoy(self, msg):
+        self._joyCount += 1
         now = time.monotonic()
         self._lastJoy = now
 
@@ -627,8 +731,10 @@ class TeleopNode(Node):
             res = future.result()
         except Exception as exc:                                    # noqa: BLE001
             self.get_logger().warn("appel de nudge echoue : %s" % exc)
+            self._nudgeRefusals += 1
             return
         if not res.success:
+            self._nudgeRefusals += 1
             # Un axe inconnu est une erreur de CONFIGURATION (nom absent de servo_axes) :
             # elle se repeterait a chaque periode, donc une seule trace.
             self._warnOnce("nudge_refuse", "nudge refuse : %s" % res.reason)

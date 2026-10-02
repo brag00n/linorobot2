@@ -204,6 +204,10 @@ bamboo_teleop:
     # (son parametre `gamepad_state_topic`), et lit son SILENCE comme "noeud manette
     # arrete" -- pastille grise, comme le `None` du prototype.
     gamepad_state_topic: "/gamepad/connected"
+    # Diagnostic (lot DIAGNOSTICS) : cadence de /joy sous laquelle la tache "manette" passe
+    # WARN. joy_linux_node republie a 25 Hz (`autorepeat_rate`, plus haut) : 20 laisse la
+    # marge de la gigue sans masquer un pilote qui se figerait.
+    joy_rate_warn_hz: 20.0
     # Duree minimale entre deux prises en compte du MEME bouton : la croix vue
     # comme un axe n'a pas de front franc et un appui bref peut produire
     # plusieurs echantillons a 25 Hz.
