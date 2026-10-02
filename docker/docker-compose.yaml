@@ -451,9 +451,22 @@ services:
 #    /dev est deja monte par `base` (privileged) -> la manette /dev/input/js0 est visible.
 #    BAMBOO_JOY permet de suivre l'ordre d'appairage sans editer ce fichier (a relever a T20).
 #      docker compose up -d bamboo_control
+#    DEMARRE AU BOOT depuis l'essai T25 de bambooSTM32YB, a la demande explicite de
+#    l'utilisateur (2026-10-02) : profil `boot` + `restart: unless-stopped`, la convention du
+#    fichier. Ce que cela engage, et ce que cela n'engage PAS :
+#      - la NACELLE est en prise directe des le boot : un stick droit pousse la bouge, des que
+#        servocam_node tourne. C'est le prix accepte.
+#      - la TRACTION, non : le noeud demarre desarme (`motion_enabled: false`, armement par
+#        appui LONG volontaire sur B), ET le driver ignore cmd_vel (`enable_cmd_vel: false`).
+#        Le robot ne demarre donc pas "arme" au sens de bamboo4wd.service -- c'est cette
+#        distinction qui rend l'ajout compatible avec la regle de l'homme-mort.
+#    Aucun besoin d'attendre la manette : joy_linux_node reessaie /dev/input/js0 chaque
+#    seconde, et la manette, une fois liee (Bonded), se rattache seule a l'allumage.
+#    `hmi` reste : `--profile hmi up -d bamboo_videotracking bamboo_control` marche toujours.
   bamboo_control:
     extends: base
-    profiles: ["hmi"]
+    profiles: ["hmi", "boot"]
+    restart: unless-stopped
     volumes:
       # Build PERSISTANT et PARTAGE par les services de ce robot : voir ws_build en tete
       # de fichier. Sans lui, build/ et install/ vivent dans la couche inscriptible du

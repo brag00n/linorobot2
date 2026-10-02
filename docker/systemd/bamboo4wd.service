@@ -10,8 +10,14 @@
 #   - apres une modification du compose (`up -d` recree ce qui a change).
 # D'ou `Type=oneshot` : elle converge puis rend la main, elle ne surveille rien.
 #
-# Deliberement ABSENT de la liste : le service d'actuation (manette, `drive.real`).
-# Un robot qui demarre deja arme n'est acceptable qu'apres validation de l'homme-mort.
+# Deliberement ABSENT de la liste : tout service qui ferait demarrer le robot ARME EN
+# TRACTION (`drive.real`). Un robot qui demarre deja arme n'est acceptable qu'apres
+# validation de l'homme-mort.
+# La MANETTE (`bamboo_control`) y est, depuis l'essai T25 de bambooSTM32YB et a la demande
+# de l'utilisateur : elle demarre DESARMEE (`motion_enabled: false`, armement par appui long
+# volontaire) derriere `enable_cmd_vel: false` du driver, donc elle n'enfreint pas la regle
+# ci-dessus. Ce qu'elle met en prise directe au boot, c'est la NACELLE camera -- cf. le
+# commentaire du service dans docker-compose.yaml.
 #
 # CE FICHIER EST UN GABARIT : docker/install_bambooWS.sh y substitue __COMPOSE_DIR__ et
 # __BOOT_SERVICES__ avant de le poser dans /etc/systemd/system/ (seul ecrit de ce chantier
