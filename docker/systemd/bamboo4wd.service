@@ -19,16 +19,19 @@
 # ci-dessus. Ce qu'elle met en prise directe au boot, c'est la NACELLE camera -- cf. le
 # commentaire du service dans docker-compose.yaml.
 #
-# CE FICHIER EST UN GABARIT : docker/install_bambooWS.sh y substitue __COMPOSE_DIR__ et
-# __BOOT_SERVICES__ avant de le poser dans /etc/systemd/system/ (seul ecrit de ce chantier
+# CE FICHIER EST UN GABARIT : docker/robot.sh (appele par install_bambooWS.sh, ou par
+# `robot.sh use`) y substitue __COMPOSE_DIR__, __BOOT_SERVICES__, __ROBOT_LABEL__ et __ROBOT__
+# avant de le poser dans /etc/systemd/system/ (seul ecrit de ce chantier
 # sur le systeme du RPi).
 #   systemctl status bamboo4wd     journalctl -u bamboo4wd
 
 [Unit]
-Description=BambooWS (bamboo4WD_V4_WSEsp32) ROS2 stack
+# Robot NOMME a la pose (lot BASCULE) : ce gabarit sert aux DEUX robots, et docker/robot.sh
+# y substitue __ROBOT_LABEL__ et __ROBOT__ en meme temps que la liste de boot.
+Description=Bamboo4WD V4 ROS2 stack : __ROBOT_LABEL__ (__ROBOT__)
 # Chemin derive du repertoire du compose (docs/ est frere de docker/) : le depot ne vit pas
 # au meme endroit selon la machine -- l'ancien /root/... etait faux sur ce RPi (/home/dietpi).
-Documentation=file://__COMPOSE_DIR__/../docs/bamboo4WD_V4_WSEsp32.md
+Documentation=file://__COMPOSE_DIR__/../docs/__ROBOT__.md
 # docker.service suffit a la socket, mais `up` publie des ports : sans network-online, un
 # premier demarrage sur reseau pas encore monte echoue sans raison claire.
 After=docker.service network-online.target

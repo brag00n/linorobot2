@@ -84,16 +84,22 @@ SERVICES = {
     "bringup.real": "bringup AMONT linorobot2 (micro-ROS agent sur /dev/ttyACM0) -- N'EST "
                     "PAS notre pont MAVLink : EXCLUSIF avec driver.real et driver.stm32 "
                     "(un seul proprietaire du port serie)",
-    "driver.real": "driver ESP32 (pont MAVLink) LECTURE SEULE (enable_cmd_vel=false)",
+    "driver.real": "REMPLACE par driver.esp32 (lot BASCULE) -- ancien driver ESP32, sans "
+                   "volumes de build partages",
     "drive.real": "traction MANETTE de BambooWS : driver ESP32 + joy_linux + teleop_twist_joy "
                   "dans UN conteneur -- LECTURE SEULE (enable_cmd_vel=false ; armer demande "
                   "BAMBOO_ARM=true, hors de portee de cet outil). EXCLUSIF avec driver.real, "
                   "driver.stm32 et bringup.real (un seul proprietaire du port serie)",
-    "driver.stm32": "driver STM32 Yahboom v3 (pont MAVLink sysid 1) LECTURE SEULE (enable_cmd_vel=false)",
+    "driver.stm32": "driver STM32 Yahboom v3 de bambooSTM32YB (pont MAVLink sysid 1) LECTURE SEULE (enable_cmd_vel=false)",
+    "driver.esp32": "driver ESP32 WaveShare de BambooWS (pont MAVLink sysid 2) LECTURE SEULE "
+                    "(enable_cmd_vel=false) -- robot EN PAUSE, AUCUN essai au sol. Basculer "
+                    "par `docker/robot.sh use esp32` plutot que le demarrer seul",
     "bamboo_video": "groupe video : acquisition + mux + streaming externe :8080 (autonome)",
     "bamboo_videotracking": "groupe tracking : Tracking/FaceRecog/FaceTrain/ServoCam, s'enregistre sur bamboo_video",
-    "bamboo_control": "groupe manette : joy_linux_node + bamboo_teleop -- modes du tracking et pas relatifs des axes servo, AUCUN moteur de traction",
-    "bringup.stm32": "bringup COMPLET en un conteneur (banc) : EXCLUSIF avec bamboo_video/bamboo_videotracking/driver.stm32",
+    "bamboo_control": "groupe manette : joy_linux_node + bamboo_teleop -- modes du tracking, pas relatifs des axes servo (robot a nacelle), traction derriere DEUX verrous (motion_enabled, enable_cmd_vel)",
+    "bamboo_diagnostics": "groupe diagnostic : diagnostic_aggregator + bamboo_health -- arbre /diagnostics_agg du robot de ROBOT=",
+    "bringup.stm32": "bringup COMPLET de bambooSTM32YB en un conteneur (banc) : EXCLUSIF avec bamboo_video/bamboo_videotracking/driver.stm32",
+    "bringup.esp32": "bringup COMPLET de BambooWS en un conteneur (banc) : EXCLUSIF avec bamboo_video/bamboo_videotracking/driver.esp32",
     "robotdesc": "robot_state_publisher (description URDF)",
     "slam.real": "cartographie SLAM (slam_toolbox)",
     "navigation.real": "navigation Nav2 sur carte existante",

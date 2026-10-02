@@ -286,7 +286,9 @@ services:
     # service : il est simplement au mauvais endroit depuis que ROBOT= designe l autre robot.
     # Il reste lancable en le NOMMANT (`compose up -d driver.real`, ou l outil MCP `start`, qui
     # active implicitement le profil) le jour ou BambooWS revient -- meme motif que drive.real.
-    profiles: ["real"]
+    # REMPLACE par driver.esp32 (lot BASCULE) : garde pour l'historique, ne plus l'utiliser.
+    # Etiquete `esp32` pour que docker/robot.sh l'arrete en basculant vers le STM32.
+    profiles: ["real", "esp32"]
     # PAS de restart: unless-stopped -- et le retrait est la moitie utile du correctif. Un profil
     # ne bride que le DEMARRAGE par compose : une politique de redemarrage, elle, est appliquee
     # par dockerd au conteneur qui EXISTE, quel que soit son profil. Constate le 2026-09-29 :
@@ -310,7 +312,7 @@ services:
       source install/setup.bash &&
       (python3 -c 'import serial' 2>/dev/null || (apt-get update && apt-get install -y python3-serial)) &&
       export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
-      ros2 launch bamboo_base driver.launch.py"
+      ros2 launch bamboo_base driver.launch.py robot:=bamboo4WD_V4_WSEsp32"
 
 #--- Traction a la MANETTE du robot BambooWS (lot 5.6) : driver + joy_linux + teleop_twist_joy
 #    dans UN SEUL conteneur -- le reseau compose est en bridge et la memoire partagee DDS est
@@ -331,7 +333,9 @@ services:
     # piege deja constate le 2026-09-22, cf. le commentaire du profil `boot` plus haut).
     # Nommer un service active implicitement son profil : `compose up -d drive.real` marche
     # toujours, et l'outil MCP `start` aussi, qui nomme le service.
-    profiles: ["drive"]
+    # REMPLACE par bamboo_control (lot BASCULE) : la manette de BambooWS suit desormais la loi
+    # du prototype, comme celle de bambooSTM32YB. Garde pour l'historique.
+    profiles: ["drive", "esp32"]
     # Pas de restart: unless-stopped -- volontaire. Un pilotage manuel n'a pas a revenir tout
     # seul apres un arret : personne ne tient la manette au moment ou il redemarrerait.
     volumes:
@@ -522,7 +526,7 @@ services:
       test -f install/setup.bash || echo 'ESPACE DE TRAVAIL NON CONSTRUIT -- lancer docker/rosbuild.sh dans un conteneur hardware (voir son en-tete)' >&2 &&
       test -f install/setup.bash &&
       source install/setup.bash &&
-      ros2 launch bamboo_diagnostics diagnostics.launch.py"
+      ros2 launch bamboo_diagnostics diagnostics.launch.py robot:=${ROBOT}"
 
 #--- Controleur STM32 (Yahboom ROS Control Board V3.0, pont MAVLink sysid 1) : proprietaire
 #    UNIQUE du CH340. LECTURE SEULE par defaut (enable_cmd_vel:=false) : le pack 12,6 V arrive
@@ -532,7 +536,9 @@ services:
 #    proprietaire du port serie.
   driver.stm32:
     extends: base
-    profiles: ["boot"]
+    # ETIQUETTE DE ROBOT `stm32` (lot BASCULE) : c'est elle que docker/robot.sh lit pour
+    # savoir quel service appartient a quel robot, et pour deriver la liste de boot.
+    profiles: ["boot", "stm32"]
     restart: unless-stopped
     volumes:
       - /dev:/dev
@@ -553,7 +559,7 @@ services:
       source install/setup.bash &&
       (python3 -c 'import serial' 2>/dev/null || (apt-get update && apt-get install -y python3-serial)) &&
       export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
-      ros2 launch bamboo_controler_YBStm32v3 driver.launch.py robot:=${ROBOT} enable_cmd_vel:=false"
+      ros2 launch bamboo_controler_YBStm32v3 driver.launch.py robot:=bamboo4WD_V4_YBStm32 enable_cmd_vel:=false"
 
 #--- Bringup COMPLET du robot en UN SEUL conteneur (paquet bamboo4WD_V4_YBStm32_base) :
 #    carte + URDF + video, et le tracking a la demande. C'est l'entree de BANC et de mise au
@@ -575,7 +581,7 @@ services:
     # port 8080, alors que le commentaire ci-dessus annonce le contraire. Corollaire : tout
     # stop/start/logs/exec sur ce service exige `--profile bench`, sinon compose repond
     # `no such service` en laissant l'ancien conteneur tourner.
-    profiles: ["bench"]
+    profiles: ["bench", "stm32"]
     ports:
       - "8080:8080"
     volumes:
@@ -593,7 +599,63 @@ services:
       (python3 -c 'import serial' 2>/dev/null || (apt-get update && apt-get install -y python3-serial)) &&
       export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
       ros2 launch bamboo4WD_V4_YBStm32_base bringup.launch.py
-      robot:=${ROBOT} video_device:=${BAMBOO_CAM:-/dev/video0}
+      robot:=bamboo4WD_V4_YBStm32 video_device:=${BAMBOO_CAM:-/dev/video0}
+      enable_tracking:=${ENABLE_TRACKING:-false} enable_control:=${ENABLE_CONTROL:-false}
+      joy_dev:=${BAMBOO_JOY:-/dev/input/js0} enable_cmd_vel:=false"
+
+#--- Controleur ESP32 de BambooWS (WaveShare General Driver, MAVLink sysid 2) : JUMEAU de
+#    driver.stm32 (lot BASCULE, 2026-10-02). Proprietaire UNIQUE de /dev/esp32 (CP2102).
+#    LECTURE SEULE (enable_cmd_vel:=false) : robot EN PAUSE, attache moteur M1 cassee, AUCUN
+#    essai au sol. Remplace driver.real, qui n'avait ni les volumes de build partages ni
+#    l'argument robot:= : son `install/` vivait dans sa couche inscriptible, et casse a chaque
+#    deplacement d'un fichier installe (dette connue, --symlink-install).
+#    L'identifiant de robot est FIGE, et c'est la regle des services ETIQUETES : un service
+#    qui n'appartient qu'a un robot ne doit pas pouvoir charger la configuration de l'autre.
+#    Ne le demarrer qu'avec `docker/robot.sh use esp32`, qui arrete d'abord les services du
+#    STM32 : deux drivers ne se disputent pas de port (CH340 contre CP2102), mais deux robots
+#    "actifs" a la fois publient deux odometries.
+  driver.esp32:
+    extends: base
+    profiles: ["boot", "esp32"]
+    restart: unless-stopped
+    volumes:
+      - /dev:/dev
+      - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:rw
+      - ws_build:/root/linorobot2_ws/build
+      - ws_install:/root/linorobot2_ws/install
+    command: >
+      bash -lc "cd /root/linorobot2_ws &&
+      test -f install/setup.bash || echo 'ESPACE DE TRAVAIL NON CONSTRUIT -- lancer docker/rosbuild.sh dans ce conteneur (voir son en-tete)' >&2 &&
+      test -f install/setup.bash &&
+      source install/setup.bash &&
+      (python3 -c 'import serial' 2>/dev/null || (apt-get update && apt-get install -y python3-serial)) &&
+      export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
+      ros2 launch bamboo_controler_WSEsp32 driver.launch.py robot:=bamboo4WD_V4_WSEsp32 enable_cmd_vel:=false"
+
+#--- Bringup COMPLET de BambooWS en UN SEUL conteneur (paquet bamboo4WD_V4_WSEsp32_base) :
+#    JUMEAU de bringup.stm32, memes regles. ⚠️ EXCLUSIF avec bamboo_video,
+#    bamboo_videotracking et driver.esp32 (memes noeuds deux fois). Profil `bench`.
+#      docker compose --profile bench up -d bringup.esp32
+  bringup.esp32:
+    extends: base
+    profiles: ["bench", "esp32"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - /dev:/dev
+      - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:rw
+      - bamboo_faces:/root/data/faces
+      - bench_build:/root/linorobot2_ws/build
+      - bench_install:/root/linorobot2_ws/install
+    command: >
+      bash -lc "cd /root/linorobot2_ws &&
+      test -f install/setup.bash || echo 'ESPACE DE TRAVAIL NON CONSTRUIT -- lancer docker/rosbuild.sh dans ce conteneur (voir son en-tete)' >&2 &&
+      test -f install/setup.bash &&
+      source install/setup.bash &&
+      (python3 -c 'import serial' 2>/dev/null || (apt-get update && apt-get install -y python3-serial)) &&
+      export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
+      ros2 launch bamboo4WD_V4_WSEsp32_base bringup.launch.py
+      robot:=bamboo4WD_V4_WSEsp32 video_device:=${BAMBOO_CAM:-/dev/video0}
       enable_tracking:=${ENABLE_TRACKING:-false} enable_control:=${ENABLE_CONTROL:-false}
       joy_dev:=${BAMBOO_JOY:-/dev/input/js0} enable_cmd_vel:=false"
 
@@ -606,7 +668,7 @@ services:
 #      docker compose up -d driver.real
   flash.esp32:
     extends: base
-    profiles: ["tools"]
+    profiles: ["tools", "esp32"]
     volumes:
       - /dev:/dev
       - ../../linorobot2_hardware:/root/linorobot2_ws/src/linorobot2_hardware:rw

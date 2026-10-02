@@ -99,11 +99,14 @@ PROJECT="${PROJECT:-bamboov4_humble}"
 # une cle de service est a 2 espaces, ses attributs a 4, donc un `profiles:` contenant "boot"
 # appartient au dernier service vu. Cette liste est ensuite NOMMEE partout -- c'est la seule
 # facon d'agir sur ces cinq services et sur eux seuls.
+#
+# DEPUIS LE LOT BASCULE (2026-10-02), cette derivation vit dans docker/robot.sh, et c'est ICI
+# qu'elle est appelee : deux robots partagent ce RPi, et la liste de boot n'est plus "tout ce
+# qui porte `boot`", mais les services `boot` COMMUNS plus ceux du robot designe par ROBOT= de
+# .env (etiquette de profil `stm32` ou `esp32`). L'ancien awk listait les deux drivers a la
+# fois. Une seule derivation, partagee, pour que l'installateur et la bascule ne divergent pas.
 boot_services() {
-    awk '
-        /^  [a-zA-Z0-9._-]+:[[:space:]]*$/ { svc = $1; sub(/:$/, "", svc); next }
-        /^    profiles:.*boot/ && svc != "" { print svc }
-    ' "$HERE/docker-compose.yaml"
+    bash "$HERE/robot.sh" boot-list
 }
 
 echo "=== BambooWS — provisionnement ($([ "$APPLY" = 1 ] && echo 'APPLICATION' || echo 'diagnostic seul')) ==="
@@ -404,10 +407,10 @@ elif [ "$APPLY" = "1" ]; then
     if [ -z "$unit_svcs" ]; then
         warn "aucun service marque profiles: [\"boot\"] : unite non posee (elle ne demarrerait rien)"
     else
-        sed -e "s#__COMPOSE_DIR__#$HERE#" -e "s#__BOOT_SERVICES__#$unit_svcs#" "$SRC_UNIT" > "$DST_UNIT" \
-            && act "$DST_UNIT pose (services : $unit_svcs)"
-        systemctl daemon-reload
-        systemctl enable bamboo4wd.service >/dev/null 2>&1 && act "bamboo4wd.service active au boot"
+        # Pose PAR robot.sh : il substitue aussi le libelle et l'identifiant du robot, et
+        # active l'unite. Une seule facon de poser l'unite, qu'on installe ou qu'on bascule.
+        bash "$HERE/robot.sh" install-unit \
+            && act "$DST_UNIT pose (services : $unit_svcs), active au boot"
         systemctl restart bamboo4wd.service && act "stack de boot demarree" \
             || warn "demarrage en echec : journalctl -u bamboo4wd"
     fi
