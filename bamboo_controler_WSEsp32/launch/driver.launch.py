@@ -15,6 +15,11 @@ Ce que l'enveloppe apporte malgre tout, et qui n'est pas cosmetique :
 
 Quand BambooWS reprendra, le driver descendra ici et cette enveloppe deviendra le module
 complet ; les robots qui l'incluent n'auront pas une ligne a changer.
+
+TRANSMET TOUT LE CONTRAT depuis le lot BASCULE (robot, robot_config, enable_cmd_vel,
+cmd_vel_topic), comme bamboo_controler_YBStm32v3/launch/driver.launch.py. Avant, elle ne
+relayait que `robot` et `enable_cmd_vel` : un bringup qui poussait le fichier canonique le
+perdait EN SILENCE, et le driver retombait sur un chemin code en dur.
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
@@ -22,24 +27,31 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
 
+# Les arguments relayes TELS QUELS au driver de bamboo_base. Une seule liste, pour qu'un
+# argument ajoute la-bas ne soit pas oublie ici.
+_RELAYED = ("robot", "robot_config", "enable_cmd_vel", "cmd_vel_topic")
+
 
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
-            "robot", default_value="bamboo4WD_V4_WSEsp32",
-            description="Nom du fichier de source unique dans "
-                        "bamboo_base/config/robots/ (sans .yaml)."),
+            "robot",
+            description="Nom du robot (sans .yaml), OBLIGATOIRE, comme pour le STM32."),
+        DeclareLaunchArgument(
+            "robot_config", default_value="",
+            description="Chemin COMPLET du fichier canonique, pousse par le bringup."),
         DeclareLaunchArgument(
             "enable_cmd_vel", default_value="false",
             description="true = actuation moteur (roues surelevees obligatoires) ; "
                         "false = lecture seule. Defaut false, comme partout."),
+        DeclareLaunchArgument(
+            "cmd_vel_topic", default_value="cmd_vel",
+            description="Nom REEL de la consigne de deplacement ecoutee par la carte."),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 PathJoinSubstitution([
                     FindPackageShare("bamboo_base"), "launch", "driver.launch.py"])),
-            launch_arguments={
-                "robot": LaunchConfiguration("robot"),
-                "enable_cmd_vel": LaunchConfiguration("enable_cmd_vel"),
-            }.items(),
+            # Liste de PAIRES, jamais un dict (cf. bamboo_base/launch/drive.launch.py).
+            launch_arguments=[(n, LaunchConfiguration(n)) for n in _RELAYED],
         ),
     ])
