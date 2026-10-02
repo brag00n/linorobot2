@@ -58,6 +58,7 @@ from geometry_msgs.msg import Twist, TransformStamped
 from tf2_ros import TransformBroadcaster
 
 from bamboo_interfaces.msg import WheelRpm, Esp32Status
+from bamboo_base.driver_diagnostics import DriverDiagnostics
 
 from robot_control.communication.Esp32ComSerial import Esp32ComSerial
 
@@ -164,7 +165,31 @@ class Esp32MavlinkDriver(Node):
         # carte a pris la valeur vaut cette pause. La carte repond d'ordinaire en ~50 ms.
         self.declare_parameter("board_readback_timeout_s", 1.0)
 
+        # --- diagnostics (/diagnostics, lot BASCULE) ---
+        # MEMES taches et MEMES seuils de liaison que le driver STM32 (1,5 s = fraicheur du HUD
+        # du prototype, `bad > 2` = orange), via le module commun bamboo_base.driver_diagnostics.
+        self.declare_parameter("link_fresh_s", 1.5)
+        self.declare_parameter("link_error_s", 5.0)
+        self.declare_parameter("link_bad_warn", 2)
+        # Echelle de SON pack : 3S Li-ion du WaveShare UPS Module 3S (11,1 V nominal, 12,6 V
+        # pleine, docs/hardware_waveshare_ups_module_3s.md). 10,5 V "a surveiller" releve de la
+        # CHIMIE 3S, comme sur bambooSTM32YB ; 9,0 V = 3,0 V par cellule, plancher usuel du
+        # Li-ion. PAS le 9,6 V du STM32, qui est le seuil d'arret de la carte Yahboom. La fiche
+        # ne chiffre pas la protection de decharge du module : << A CONFIRMER >>.
+        self.declare_parameter("batt_warn_v", 10.5)
+        self.declare_parameter("batt_error_v", 9.0)
+        self.declare_parameter("batt_over_v", 13.0)
+
         g = lambda n: self.get_parameter(n).value
+        self.link_fresh_s = float(g("link_fresh_s"))
+        self.link_error_s = float(g("link_error_s"))
+        self.link_bad_warn = int(g("link_bad_warn"))
+        self.batt_warn_v = float(g("batt_warn_v"))
+        self.batt_error_v = float(g("batt_error_v"))
+        self.batt_over_v = float(g("batt_over_v"))
+        # Dernier snapshot du lien, GARDE par _tick qui l'appelle deja : le diagnostic ne
+        # relit rien sur le port.
+        self._snap = {}
         self.port = g("port")
         self.baud = int(g("baud"))
         rate = float(g("publish_rate_hz"))
@@ -246,6 +271,8 @@ class Esp32MavlinkDriver(Node):
         self.add_on_set_parameters_callback(self._on_set_parameters)
 
         self.timer = self.create_timer(1.0 / rate, self._tick)
+        # Diagnostics : les cinq taches communes. hardware_id = le SERVICE compose.
+        self._diag = DriverDiagnostics(self, "driver.esp32")
         self.get_logger().info(
             f"driver ESP32 MAVLink demarre (port={self.port}, baud={self.baud}, cpr={self.cpr}).")
 
@@ -479,6 +506,7 @@ class Esp32MavlinkDriver(Node):
         now = self.get_clock().now()
         stamp = now.to_msg()
         snap = self.link.snapshot()
+        self._snap = snap
         sp = self.link.encSpeed()
         cpr = self.link.cpr or self.cpr
 

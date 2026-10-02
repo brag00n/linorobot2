@@ -13,6 +13,9 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>bamboo_interfaces</exec_depend>
+  <!-- driver_diagnostics.py, partage par les drivers des deux robots (lot BASCULE). -->
+  <exec_depend>diagnostic_updater</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
