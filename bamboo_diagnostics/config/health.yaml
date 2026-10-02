@@ -1,0 +1,48 @@
+# ============================================================================
+# bamboo_health - seuils de l'observateur (cf. bamboo_diagnostics/health_node.py)
+# ============================================================================
+# Valeurs d'ORIGINE ecrites a cote, pour qu'un reglage ne derive pas en silence de ce qui l'a
+# fonde. Les seuils marques "a recaler" le seront a l'essai T26 de bambooSTM32YB, sur les
+# mesures reelles et non sur une intuition.
+bamboo_health:
+  ros__parameters:
+    period_s: 1.0
+    # La decouverte DDS met quelques secondes a peupler le graphe au boot.
+    startup_grace_s: 15.0
+
+    # Noeuds tiers, et le service compose (module) qui porte chacun -- MEME ORDRE.
+    watched_nodes: [ "gscam_node", "web_video_server", "camera_fps", "joy_linux_node",
+                     "rosbridge_websocket", "foxglove_bridge", "robot_state_publisher" ]
+    watched_modules: [ "bamboo_video", "bamboo_video", "bamboo_video", "bamboo_control",
+                       "rosbridge", "foxglovebridge", "robotdesc" ]
+
+    # Video : cadences publiees par camera_fps (qui recoit deja le flux). A recaler a T26.
+    capture_fps_topic: "/camera/capture_fps"
+    stream_fps_topic: "/camera/stream_fps"
+    capture_warn_hz: 5.0
+    stream_warn_hz: 5.0
+    fps_stale_s: 3.0
+
+    # Manette, couche materielle. Le NOM attendu reconnait le piege Home+Y ("Pro Controller" :
+    # connecte, js0 cree, mais muet faute de hid-nintendo dans ce noyau).
+    bt_adapter_path: "/sys/class/bluetooth/hci0"
+    gamepad_device: "/dev/input/js0"
+    gamepad_sysfs: "/sys/class/input/js0/device"
+    expected_gamepad_name: "GamepadX"
+    gamepad_state_topic: "/gamepad/connected"
+    gamepad_state_warn_hz: 1.0        # bamboo_teleop publie a 2 Hz
+
+    # MediaMTX : metriques Prometheus, lecture seule (cf. docker/mediamtx.yml).
+    mediamtx_metrics_url: "http://camera.h264:9998/metrics"
+    mediamtx_timeout_s: 1.0
+
+    # Systeme du RPi.
+    cpu_temp_warn_c: 70.0
+    cpu_temp_error_c: 80.0             # le firmware bride vers 80-85 degC
+    load_per_core_warn: 1.0            # 3,5-4,0 / 4 coeurs mesures le 2026-10-02 : a recaler
+    load_per_core_error: 1.5
+    mem_available_warn_pct: 15.0
+    mem_available_error_pct: 5.0
+    disk_path: "/"
+    disk_used_warn_pct: 85.0           # 82 % mesures le 2026-10-02
+    disk_used_error_pct: 95.0

@@ -27,7 +27,7 @@ set -eo pipefail
 # definies dereferencees), le sourcing echouerait avant la moindre compilation.
 
 WS=/root/linorobot2_ws
-PAQUETS_DEFAUT="bamboo_interfaces bamboo_base bamboo_video bamboo_videotracking bamboo_control bamboo_controler_YBStm32v3 bamboo4WD_V4_YBStm32_base"
+PAQUETS_DEFAUT="bamboo_interfaces bamboo_base bamboo_video bamboo_videotracking bamboo_control bamboo_diagnostics bamboo_controler_YBStm32v3 bamboo4WD_V4_YBStm32_base"
 PAQUETS="${*:-$PAQUETS_DEFAUT}"
 
 source "/opt/ros/${ROS_DISTRO:-humble}/setup.bash"

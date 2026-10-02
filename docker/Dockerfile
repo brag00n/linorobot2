@@ -222,6 +222,16 @@ RUN apt-get update && apt-get install -y \
  && ldconfig \
  && rm -rf /tmp/opencv-src /tmp/opencv-build
 
+# --- Diagnostics : la SEULE dependance des noeuds instrumentes --------------------------
+# diagnostic_updater (C++ et Python) est DEJA dans cette image, mais par dependance
+# transitive d'un autre paquet : on le DECLARE, sinon le retrait de ce paquet-la casserait
+# silencieusement les noeuds instrumentes. Cette ligne ne prendra effet qu'a la prochaine
+# reconstruction de l'image, et c'est voulu : la reconstruire coute PLUSIEURS HEURES
+# (constat du 2026-10-02 : ros:humble-ros-base a change de digest dans le registre, donc
+# aucune couche n'est plus en cache, OpenCV compris). L'agregateur, lui, vit dans sa propre
+# image legere, stage `diagnostics` en fin de fichier.
+RUN apt-get update && apt-get install -y ros-$ROS_DISTRO-diagnostic-updater
+
 ENTRYPOINT ["/entrypoint.sh"]
 
 FROM hardware AS build
@@ -266,3 +276,27 @@ COPY ./docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT [ "/entrypoint.sh" ]
 
+# --- Diagnostics : agregateur + observateur bamboo_health -----------------------------
+# IMAGE DEDIEE, sur le modele de rosbridge et foxglovebridge ci-dessus : ni OpenCV ni la
+# carte ne servent ici, et loger l'agregateur dans l'image `hardware` imposerait de la
+# reconstruire, soit plusieurs heures sur RPi4. Celle-ci se construit en quelques minutes.
+# Le paquet bamboo_diagnostics (pur Python) n'y est PAS copie : il est compile par
+# docker/rosbuild.sh dans l'espace de travail PARTAGE (volumes ws_build/ws_install), que le
+# service monte en lecture seule -- une seule facon de compiler pour tous les paquets.
+FROM --platform=$BUILDPLATFORM ros:${ROS_DISTRO}-ros-base as diagnostics
+
+RUN apt-get update && apt-get install -y \
+    ros-${ROS_DISTRO}-diagnostic-aggregator \
+    ros-${ROS_DISTRO}-diagnostic-updater \
+    wget
+
+# MEME profil DDS que l'image hardware (stage base, meme revision figee) : l'entrypoint
+# commun le designe, et sans lui Fast DDS signale une erreur XML puis retombe sur sa
+# configuration par defaut -- memoire partagee comprise -- au lieu de parler comme les
+# autres conteneurs du robot.
+WORKDIR /root
+RUN wget -O .shm_off.xml https://raw.githubusercontent.com/eProsima/Fast-DDS/107ea8d64942102696840cd7d3e4cf93fa7a143e/examples/cpp/dds/AdvancedConfigurationExample/shm_off.xml
+
+COPY ./docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT [ "/entrypoint.sh" ]

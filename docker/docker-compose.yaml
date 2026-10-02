@@ -483,6 +483,47 @@ services:
       ros2 launch bamboo_control control.launch.py
       robot:=${ROBOT} joy_dev:=${BAMBOO_JOY:-/dev/input/js0}"
 
+#--- Groupe DIAGNOSTICS (paquet bamboo_diagnostics, lot DIAGNOSTICS) : diagnostic_aggregator
+#    + observateur bamboo_health. Regroupe les /diagnostics de tous les composants par MODULE
+#    (un module = un service de ce fichier) et publie /diagnostics_agg (Foxglove, MCP) et
+#    /diagnostics_toplevel_state (pastille SANTE du HUD). Un composant qui se tait passe PERIME :
+#    c'est ce qui donne un statut aux noeuds MORTS, pas seulement aux vivants.
+#    IMAGE DEDIEE (stage `diagnostics`, cf. Dockerfile) : l'image `hardware` coute plusieurs
+#    heures a reconstruire, celle-ci quelques minutes. Le paquet est compile comme les autres
+#    par docker/rosbuild.sh, dans l'espace de travail PARTAGE : d'ou ws_build, ws_install ET les
+#    sources, tous trois aux MEMES chemins -- `--symlink-install` fait pointer install/ vers
+#    build/, qui pointe vers src/. Lecture seule : ce service ne compile rien.
+#    LECTURE SEULE AUSSI cote robot : aucun actionneur, aucun port serie (le CH340 reste au
+#    driver). /dev est monte pour CONSTATER la presence de /dev/input/js0, jamais l'ouvrir --
+#    ce serait un second lecteur du peripherique de joy_linux_node.
+  bamboo_diagnostics:
+    image: linorobot2-diagnostics:${ROS_DISTRO}
+    profiles: ["boot"]
+    restart: unless-stopped
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile
+      args:
+        ROS_DISTRO: ${ROS_DISTRO}
+      target: diagnostics
+    hostname: linorobot2-diagnostics-${ROS_DISTRO}
+    stdin_open: true
+    tty: true
+    networks:
+    - linorobot2.network
+    ipc: host
+    volumes:
+      - ..:/root/linorobot2_ws/src/linorobot2:ro
+      - ws_build:/root/linorobot2_ws/build:ro
+      - ws_install:/root/linorobot2_ws/install:ro
+      - /dev:/dev:ro
+    command: >
+      bash -lc "cd /root/linorobot2_ws &&
+      test -f install/setup.bash || echo 'ESPACE DE TRAVAIL NON CONSTRUIT -- lancer docker/rosbuild.sh dans un conteneur hardware (voir son en-tete)' >&2 &&
+      test -f install/setup.bash &&
+      source install/setup.bash &&
+      ros2 launch bamboo_diagnostics diagnostics.launch.py"
+
 #--- Controleur STM32 (Yahboom ROS Control Board V3.0, pont MAVLink sysid 1) : proprietaire
 #    UNIQUE du CH340. LECTURE SEULE par defaut (enable_cmd_vel:=false) : le pack 12,6 V arrive
 #    brut sur des moteurs 7,4 V. Les SERVOS, eux, passent par /servo/cmd et sont bornes cote

@@ -14,6 +14,43 @@ rtspAddress: :8554
 hlsAddress: :8888
 webrtcAddress: :8889
 
+# --- Metriques pour le diagnostic (lot DIAGNOSTICS, observateur bamboo_health) -----------
+# METRIQUES et non API, et c'est le choix de securite : l'action `api` permet aussi de
+# RECONFIGURER le serveur, `metrics` ne fait que LIRE (format Prometheus : etat des chemins,
+# octets, lecteurs). Le port 9998 n'est PAS publie sur l'hote (cf. docker-compose.yaml) : seul
+# le reseau compose l'atteint.
+metrics: yes
+metricsAddress: :9998
+
+# DEFINIR authInternalUsers REMPLACE les defauts embarques, il ne les complete pas. Les deux
+# premieres entrees sont donc la RECOPIE EXACTE des defauts de la v1.21.0 (mediamtx.yml amont,
+# tag v1.21.0) -- sans elles, plus aucun client ne pourrait lire le flux. Seule la troisieme est
+# ajoutee : l'action `metrics` depuis les reseaux Docker (172.16.0.0/12 couvre les pools par
+# defaut, donc un sous-reseau compose recree ailleurs reste couvert).
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: publish
+        path:
+      - action: read
+        path:
+      - action: playback
+        path:
+  - user: any
+    pass:
+    ips: ["127.0.0.1", "::1"]
+    permissions:
+      - action: api
+      - action: metrics
+      - action: pprof
+  - user: any
+    pass:
+    ips: ["172.16.0.0/12"]
+    permissions:
+      - action: metrics
+
 paths:
   # Flux camera : rtsp://<rpi>:8554/cam | http://<rpi>:8888/cam (HLS) | http://<rpi>:8889/cam (WebRTC)
   cam:

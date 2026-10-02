@@ -1,0 +1,212 @@
+# ============================================================================
+# diagnostic_aggregator - l'arbre MODULE -> COMPOSANT -> taches du robot
+# ============================================================================
+# MODULE = un service de docker/docker-compose.yaml, et c'est son nom qui ouvre le chemin :
+# un module en faute designe donc directement le conteneur a regarder.
+# COMPOSANT = un noeud (ou une couche materielle observee par bamboo_health). Chaque composant
+# est un GenericAnalyzer sur le prefixe "<composant>:" -- AVEC le deux-points, sinon un
+# composant dont le nom prolonge celui d'un autre serait range dans les deux.
+#
+# `expected` est ce qui donne un statut aux noeuds MORTS : une tache attendue qui ne vient
+# pas passe PERIMEE au bout de `timeout`, au lieu de disparaitre de l'arbre sans rien dire.
+# Les NOMS doivent etre exactement ceux que publie diagnostic_updater, "<noeud>: <tache>" --
+# une faute de frappe ici fait passer une tache saine pour morte.
+#
+# Ce qui n'est range nulle part (un noeud tiers qui publierait ses propres diagnostics hors
+# des prefixes ci-dessous) tombe dans la branche "Other" de l'agregateur : rien n'est perdu.
+analyzers:
+  ros__parameters:
+    path: Robot
+    pub_rate: 1.0
+
+    # --- Carte STM32 : la base roulante et ses capteurs ---------------------------------
+    driver_stm32:
+      type: diagnostic_aggregator/AnalyzerGroup
+      path: driver.stm32 (carte STM32)
+      analyzers:
+        driver:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: stm32_mavlink_driver
+          startswith: [ 'stm32_mavlink_driver:' ]
+          expected: [ 'stm32_mavlink_driver: liaison serie',
+                      'stm32_mavlink_driver: batterie',
+                      'stm32_mavlink_driver: imu',
+                      'stm32_mavlink_driver: configuration carte',
+                      'stm32_mavlink_driver: actuation' ]
+          timeout: 5.0
+
+    # --- Video : capture, multiplexage, diffusion web -----------------------------------
+    bamboo_video:
+      type: diagnostic_aggregator/AnalyzerGroup
+      path: bamboo_video (video)
+      analyzers:
+        gscam:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: gscam_node
+          startswith: [ 'gscam_node:' ]
+          expected: [ 'gscam_node: presence', 'gscam_node: cadence capture' ]
+          timeout: 5.0
+        mux:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: stream_mux_node
+          startswith: [ 'stream_mux_node:' ]
+          expected: [ 'stream_mux_node: flux video' ]
+          timeout: 5.0
+        web:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: web_video_server
+          startswith: [ 'web_video_server:' ]
+          expected: [ 'web_video_server: presence', 'web_video_server: cadence flux' ]
+          timeout: 5.0
+        fps:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: camera_fps
+          startswith: [ 'camera_fps:' ]
+          expected: [ 'camera_fps: presence' ]
+          timeout: 5.0
+
+    # --- Suivi : detection, reconnaissance, HUD, nacelle, apprentissage -----------------
+    bamboo_videotracking:
+      type: diagnostic_aggregator/AnalyzerGroup
+      path: bamboo_videotracking (suivi)
+      analyzers:
+        tracking:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: tracking_node
+          startswith: [ 'tracking_node:' ]
+          expected: [ 'tracking_node: detection' ]
+          timeout: 5.0
+        facerecog:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: facerecog_node
+          startswith: [ 'facerecog_node:' ]
+          expected: [ 'facerecog_node: reconnaissance' ]
+          timeout: 5.0
+        overlay:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: overlay_node
+          startswith: [ 'overlay_node:' ]
+          expected: [ 'overlay_node: incrustation', 'overlay_node: enregistrement mux' ]
+          timeout: 5.0
+        servocam:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: servocam_node
+          startswith: [ 'servocam_node:' ]
+          expected: [ 'servocam_node: nacelle' ]
+          timeout: 5.0
+        train:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: face_train_node
+          startswith: [ 'face_train_node:' ]
+          expected: [ 'face_train_node: apprentissage' ]
+          timeout: 5.0
+
+    # --- Manette : du materiel au robot, dans l'ordre de causalite ----------------------
+    # Les pannes des seances du 30/09 au 02/10 etaient TOUTES sous le noeud ROS (transport
+    # Bluetooth, liaison, mode de la manette) : chaque couche a donc son propre composant,
+    # pour que "manette absente" dise OU chercher. Le numero ouvre le chemin pour que
+    # l'affichage garde cet ordre, du plus bas au plus haut.
+    bamboo_control:
+      type: diagnostic_aggregator/AnalyzerGroup
+      path: bamboo_control (manette)
+      analyzers:
+        bt:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: 1 bluetooth
+          startswith: [ 'bluetooth:' ]
+          expected: [ 'bluetooth: adaptateur' ]
+          timeout: 5.0
+        js0:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: 2 js0
+          startswith: [ 'js0:' ]
+          expected: [ 'js0: peripherique' ]
+          timeout: 5.0
+        joy:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: 3 joy_linux_node
+          # Prefixe = le NOM COMPLET du statut de presence, a dessein : l'agregateur remet un
+          # statut a CHAQUE analyseur qui le reconnait, donc un prefixe "joy_linux_node:"
+          # reprendrait le statut que l'analyseur de rejet plus bas ecarte. Et `expected` seul
+          # ne suffit pas : cette version refuse un analyseur sans critere de selection.
+          startswith: [ 'joy_linux_node: presence' ]
+          expected: [ 'joy_linux_node: presence' ]
+          timeout: 5.0
+        teleop:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: 4 bamboo_teleop
+          startswith: [ 'bamboo_teleop:' ]
+          expected: [ 'bamboo_teleop: manette', 'bamboo_teleop: chemin servo',
+                      'bamboo_teleop: traction', 'bamboo_teleop: modes' ]
+          timeout: 5.0
+        state:
+          type: diagnostic_aggregator/GenericAnalyzer
+          # JAMAIS de '/' dans un chemin ni dans un nom de statut : l'agregateur le lit comme un
+          # SEPARATEUR et cree un niveau parasite (constate a T26 : "/gamepad/connected" avait
+          # produit une branche "connected").
+          path: 5 gamepad_connected
+          startswith: [ 'gamepad_state:' ]
+          expected: [ 'gamepad_state: sortie' ]
+          timeout: 5.0
+        # joy_linux_node publie son PROPRE diagnostic, "Joystick not open." en ERROR des que la
+        # manette est eteinte : il mettrait le robot ENTIER en ERROR chaque fois qu'on la range,
+        # contre la regle du lot (manette optionnelle = WARN). On l'ecarte, sans rien perdre :
+        # il double exactement le composant 2 (js0 present ou non), et un /joy qui ne coulerait
+        # pas malgre un js0 present se lit dans la tache "manette" de bamboo_teleop.
+        joy_driver_status:
+          type: diagnostic_aggregator/DiscardAnalyzer
+          path: joy_linux_driver_status
+          # `startswith` et non `name` : cette version (4.0.7) refuse `name` ici ("not
+          # initialized with any way of checking diagnostics"), et l'echec d'UN analyseur
+          # fait echouer son groupe puis corrompt le chemin des modules SUIVANTS
+          # ("/Robot//Robot/..."). Un parametre faux desorganise donc tout l'arbre.
+          startswith: [ 'joy_linux_node: Joystick Driver Status' ]
+
+    # --- Infrastructure : ponts, description du robot, flux H.264 -----------------------
+    infrastructure:
+      type: diagnostic_aggregator/AnalyzerGroup
+      path: infrastructure
+      analyzers:
+        rosbridge:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: rosbridge
+          startswith: [ 'rosbridge_websocket:' ]
+          expected: [ 'rosbridge_websocket: presence' ]
+          timeout: 5.0
+        foxglove:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: foxglovebridge
+          startswith: [ 'foxglove_bridge:' ]
+          expected: [ 'foxglove_bridge: presence' ]
+          timeout: 5.0
+        robotdesc:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: robotdesc
+          startswith: [ 'robot_state_publisher:' ]
+          expected: [ 'robot_state_publisher: presence' ]
+          timeout: 5.0
+        mediamtx:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: camera.h264
+          startswith: [ 'mediamtx:' ]
+          expected: [ 'mediamtx: flux H.264' ]
+          timeout: 5.0
+
+    # --- Systeme du RPi ------------------------------------------------------------------
+    systeme:
+      type: diagnostic_aggregator/GenericAnalyzer
+      path: systeme (RPi)
+      startswith: [ 'systeme:' ]
+      expected: [ 'systeme: temperature CPU', 'systeme: alimentation', 'systeme: charge CPU',
+                  'systeme: memoire', 'systeme: disque' ]
+      timeout: 5.0
+
+    # --- Le diagnostic lui-meme ----------------------------------------------------------
+    # S'il manquait, tout ce qu'observe bamboo_health passerait PERIME d'un coup : ce statut
+    # dit alors que c'est l'OBSERVATEUR qui manque, pas les quinze composants.
+    diagnostics:
+      type: diagnostic_aggregator/GenericAnalyzer
+      path: bamboo_diagnostics
+      startswith: [ 'bamboo_health:' ]
+      expected: [ 'bamboo_health: observateur' ]
+      timeout: 5.0

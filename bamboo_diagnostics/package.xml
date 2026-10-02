@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>bamboo_diagnostics</name>
+  <version>0.0.0</version>
+  <description>Diagnostics du robot bamboo4WD_V4 : diagnostic_aggregator regroupe les /diagnostics de tous les composants par MODULE (un module = un service docker-compose), et l'observateur bamboo_health donne un statut aux composants qu'on ne peut pas instrumenter (noeuds tiers, MediaMTX, lien Bluetooth, systeme du RPi). Lecture seule : aucun actionneur, aucun port serie.</description>
+  <maintainer email="titi28011976@users.noreply.github.com">Titi28011976</maintainer>
+  <license>Apache 2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
+  <!-- Fourni par l'image dediee `diagnostics` (Dockerfile), pas par l'image hardware. -->
+  <exec_depend>diagnostic_aggregator</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
