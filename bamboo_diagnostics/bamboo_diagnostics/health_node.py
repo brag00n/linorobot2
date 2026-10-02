@@ -23,6 +23,7 @@ OK = nominal, y compris un etat INFORMATIF. Une manette absente est un WARN : el
 optionnelle, et la signaler en ERROR rendrait le robot "en panne" chaque fois qu'on la range.
 """
 
+import collections
 import os
 import shutil
 import time
@@ -145,8 +146,13 @@ class HealthNode(Node):
         # Systeme du RPi. Seuils a recaler a T26 sur les mesures reelles.
         self._tempWarn = float(p("cpu_temp_warn_c", 70.0).value)
         self._tempErr = float(p("cpu_temp_error_c", 80.0).value)
-        self._loadWarn = float(p("load_per_core_warn", 1.0).value)
-        self._loadErr = float(p("load_per_core_error", 1.5).value)
+        # OCCUPATION CPU (et non charge moyenne, cf. _cpuBusy) : seuils en % du temps CPU
+        # total, sur une fenetre glissante -- "soutenu", pas la rafale d'une trame.
+        self._busyWarn = float(p("cpu_busy_warn_pct", 85.0).value)
+        self._busyErr = float(p("cpu_busy_error_pct", 95.0).value)
+        self._busyWin = max(self._period, float(p("cpu_window_s", 10.0).value))
+        # Echantillons (instant, jiffies inoccupes, jiffies totaux) de /proc/stat.
+        self._cpuSamples = collections.deque()
         self._memWarn = float(p("mem_available_warn_pct", 15.0).value)
         self._memErr = float(p("mem_available_error_pct", 5.0).value)
         self._diskPath = p("disk_path", "/").value
@@ -274,6 +280,50 @@ class HealthNode(Node):
                               "publie (%.1f Hz)" % hz, vals))
         return out
 
+    def _cpuBusy(self, hw):
+        """Taux d'OCCUPATION du CPU sur la fenetre glissante, depuis /proc/stat.
+
+        Remplace la charge moyenne (load average), et c'est mesure : charge 5,6 sur 4 coeurs
+        alors que le CPU etait inoccupe 20 % du temps (2026-10-02). La charge compte des FILS
+        executables, et le suivi en reveille plusieurs a CHAQUE trame qui font la queue
+        quelques millisecondes puis se rendorment : elle prenait ces rafales pour une file
+        permanente. L'occupation, elle, est le temps CPU reellement consomme -- le chiffre
+        de `top`. La pression CPU (PSI) aurait ete la meilleure mesure, mais ce noyau ne
+        l'expose pas (/proc/pressure/cpu absent). La charge reste AFFICHEE, a titre
+        informatif, mais ne decide plus du niveau.
+        /proc/stat n'est pas isole par Docker : c'est le RPi ENTIER, tous conteneurs.
+        """
+        name = "systeme: occupation CPU"
+        line = (read_text("/proc/stat") or "").splitlines()
+        fields = line[0].split() if line else []
+        if len(fields) < 9 or fields[0] != "cpu":
+            return status(name, hw, WARN, "/proc/stat illisible")
+        # user nice system idle iowait irq softirq steal : guest/guest_nice sont DEJA inclus
+        # dans user/nice, les ajouter compterait deux fois.
+        v = [int(x) for x in fields[1:9]]
+        idle, total = v[3] + v[4], sum(v)
+        now = time.monotonic()
+        self._cpuSamples.append((now, idle, total))
+        while len(self._cpuSamples) > 2 and now - self._cpuSamples[1][0] >= self._busyWin:
+            self._cpuSamples.popleft()
+        t0, idle0, total0 = self._cpuSamples[0]
+        vals = []
+        try:
+            l1, l5, l15 = os.getloadavg()
+            ncpu = os.cpu_count() or 1
+            vals = [("charge_par_coeur", "%.2f" % (l1 / ncpu)), ("load1", "%.2f" % l1),
+                    ("load5", "%.2f" % l5), ("load15", "%.2f" % l15), ("coeurs", ncpu)]
+        except OSError:
+            pass
+        if total - total0 <= 0:
+            return status(name, hw, OK, "mesure en cours (premier echantillon)", vals)
+        busy = 100.0 * (1.0 - (idle - idle0) / float(total - total0))
+        span = now - t0
+        vals = [("occupation_pct", "%.0f" % busy), ("fenetre_s", "%.0f" % span),
+                ("seuil_warn_pct", self._busyWarn), ("seuil_error_pct", self._busyErr)] + vals
+        lvl = ERROR if busy >= self._busyErr else WARN if busy >= self._busyWarn else OK
+        return status(name, hw, lvl, "%.0f %% occupe sur %.0f s" % (busy, span), vals)
+
     @staticmethod
     def _btBlocked():
         """Raison du blocage rfkill d'un emetteur Bluetooth, ou '' s'il ne l'est pas."""
@@ -349,18 +399,7 @@ class HealthNode(Node):
             else:
                 out.append(status("systeme: alimentation", hw, OK,
                                   "aucune sous-tension ni bridage", vals))
-        # Charge CPU, ramenee au coeur.
-        try:
-            l1, l5, l15 = os.getloadavg()
-            ncpu = os.cpu_count() or 1
-            per = l1 / ncpu
-            lvl = ERROR if per >= self._loadErr else WARN if per >= self._loadWarn else OK
-            out.append(status("systeme: charge CPU", hw, lvl,
-                              "%.2f par coeur (%d coeurs)" % (per, ncpu),
-                              [("load1", "%.2f" % l1), ("load5", "%.2f" % l5),
-                               ("load15", "%.2f" % l15), ("coeurs", ncpu)]))
-        except OSError:
-            out.append(status("systeme: charge CPU", hw, WARN, "loadavg illisible"))
+        out.append(self._cpuBusy(hw))
         # Memoire disponible.
         mem = {}
         for line in (read_text("/proc/meminfo") or "").splitlines():

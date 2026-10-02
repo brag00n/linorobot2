@@ -199,7 +199,7 @@ analyzers:
       type: diagnostic_aggregator/GenericAnalyzer
       path: systeme (RPi)
       startswith: [ 'systeme:' ]
-      expected: [ 'systeme: temperature CPU', 'systeme: alimentation', 'systeme: charge CPU',
+      expected: [ 'systeme: temperature CPU', 'systeme: alimentation', 'systeme: occupation CPU',
                   'systeme: memoire', 'systeme: disque' ]
       timeout: 5.0
 
