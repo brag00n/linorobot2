@@ -1,0 +1,31 @@
+# ============================================================================
+# diagnostic_aggregator - partie PROPRE a bambooSTM32YB (bamboo4WD_V4_YBStm32)
+# ============================================================================
+# Empilee apres aggregator.yaml par diagnostics.launch.py quand robot:=bamboo4WD_V4_YBStm32.
+analyzers:
+  ros__parameters:
+    # --- Carte STM32 : la base roulante et ses capteurs ---------------------------------
+    driver_stm32:
+      type: diagnostic_aggregator/AnalyzerGroup
+      path: driver.stm32 (carte STM32)
+      analyzers:
+        driver:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: stm32_mavlink_driver
+          startswith: [ 'stm32_mavlink_driver:' ]
+          expected: [ 'stm32_mavlink_driver: liaison serie',
+                      'stm32_mavlink_driver: batterie',
+                      'stm32_mavlink_driver: imu',
+                      'stm32_mavlink_driver: configuration carte',
+                      'stm32_mavlink_driver: actuation' ]
+          timeout: 5.0
+
+    # --- La nacelle : composant du groupe de suivi, sur CE robot seulement ------------
+    bamboo_videotracking:
+      analyzers:
+        servocam:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: servocam_node
+          startswith: [ 'servocam_node:' ]
+          expected: [ 'servocam_node: nacelle' ]
+          timeout: 5.0

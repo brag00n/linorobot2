@@ -14,26 +14,18 @@
 #
 # Ce qui n'est range nulle part (un noeud tiers qui publierait ses propres diagnostics hors
 # des prefixes ci-dessous) tombe dans la branche "Other" de l'agregateur : rien n'est perdu.
+# PARTIE COMMUNE aux deux robots (lot BASCULE). Ce qui n'existe que sur UN robot vit dans
+# aggregator_<robot>.yaml, empile apres celui-ci par diagnostics.launch.py (`robot:=`) :
+#   * le module du DRIVER de carte (driver.stm32 ou driver.esp32) ;
+#   * le composant servocam_node du suivi, qui n'est charge que sur un robot A NACELLE.
+# Sans ce decoupage, l'arbre de BambooWS porterait a vie un module driver.stm32 et un
+# servocam_node PERIMES -- et un diagnostic qui ment en permanence n'est plus lu.
+# ROS FUSIONNE les parametres imbriques des deux fichiers : un composant du fichier de robot
+# s'ajoute donc au groupe declare ici (bamboo_videotracking.analyzers.servocam).
 analyzers:
   ros__parameters:
     path: Robot
     pub_rate: 1.0
-
-    # --- Carte STM32 : la base roulante et ses capteurs ---------------------------------
-    driver_stm32:
-      type: diagnostic_aggregator/AnalyzerGroup
-      path: driver.stm32 (carte STM32)
-      analyzers:
-        driver:
-          type: diagnostic_aggregator/GenericAnalyzer
-          path: stm32_mavlink_driver
-          startswith: [ 'stm32_mavlink_driver:' ]
-          expected: [ 'stm32_mavlink_driver: liaison serie',
-                      'stm32_mavlink_driver: batterie',
-                      'stm32_mavlink_driver: imu',
-                      'stm32_mavlink_driver: configuration carte',
-                      'stm32_mavlink_driver: actuation' ]
-          timeout: 5.0
 
     # --- Video : capture, multiplexage, diffusion web -----------------------------------
     bamboo_video:
@@ -89,12 +81,6 @@ analyzers:
           path: overlay_node
           startswith: [ 'overlay_node:' ]
           expected: [ 'overlay_node: incrustation', 'overlay_node: enregistrement mux' ]
-          timeout: 5.0
-        servocam:
-          type: diagnostic_aggregator/GenericAnalyzer
-          path: servocam_node
-          startswith: [ 'servocam_node:' ]
-          expected: [ 'servocam_node: nacelle' ]
           timeout: 5.0
         train:
           type: diagnostic_aggregator/GenericAnalyzer

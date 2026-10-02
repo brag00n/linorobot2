@@ -1,0 +1,23 @@
+# ============================================================================
+# diagnostic_aggregator - partie PROPRE a BambooWS (bamboo4WD_V4_WSEsp32)
+# ============================================================================
+# Empilee apres aggregator.yaml par diagnostics.launch.py quand robot:=bamboo4WD_V4_WSEsp32.
+# PAS de servocam_node : ce robot n'a aucune nacelle (suivi en CAMERA FIXE).
+analyzers:
+  ros__parameters:
+    # --- Carte ESP32 : la base roulante et ses capteurs -------------------------------
+    # MEMES taches que driver.stm32 (module commun bamboo_base.driver_diagnostics).
+    driver_esp32:
+      type: diagnostic_aggregator/AnalyzerGroup
+      path: driver.esp32 (carte ESP32)
+      analyzers:
+        driver:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: esp32_mavlink_driver
+          startswith: [ 'esp32_mavlink_driver:' ]
+          expected: [ 'esp32_mavlink_driver: liaison serie',
+                      'esp32_mavlink_driver: batterie',
+                      'esp32_mavlink_driver: imu',
+                      'esp32_mavlink_driver: configuration carte',
+                      'esp32_mavlink_driver: actuation' ]
+          timeout: 5.0
