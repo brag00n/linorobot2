@@ -291,12 +291,20 @@ elif [ "$APPLY" = "1" ]; then
         # Aucune ligne a decommenter : on l'ajoute sous [General], la section qui la lit.
         sed -i '/^\[General\]/a AlwaysPairable = true' "$BT_CONF"
     fi
-    systemctl restart bluetooth && sleep 2
-    # Verdict lu dans le NOYAU, pas dans le fichier : c'est le drapeau qui compte.
-    if btmgmt info 2>/dev/null | grep -q 'current settings:.*bondable'; then
-        act "AlwaysPairable = true pose, drapeau bondable actif"
+    if [ -d /sys/class/bluetooth ] && [ -n "$(ls -A /sys/class/bluetooth 2>/dev/null)" ]; then
+        systemctl restart bluetooth && sleep 2
+        # Verdict lu dans le NOYAU, pas dans le fichier : c'est le drapeau qui compte.
+        if btmgmt info 2>/dev/null | grep -q 'current settings:.*bondable'; then
+            act "AlwaysPairable = true pose, drapeau bondable actif"
+        else
+            warn "AlwaysPairable pose mais drapeau bondable ABSENT (btmgmt info) : a examiner"
+        fi
     else
-        warn "AlwaysPairable pose mais drapeau bondable ABSENT (btmgmt info) : a examiner"
+        # RPi VIERGE : l'etape 1 vient d'installer bluez (dependance de pi-bluetooth, qui
+        # fournit ce main.conf) mais la radio n'est pas encore enumeree. Le fichier est donc
+        # pose, et c'est suffisant -- bluetoothd le lit a son demarrage. Exiger ici le drapeau
+        # du noyau produirait une FAUSSE ALERTE sur un provisionnement par ailleurs correct.
+        act "AlwaysPairable = true pose ; actif au prochain demarrage de bluetoothd (radio pas encore enumeree)"
     fi
 else
     warn "AlwaysPairable absent de $BT_CONF : la manette s'appairera SANS se lier"
