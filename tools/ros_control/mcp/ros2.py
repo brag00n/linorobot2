@@ -415,6 +415,89 @@ _KEY_TOPICS = [
 ]
 
 
+_DIAG_LEVELS = {0: "OK", 1: "WARN", 2: "ERROR", 3: "STALE"}
+# Ordre de GRAVITE pour le tri : STALE (le composant s'est tu) passe avant ERROR, parce qu'un
+# composant muet ne dit plus rien de lui-meme -- c'est le premier a aller voir.
+_DIAG_RANK = {3: 0, 2: 1, 1: 2, 0: 3}
+
+
+def _diag_level(v):
+    """Niveau d'un DiagnosticStatus tel que rosbridge le rend.
+
+    `level` est un `byte` en ROS 2, et rosbridge peut le transmettre en entier, en
+    caractere ou en base64 selon sa version : on accepte les trois plutot que d'en
+    supposer un.
+    """
+    if isinstance(v, int):
+        return v
+    if isinstance(v, list) and v:
+        return _diag_level(v[0])
+    if isinstance(v, str) and v:
+        if len(v) == 1:
+            return ord(v)
+        try:
+            import base64
+            raw = base64.b64decode(v)
+            return raw[0] if raw else -1
+        except Exception:                                   # noqa: BLE001
+            return -1
+    return -1
+
+
+def t_diagnostics(args):
+    topic = args.get("topic", "/diagnostics_agg")
+    problems_only = bool(args.get("problems_only", False))
+    show_values = bool(args.get("values", False))
+    flt = (args.get("module") or "").lower()
+    msgs = _bridge().subscribe_collect(topic, ECHO_TIMEOUT, count=1,
+                                       msg_type="diagnostic_msgs/msg/DiagnosticArray")
+    if not msgs:
+        return ("Aucun message sur %s : service bamboo_diagnostics arrete ? "
+                "(docker compose up -d bamboo_diagnostics)" % topic)
+    items = []
+    for st in msgs[0].get("status", []):
+        name = st.get("name", "")
+        items.append((name, _diag_level(st.get("level")), st.get("message", ""),
+                      st.get("values", [])))
+    # La racine est lue AVANT le filtre : sinon un filtre par module la retire, et le niveau
+    # global du robot s'afficherait "?" alors qu'il est connu.
+    root = next((i for i in items if i[0] == "/Robot"), None)
+    if flt:
+        items = [i for i in items if flt in i[0].lower()]
+    by_name = {i[0]: i for i in items}
+    keep = set(by_name)
+    if problems_only:
+        # Un probleme garde ses ANCETRES : une tache en faute sans son module et son
+        # composant ne dirait pas OU elle se trouve.
+        keep = set()
+        for name, lvl, _, _ in items:
+            if lvl != 0:
+                parts = name.split("/")
+                for k in range(2, len(parts) + 1):
+                    keep.add("/".join(parts[:k]))
+    rows = sorted((i for i in items if i[0] in keep), key=lambda i: i[0])
+    if not rows:
+        return "%s : aucun probleme." % topic if problems_only else "%s : arbre vide." % topic
+    head = ("%s -- niveau global : %s (%s)"
+            % (topic, _DIAG_LEVELS.get(root[1], "?") if root else "?",
+               root[2] if root else "racine /Robot absente"))
+    out = [head]
+    worst = sorted(rows, key=lambda i: (_DIAG_RANK.get(i[1], 9), i[0]))
+    bad = [i for i in worst if i[1] != 0 and i[0].count("/") >= 3]
+    if bad:
+        out.append("  a regarder d'abord : " + ", ".join(
+            "%s [%s]" % (i[0].rsplit("/", 1)[-1], _DIAG_LEVELS.get(i[1], "?"))
+            for i in bad[:5]))
+    for name, lvl, msg, values in rows:
+        depth = max(0, name.count("/") - 1)
+        out.append("%-5s %s%s -- %s" % (_DIAG_LEVELS.get(lvl, "?"), "  " * depth,
+                                         name.rsplit("/", 1)[-1], msg))
+        if show_values and values:
+            for kv in values:
+                out.append("      %s%s = %s" % ("  " * depth, kv.get("key"), kv.get("value")))
+    return "\n".join(out)
+
+
 def t_ros2_status(args):
     br = _bridge()
     try:
@@ -491,6 +574,21 @@ TOOLS = [
      "description": "Resume d'un BatteryState (defaut /battery) : tension, courant, pourcentage.",
      "inputSchema": {"type": "object", "properties": {
          "topic": {"type": "string", "description": "topic batterie (defaut /battery)"}}}},
+    {"name": "diagnostics",
+     "description": "Arbre de DIAGNOSTIC du robot (/diagnostics_agg, service "
+                    "bamboo_diagnostics) : module (= service compose) -> composant "
+                    "(noeud ou couche materielle) -> taches, avec leur niveau "
+                    "OK/WARN/ERROR/STALE. STALE = composant attendu qui se tait (noeud "
+                    "mort). Commence par la liste 'a regarder d'abord'.",
+     "inputSchema": {"type": "object", "properties": {
+         "problems_only": {"type": "boolean",
+                           "description": "ne garder que les non-OK et leurs ancetres"},
+         "values": {"type": "boolean",
+                    "description": "afficher les valeurs cle/valeur de chaque tache"},
+         "module": {"type": "string",
+                    "description": "filtre (sous-chaine du chemin, ex. bamboo_control)"},
+         "topic": {"type": "string",
+                   "description": "topic agrege (defaut /diagnostics_agg)"}}}},
     {"name": "node_info",
      "description": "Detail d'un noeud (rosapi/node_details) : topics publies, topics "
                     "souscrits, services servis. Repond a \"qui est au bout de ce "
@@ -516,6 +614,7 @@ HANDLERS = {
     "scan": t_scan,
     "imu": t_imu,
     "battery": t_battery,
+    "diagnostics": t_diagnostics,
     "node_info": t_node_info,
     "ros2_status": t_ros2_status,
 }
