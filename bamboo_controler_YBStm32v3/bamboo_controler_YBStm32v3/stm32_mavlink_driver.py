@@ -85,6 +85,8 @@ from sensor_msgs.msg import Imu, BatteryState, MagneticField, JointState
 from geometry_msgs.msg import Twist, TransformStamped
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
+from diagnostic_msgs.msg import DiagnosticStatus
+from diagnostic_updater import Updater
 
 from bamboo_interfaces.msg import WheelRpm, Stm32Status, ServoCmd
 from bamboo_interfaces.srv import Nudge
@@ -259,6 +261,19 @@ class Stm32MavlinkDriver(Node):
         # auto-scan sonde chaque candidat ~0,8 s.
         self._declare_host("board_connect_timeout_s", 5.0)
 
+        # --- diagnostics (/diagnostics, lot DIAGNOSTICS) ---
+        # Fraicheur d'une trame : 1,5 s est le seuil du HUD du prototype (RobotMain.py, pastille
+        # "fresh" des cartes), repris tel quel pour qu'un essai proto se lise pareil.
+        self._declare_host("link_fresh_s", 1.5)
+        self._declare_host("link_error_s", 5.0)
+        # Trames en erreur par periode de diagnostic : `bad > 2` vire a l'orange chez le proto.
+        self._declare_host("link_bad_warn", 2)
+        # Echelle de la batterie 3S (docs/hardware_yahboom_ros_control_board_v3.md) : 10,5 V
+        # "a surveiller", 9,6 V arret de la carte (app_bat.c), 13,0 V surtension microcode.
+        self._declare_host("batt_warn_v", 10.5)
+        self._declare_host("batt_error_v", 9.6)
+        self._declare_host("batt_over_v", 13.0)
+
         g = lambda n: self.get_parameter(n).value
         self.port = g("port")
         self.baud = int(g("baud"))
@@ -301,6 +316,16 @@ class Stm32MavlinkDriver(Node):
         self.board_log_level = int(g("board_log_level"))
         self.readback_timeout = float(g("board_readback_timeout_s"))
         self.connect_timeout = float(g("board_connect_timeout_s"))
+        self.link_fresh_s = float(g("link_fresh_s"))
+        self.link_error_s = float(g("link_error_s"))
+        self.link_bad_warn = int(g("link_bad_warn"))
+        self.batt_warn_v = float(g("batt_warn_v"))
+        self.batt_error_v = float(g("batt_error_v"))
+        self.batt_over_v = float(g("batt_over_v"))
+        # Dernier snapshot du lien, GARDE par _tick qui l'appelle deja : le diagnostic ne
+        # relit rien sur le port, il lit ce que la boucle de publication vient de voir.
+        self._snap = {}
+        self._diag_ok = self._diag_bad = None
         # Derniere relecture reussie de la SRAM de la carte, publiee dans Stm32Status.
         self.board_cfg = None
 
@@ -379,6 +404,15 @@ class Stm32MavlinkDriver(Node):
         self.add_on_set_parameters_callback(self._on_set_parameters)
 
         self.timer = self.create_timer(1.0 / rate, self._tick)
+
+        # Diagnostics : hardware_id = le SERVICE compose, c'est-a-dire le module de l'arbre.
+        self._diag = Updater(self)
+        self._diag.setHardwareID("driver.stm32")
+        self._diag.add("liaison serie", self._diag_link)
+        self._diag.add("batterie", self._diag_battery)
+        self._diag.add("imu", self._diag_imu)
+        self._diag.add("configuration carte", self._diag_board_cfg)
+        self._diag.add("actuation", self._diag_actuation)
         self.get_logger().info(
             f"driver STM32 MAVLink demarre (port={self.port}, baud={self.baud}, "
             f"cpr={self.cpr}, axes servo={sorted(self.axes)}).")
@@ -838,10 +872,123 @@ class Stm32MavlinkDriver(Node):
         self.link.sendCmdVel(float(msg.linear.x), float(msg.angular.z))
         self._last_cmd_t = self.get_clock().now()
 
+    # --- diagnostics ----------------------------------------------------------
+    def _link_age(self):
+        """Age de la trame la PLUS RECENTE, tous flux confondus ; None si rien n'est arrive.
+
+        C'est la fraicheur de la LIAISON. La batterie s'y rattache : elle arrive aussi par
+        une trame `battery` qui ne date rien (RobotComSerial ne pose d'horodatage que sur
+        vitesse, attitude, encodeurs, RPM et magneto), donc sa propre fraicheur est inconnue,
+        et la tension est la derniere CONNUE sur un lien qui vit.
+        """
+        ages = [self._snap.get(k) for k in
+                ("speed_age", "imu_age", "enc_age", "rpm_age", "mag_age")]
+        ages = [a for a in ages if a is not None]
+        return min(ages) if ages else None
+
+    def _diag_link(self, stat):
+        snap = self._snap
+        ok, bad = snap.get("ok"), snap.get("bad")
+        d_ok = d_bad = 0
+        if ok is not None and self._diag_ok is not None:
+            d_ok, d_bad = ok - self._diag_ok, bad - self._diag_bad
+        self._diag_ok, self._diag_bad = ok, bad
+        age = self._link_age()
+        stat.add("port", str(self.link.port))
+        stat.add("sysid", str(self.link.rx_sysid))
+        stat.add("trames_ok_periode", str(d_ok))
+        stat.add("trames_bad_periode", str(d_bad))
+        stat.add("trames_ok_total", str(ok))
+        stat.add("trames_bad_total", str(bad))
+        for k in ("speed_age", "imu_age", "enc_age", "rpm_age", "mag_age"):
+            a = snap.get(k)
+            stat.add(k, "jamais" if a is None else "%.2f" % a)
+        if not self.link.connected:
+            stat.summary(DiagnosticStatus.ERROR,
+                         "port %s non ouvert : %s" % (self.link.port, self.link.last_err))
+        elif age is None:
+            stat.summary(DiagnosticStatus.ERROR, "port ouvert, aucune trame recue de la carte")
+        elif age > self.link_error_s:
+            stat.summary(DiagnosticStatus.ERROR, "plus aucune trame depuis %.1f s" % age)
+        elif age > self.link_fresh_s:
+            stat.summary(DiagnosticStatus.WARN, "trames en retard : %.1f s" % age)
+        elif d_bad > self.link_bad_warn:
+            stat.summary(DiagnosticStatus.WARN, "%d trames en erreur sur la periode" % d_bad)
+        else:
+            stat.summary(DiagnosticStatus.OK, "liaison vivante (%d trames/periode)" % d_ok)
+        return stat
+
+    def _diag_battery(self, stat):
+        v = self._snap.get("battery")
+        age = self._link_age()
+        stat.add("seuil_warn_v", "%.1f" % self.batt_warn_v)
+        stat.add("seuil_error_v", "%.1f" % self.batt_error_v)
+        stat.add("seuil_surtension_v", "%.1f" % self.batt_over_v)
+        # PERIMEE, jamais "critique", quand c'est la LIAISON qui manque : /battery publie alors
+        # 0 V (snap.get(...) or 0.0), et un diagnostic qui le croirait crierait a la batterie
+        # vide au lieu de dire que la carte ne repond plus.
+        if v is None or age is None or age > self.link_error_s:
+            stat.summary(DiagnosticStatus.STALE, "pas de mesure : liaison avec la carte perdue")
+            return stat
+        stat.add("tension_v", "%.2f" % v)
+        if v >= self.batt_over_v:
+            stat.summary(DiagnosticStatus.ERROR, "SURTENSION %.2f V" % v)
+        elif v < self.batt_error_v:
+            stat.summary(DiagnosticStatus.ERROR, "%.2f V : sous le seuil d'arret de la carte" % v)
+        elif v < self.batt_warn_v:
+            stat.summary(DiagnosticStatus.WARN, "%.2f V : a surveiller" % v)
+        else:
+            stat.summary(DiagnosticStatus.OK, "%.2f V" % v)
+        return stat
+
+    def _diag_imu(self, stat):
+        a = self._snap.get("imu_age")
+        for k in ("roll", "pitch", "yaw"):
+            val = self._snap.get(k)
+            stat.add(k + "_deg", "?" if val is None else "%.1f" % val)
+        stat.add("imu_age", "jamais" if a is None else "%.2f" % a)
+        if a is None:
+            stat.summary(DiagnosticStatus.ERROR, "aucune trame d'attitude recue")
+        elif a > self.link_error_s:
+            stat.summary(DiagnosticStatus.ERROR, "attitude figee depuis %.1f s" % a)
+        elif a > self.link_fresh_s:
+            stat.summary(DiagnosticStatus.WARN, "attitude en retard : %.1f s" % a)
+        else:
+            stat.summary(DiagnosticStatus.OK, "attitude fraiche")
+        return stat
+
+    def _diag_board_cfg(self, stat):
+        cfg = self.board_cfg
+        if cfg is None:
+            # WARN et non ERROR : la carte tourne alors sur ce qu'elle a en FLASH, peut-etre
+            # une configuration d'une session precedente, et un nouvel essai part toutes les 2 s.
+            stat.summary(DiagnosticStatus.WARN,
+                         "relecture non prouvee : la carte tourne peut-etre sur sa flash")
+            return stat
+        stat.add("cpr", "%.0f" % cfg["cpr"])
+        stat.add("circ_mm", "%.1f" % cfg["circ_mm"])
+        stat.add("apb_mm", "%.1f" % cfg["apb_mm"])
+        stat.summary(DiagnosticStatus.OK, "configuration poussee et relue")
+        return stat
+
+    def _diag_actuation(self, stat):
+        stat.add("enable_cmd_vel", str(self.enable_cmd_vel))
+        stat.add("enable_nudge_service", str(self.srv_nudge is not None))
+        stat.add("servo_ombre_deg", ",".join(
+            "-" if a != a else "%.0f" % a for a in self._servo_shadow))
+        # ARMEE = WARN, et ce n'est pas une panne : sur ce robot le pack 12,6 V arrive brut sur
+        # des moteurs 7,4 V, donc le defaut est desarme et tout armement doit se voir.
+        if self.enable_cmd_vel:
+            stat.summary(DiagnosticStatus.WARN, "traction ARMEE (enable_cmd_vel=true)")
+        else:
+            stat.summary(DiagnosticStatus.OK, "traction desarmee (enable_cmd_vel=false)")
+        return stat
+
     # --- boucle de publication ---------------------------------------------
     def _tick(self):
         now = self.get_clock().now()
         snap = self.link.snapshot()
+        self._snap = snap
         sp = self.link.encSpeed()
         cpr = self.link.cpr or self.cpr
 
