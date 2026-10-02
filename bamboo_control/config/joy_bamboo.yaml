@@ -199,6 +199,11 @@ bamboo_teleop:
     # recoive quand meme le dernier etat demande.
     nudge_service: "/servo/nudge"
     mode_topic: "/videotracking/mode_cmd"
+    # Etat de la manette (std_msgs/Bool, 2 Hz) pour la pastille MANETTE du HUD : vrai si
+    # un /joy est arrive dans `joy_timeout_s`. overlay_node l'ecoute sous le MEME nom
+    # (son parametre `gamepad_state_topic`), et lit son SILENCE comme "noeud manette
+    # arrete" -- pastille grise, comme le `None` du prototype.
+    gamepad_state_topic: "/gamepad/connected"
     # Duree minimale entre deux prises en compte du MEME bouton : la croix vue
     # comme un axe n'a pas de front franc et un appui bref peut produire
     # plusieurs echantillons a 25 Hz.

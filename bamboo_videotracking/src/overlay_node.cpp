@@ -33,6 +33,7 @@
 #include <opencv2/imgproc.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
+#include <std_msgs/msg/bool.hpp>
 
 #include "bamboo_interfaces/msg/mode_cmd.hpp"
 #include "bamboo_interfaces/msg/recognition_result.hpp"
@@ -111,6 +112,34 @@ const cv::Scalar kMarker(0, 0, 255);       // point de la cible (mesure)
 const cv::Scalar kLockId(147, 20, 255);    // identite d'episode (DeepPink en BGR)
 const cv::Scalar kOrange(0, 140, 255);     // prediction
 const cv::Scalar kCross(80, 80, 80);       // croix de centrage
+const cv::Scalar kBad(0, 0, 255);          // absent / en faute (`_C_BAD` du proto)
+
+/// Pastille MANETTE : portage de la pastille d'etat du bouton MANETTE du prototype
+/// (RobotMain.py, `_draw_help_matrix`), TROIS etats et non deux :
+///   +1 vert  = manette connectee et lue ;
+///    0 rouge = noeud manette en marche, manette ABSENTE ;
+///   -1 gris  = noeud manette ARRETE (aucun etat recu) -- le `None` du proto.
+/// Le gris n'est pas un raffinement : sans lui, "noeud arrete" et "manette eteinte"
+/// s'afficheraient pareil, et on chercherait la manette quand c'est le conteneur qui manque.
+int gamepadPill(cv::Mat & im, int x, int y, int state, double u = 1.0)
+{
+  // Memes proportions que modePill, pour que la seconde ligne s'aligne sur la premiere.
+  const double sc = 0.4 * u;
+  const int pad = std::max(2, static_cast<int>(std::lround(6 * u)));
+  const int dot_r = std::max(2, static_cast<int>(std::lround(4 * u)));
+  const int dot_gap = std::max(2, static_cast<int>(std::lround(8 * u)));
+  const std::string label = "MANETTE";
+  int base = 0;
+  const cv::Size ts = cv::getTextSize(label, cv::FONT_HERSHEY_SIMPLEX, sc, 1, &base);
+  const cv::Rect r(x, y, ts.width + dot_gap + 2 * dot_r + 2 * pad, ts.height + 2 * pad);
+  cv::rectangle(im, r, cv::Scalar(90, 90, 90), 1, cv::LINE_AA);
+  cv::putText(im, label, cv::Point(x + pad, y + pad + ts.height - 1),
+    cv::FONT_HERSHEY_SIMPLEX, sc, kInk, 1, cv::LINE_AA);
+  const cv::Scalar col = state < 0 ? kOff : (state > 0 ? kOn : kBad);
+  cv::circle(im, cv::Point(x + pad + ts.width + dot_gap + dot_r, y + r.height / 2), dot_r,
+    col, cv::FILLED, cv::LINE_AA);
+  return x + r.width + std::max(2, static_cast<int>(std::lround(5 * u)));
+}
 
 // Duree de vie d'episode au-dela de laquelle le verrou est juge STABLE : l'age vire au
 // vert dans la carte, comme `_LOCK_STABLE_S` du proto.
@@ -240,6 +269,10 @@ public:
     deadzone_ = declare_parameter<double>("deadzone", 0.25);
     aspect_ = declare_parameter<double>("aspect", 0.75);
     servo_cmd_topic_ = declare_parameter<std::string>("servo_cmd_topic", "/servo/cmd");
+    // Etat de la manette publie par bamboo_teleop (std_msgs/Bool a 2 Hz) : MEME nom que
+    // `gamepad_state_topic` de bamboo_control/config/joy_bamboo.yaml.
+    gamepad_state_topic_ = declare_parameter<std::string>(
+      "gamepad_state_topic", "/gamepad/connected");
 
     // FIABILITE DU FLUX ENRICHI. La compatibilite QoS de DDS n'est PAS symetrique : un
     // abonne `reliable` REFUSE un publieur `best_effort` (et le journal le dit alors :
@@ -294,6 +327,13 @@ public:
     // point de fusion COMPLET du groupe (~9 Hz, message minuscule, cout nul). Sans elle,
     // impossible de montrer a l'ecran que la loi se TAIT quand la cible est dans la zone
     // morte -- or c'est la contre-epreuve qui prouve que le reticule dit la verite.
+    gamepad_sub_ = create_subscription<std_msgs::msg::Bool>(
+      gamepad_state_topic_, rclcpp::QoS(1).reliable(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr m) {
+        gamepad_ok_ = m->data;
+        last_gamepad_ = now_steady_.now();
+        have_gamepad_ = true;
+      });
     servo_sub_ = create_subscription<bamboo_interfaces::msg::ServoCmd>(
       servo_cmd_topic_, rclcpp::QoS(10).reliable(),
       [this](bamboo_interfaces::msg::ServoCmd::ConstSharedPtr m) {
@@ -614,7 +654,8 @@ private:
     // le flux externe est en lecture seule, donc on montre l'ETAT, pas un bouton cliquable.
     // En HAUT A DROITE, la carte occupant desormais le haut a gauche.
     const int pill_y = iu(8, u);
-    int x = std::max(iu(8, u), im.cols - iu(330, u));
+    const int pill_x0 = std::max(iu(8, u), im.cols - iu(330, u));
+    int x = pill_x0;
     x = modePill(im, x, pill_y, "TRACK", tracking_on_, u);
     x = modePill(
       im, x, pill_y, "RECO", recog_mode_ == "recognition" || recog_mode_ == "acquisition", u);
@@ -622,6 +663,16 @@ private:
     x = modePill(im, x, pill_y, track_mode_.empty() ? "-" : track_mode_, ts.locked, u);
     modePill(im, x, pill_y, predict_mode_.empty() ? "off" : predict_mode_,
       predict_mode_ != "off" && !predict_mode_.empty(), u);
+
+    // MANETTE sur une SECONDE ligne : la premiere s'arrete au bord de la carte (x = 308 a
+    // 640 px de large), il n'y a pas la place d'une sixieme pastille sans la chevaucher.
+    // Gris si l'etat se tait depuis 4 periodes : bamboo_teleop publie a 2 Hz, donc 2 s de
+    // silence ne peut pas etre un simple retard.
+    int gp_state = -1;
+    if (have_gamepad_ && (now_steady_.now() - last_gamepad_).seconds() <= 2.0) {
+      gp_state = gamepad_ok_ ? 1 : 0;
+    }
+    gamepadPill(im, pill_x0, pill_y + iu(26, u), gp_state, u);
 
     const double lat_ms = latencyMs(f.stamp_ns);
     if (lat_ms > lat_max_ms_) {lat_max_ms_ = lat_ms;}
@@ -824,6 +875,7 @@ private:
   rclcpp::Subscription<bamboo_interfaces::msg::RecognitionResult>::SharedPtr recog_sub_;
   rclcpp::Subscription<bamboo_interfaces::msg::ModeCmd>::SharedPtr mode_sub_;
   rclcpp::Subscription<bamboo_interfaces::msg::ServoCmd>::SharedPtr servo_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gamepad_sub_;
   rclcpp::Client<bamboo_interfaces::srv::RegisterOverlay>::SharedPtr mux_cli_;
   rclcpp::TimerBase::SharedPtr stats_timer_;
   rclcpp::TimerBase::SharedPtr reg_timer_;
@@ -836,6 +888,10 @@ private:
   std::string predict_mode_{"off"};
   std::string detector_{"yunet"};
   bool tracking_on_{false};
+  // Etat MANETTE : `have_gamepad_` distingue "jamais rien recu" d'un etat perime.
+  bool gamepad_ok_{false};
+  bool have_gamepad_{false};
+  std::string gamepad_state_topic_;
   // Derniere consigne servo VUE PASSER -- jamais l angle ATTEINT : aucune carte du
   // projet ne sait relire la position d un servo PWM (cf. ServoCmd.msg).
   float pan_deg_{0.0f};
@@ -848,6 +904,7 @@ private:
   // Horloge MONOTONE pour les fenetres de comptage : un saut de /clock ou de NTP ferait
   // sinon apparaitre un fps absurde, et c'est ce chiffre qu'on publie.
   rclcpp::Clock now_steady_{RCL_STEADY_TIME};
+  rclcpp::Time last_gamepad_{0, 0, RCL_STEADY_TIME};
   rclcpp::Time last_draw_;
   rclcpp::Time last_stats_;
   RateCounter overlay_rate_;

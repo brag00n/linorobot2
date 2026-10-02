@@ -77,6 +77,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rcl_interfaces.msg import SetParametersResult
 from geometry_msgs.msg import Twist
+from std_msgs.msg import Bool
 from sensor_msgs.msg import Joy
 
 from bamboo_interfaces.action import TrainFaces
@@ -165,6 +166,8 @@ class TeleopNode(Node):
         self._joyTimeout = float(self.declare_parameter("joy_timeout_s", 0.5).value)
 
         modeTopic = self.declare_parameter("mode_topic", "/videotracking/mode_cmd").value
+        gamepadTopic = self.declare_parameter(
+            "gamepad_state_topic", "/gamepad/connected").value
         nudgeSrv = self.declare_parameter("nudge_service", "/servo/nudge").value
         trainAction = self.declare_parameter(
             "train_action", "/videotracking/train_faces").value
@@ -200,6 +203,16 @@ class TeleopNode(Node):
             depth=1, reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self._modePub = self.create_publisher(ModeCmd, modeTopic, latched)
+        # ETAT DE LA MANETTE pour la pastille MANETTE du HUD -- portage de la metrique
+        # `gamepad_input` du prototype et de son `connected`. sensor_msgs/Joy n'a pas de
+        # champ "connectee", et un /joy silencieux ne dit pas QUI manque : la manette, ou ce
+        # noeud. D'ou un message a part, publie EN CONTINU (2 Hz) : c'est son SILENCE qui
+        # dit au HUD que ce noeud ne tourne pas (pastille grise), et sa valeur qui dit si la
+        # manette repond (verte / rouge). Le verdict s'appuie sur `autorepeat_rate` de
+        # joy_linux_node, qui republie un stick TENU : ne plus rien recevoir ne peut donc
+        # pas vouloir dire "manette immobile", seulement "manette absente".
+        self._gamepadPub = self.create_publisher(Bool, gamepadTopic, 1)
+        self._gamepadTimer = self.create_timer(0.5, self._onGamepadTick)
         self._modeSub = self.create_subscription(
             ModeCmd, modeTopic, self._onModeEcho, latched)
 
@@ -243,6 +256,16 @@ class TeleopNode(Node):
                 self.get_logger().info(
                     "chemin servo %s a chaud" % ("ARME" if self._nudgeOn else "COUPE"))
         return SetParametersResult(successful=True)
+
+    def _onGamepadTick(self):
+        """Publie l'etat de la manette : vraie si un /joy est arrive dans `joy_timeout_s`.
+
+        MEME seuil que la perte de manette du chemin servo et de la traction : la pastille
+        ne peut donc pas montrer "connectee" pendant que le noeud, lui, la juge perdue.
+        """
+        msg = Bool()
+        msg.data = (time.monotonic() - self._lastJoy) <= self._joyTimeout
+        self._gamepadPub.publish(msg)
 
     # ---------------------------------------------------------------- entrees
     @staticmethod
