@@ -47,7 +47,7 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 from bamboo_base.robot_config import resolveRobotConfig  # ou vit la config d'un robot
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import ComposableNodeContainer, Node
 from launch_ros.descriptions import ComposableNode
@@ -78,12 +78,15 @@ def _servoLimits(robot, config_path=""):
         params.update((doc[node_key] or {}).get("ros__parameters", {}) or {})
 
     axes = params.get("servo_axes")
-    if not axes:
-        raise RuntimeError(
-            "servo_axes absent de %s : impossible de borner la course des servos" % path)
-
     out = {}
-    for axis in _AXES:
+    # CAMERA FIXE (lot BASCULE) : AUCUNE table servo_axes est une verite MATERIELLE -- le
+    # robot n'a pas de nacelle (BambooWS : carte sans sortie servo, DO_SET_SERVO repond
+    # UNSUPPORTED). Le groupe tourne alors sans servocam_node. A distinguer d'une table
+    # PRESENTE mais incomplete, qui reste une erreur de configuration et leve plus bas : elle
+    # retomberait sur les bornes compilees, donc sur une butee possible.
+    if axes is None:
+        out["fixed"] = True
+    for axis in (_AXES if axes is not None else ()):
         spec = axes.get(axis)
         if not spec:
             raise RuntimeError(
@@ -114,6 +117,7 @@ def _servoLimits(robot, config_path=""):
     if width <= 0.0:
         raise RuntimeError("camera_width = %r dans %s : cadrage impossible" % (width, path))
     out["aspect"] = float(params["camera_height"]) / width
+    out["fixed"] = out.get("fixed", False)
     return out
 
 
@@ -152,6 +156,7 @@ def _launchSetup(context, *args, **kwargs):
         get_package_share_directory("bamboo_videotracking"),
         "config", "videotracking.yaml")
     limits = _servoLimits(robot, robot_config)
+    fixed = limits.pop("fixed")
 
     hot = [group_cfg, {"models_dir": models_dir, "input_topic": input_topic}]
     recog = [group_cfg, {"models_dir": models_dir, "faces_dir": faces_dir}]
@@ -195,6 +200,7 @@ def _launchSetup(context, *args, **kwargs):
                 parameters=overlay,
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
+        ] + ([] if fixed else [
             ComposableNode(
                 package="bamboo_videotracking",
                 plugin="bamboo_videotracking::ServoCamNode",
@@ -206,7 +212,7 @@ def _launchSetup(context, *args, **kwargs):
                 remappings=[("/servo/cmd", servo_cmd)],
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
-        ],
+        ]),
     )
 
     trainer = Node(
@@ -224,7 +230,10 @@ def _launchSetup(context, *args, **kwargs):
         ],
     )
 
-    return [container, trainer]
+    mode = ("CAMERA FIXE : %s n'a pas de servo_axes, servocam_node n'est PAS charge "
+            "(detection, reconnaissance, HUD sans mouvement de camera)" % robot) if fixed \
+        else "camera motorisee : servocam_node charge (axes pan/tilt de %s)" % robot
+    return [LogInfo(msg="videotracking : " + mode), container, trainer]
 
 
 def generate_launch_description():

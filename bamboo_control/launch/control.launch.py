@@ -48,6 +48,22 @@ def _readParams(path, node_key):
     return ((doc.get(node_key) or {}).get("ros__parameters", {}) or {})
 
 
+def _teleop(config, has_gimbal):
+    """Le noeud bamboo_teleop, cree ICI et non dans la LaunchDescription.
+
+    `has_gimbal` doit lui arriver en BOOLEEN. Passe par une LaunchConfiguration, il serait
+    une CHAINE ("false"), que le noeud lirait comme une valeur vraie -- un defaut silencieux
+    exactement du genre que ce lot cherche a eliminer. Le creer dans l'OpaqueFunction qui a
+    lu le fichier canonique lui donne la valeur Python, typee.
+    """
+    return Node(
+        package="bamboo_control", executable="teleop_node", name="bamboo_teleop",
+        parameters=[config, {"has_gimbal": has_gimbal}],
+        remappings=[("cmd_vel", LaunchConfiguration("cmd_vel_out_topic"))],
+        output="screen",
+    )
+
+
 def _checkAxes(context, *args, **kwargs):
     """Confronte les noms d'axes vises par la manette a la table `servo_axes` du robot.
 
@@ -78,8 +94,13 @@ def _checkAxes(context, *args, **kwargs):
     axes = params.get("servo_axes")
 
     if not axes:
-        return [LogInfo(msg="manette : ATTENTION -- aucun `servo_axes` dans %s.yaml, les "
-                            "nudges du stick droit seront refuses (modes seuls)." % robot)]
+        # ROBOT SANS NACELLE (BambooWS) : une verite materielle, pas une faute. Le noeud le
+        # SAIT (has_gimbal=false) au lieu de le decouvrir en appelant un service absent : il
+        # coupe son chemin servo et son diagnostic dit "pas de nacelle", en OK, plutot qu'un
+        # WARN "serveur absent" permanent qui apprendrait a ignorer le diagnostic.
+        return [LogInfo(msg="manette : %s n'a pas de `servo_axes` -- robot SANS NACELLE, le "
+                            "stick droit est inactif (traction et modes seuls)." % robot),
+                _teleop(_configPath(), False)]
     missing = [name for name in wanted if name not in axes]
     if missing:
         raise RuntimeError(
@@ -89,7 +110,8 @@ def _checkAxes(context, *args, **kwargs):
             "aucune erreur a l'execution."
             % (", ".join(missing), robot, ", ".join(sorted(axes))))
     return [LogInfo(msg="manette : axes %s resolus dans servo_axes de %s"
-                        % (" et ".join(wanted), robot))]
+                        % (" et ".join(wanted), robot)),
+            _teleop(_configPath(), True)]
 
 
 def generate_launch_description():
@@ -133,10 +155,6 @@ def generate_launch_description():
             parameters=[config, {"dev": LaunchConfiguration("joy_dev")}],
             output="screen",
         ),
-        Node(
-            package="bamboo_control", executable="teleop_node", name="bamboo_teleop",
-            parameters=[config],
-            remappings=[("cmd_vel", LaunchConfiguration("cmd_vel_out_topic"))],
-            output="screen",
-        ),
+        # bamboo_teleop est cree par _checkAxes (cf. _teleop) : il a besoin de savoir si le
+        # robot porte une nacelle, ce que seul le fichier canonique dit.
     ])

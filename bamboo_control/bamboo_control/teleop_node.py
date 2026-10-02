@@ -151,6 +151,13 @@ class TeleopNode(Node):
         self._nudgeHz = max(1.0, float(self.declare_parameter("nudge_rate_hz", 10.0).value))
         self._minDeg = float(self.declare_parameter("nudge_min_deg", 0.3).value)
         self._nudgeOn = bool(self.declare_parameter("nudge_enabled", True).value)
+        # Le robot porte-t-il une NACELLE ? Pousse par control.launch.py depuis le fichier
+        # canonique (presence de `servo_axes`). Sans nacelle (BambooWS), le chemin servo est
+        # coupe une fois pour toutes : il n'y a rien a bouger, et appeler /servo/nudge
+        # reviendrait a solliciter un service que personne ne sert.
+        self._hasGimbal = bool(self.declare_parameter("has_gimbal", True).value)
+        if not self._hasGimbal:
+            self._nudgeOn = False
         self._debounce = float(self.declare_parameter("debounce_s", 0.25).value)
         # Loi d'axe du proto (RobotMain._axis) : memes noms, memes defauts.
         self._deadzone = min(0.9, max(0.0, float(
@@ -267,7 +274,8 @@ class TeleopNode(Node):
         """
         for p in params:
             if p.name == "nudge_enabled":
-                self._nudgeOn = bool(p.value)
+                # Sans nacelle, rien ne peut le rearmer : il n'y a pas de servo a commander.
+                self._nudgeOn = bool(p.value) and self._hasGimbal
                 # On JETTE les pas deja accumules. Sans cela, couper le chemin laisserait
                 # partir un dernier nudge au reveil, sur une intention perimee -- exactement
                 # ce que la perte de manette prend soin d'eviter plus bas.
@@ -325,7 +333,11 @@ class TeleopNode(Node):
         stat.add("serveur_pret", str(ready))
         stat.add("service", self._nudgeCli.srv_name)
         stat.add("refus_periode", str(refusals))
-        if not self._nudgeOn:
+        stat.add("nacelle", str(self._hasGimbal))
+        if not self._hasGimbal:
+            # OK et non WARN : l'absence de nacelle est l'etat NORMAL de ce robot.
+            stat.summary(DiagnosticStatus.OK, "pas de nacelle sur ce robot (stick droit inactif)")
+        elif not self._nudgeOn:
             stat.summary(DiagnosticStatus.WARN, "chemin servo COUPE (nudge_enabled=false)")
         elif not ready:
             stat.summary(DiagnosticStatus.WARN,
