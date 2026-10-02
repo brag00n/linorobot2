@@ -273,8 +273,39 @@ else
         warn "service bluetooth inactif : la manette ne pourra pas s'appairer"
     fi
 fi
+# LIAISON (bonding) : `AlwaysPairable = true`, sans quoi la manette ne se reconnecte JAMAIS
+# seule. Dans BlueZ, `Pairable` pilote le drapeau BONDABLE du noyau ; eteint (defaut), un
+# appairage REUSSIT en mode no-bonding -- `Paired: yes`, `Bonded: no`, et aucune section
+# [LinkKey] n'est ecrite. Constat de l'essai T25 de bambooSTM32YB, ou ce seul reglage a fait
+# passer de "reappairer a chaque seance" a une reconnexion seule a l'allumage, mesuree.
+BT_CONF=/etc/bluetooth/main.conf
+if [ ! -r "$BT_CONF" ]; then
+    warn "$BT_CONF absent : impossible de rendre la manette liee (bonding)"
+elif grep -qE '^[[:space:]]*AlwaysPairable[[:space:]]*=[[:space:]]*true' "$BT_CONF"; then
+    ok "AlwaysPairable = true (la manette pourra se lier)"
+elif [ "$APPLY" = "1" ]; then
+    [ -f "$BT_CONF.avant-install" ] || cp "$BT_CONF" "$BT_CONF.avant-install"
+    if grep -qE '^[[:space:]]*#?[[:space:]]*AlwaysPairable' "$BT_CONF"; then
+        sed -i -E 's/^[[:space:]]*#?[[:space:]]*AlwaysPairable[[:space:]]*=.*/AlwaysPairable = true/' "$BT_CONF"
+    else
+        # Aucune ligne a decommenter : on l'ajoute sous [General], la section qui la lit.
+        sed -i '/^\[General\]/a AlwaysPairable = true' "$BT_CONF"
+    fi
+    systemctl restart bluetooth && sleep 2
+    # Verdict lu dans le NOYAU, pas dans le fichier : c'est le drapeau qui compte.
+    if btmgmt info 2>/dev/null | grep -q 'current settings:.*bondable'; then
+        act "AlwaysPairable = true pose, drapeau bondable actif"
+    else
+        warn "AlwaysPairable pose mais drapeau bondable ABSENT (btmgmt info) : a examiner"
+    fi
+else
+    warn "AlwaysPairable absent de $BT_CONF : la manette s'appairera SANS se lier"
+fi
+# APPAIRAGE : etape manuelle, et sa forme compte. Scanner en BR/EDR (`scan bredr` -- `scan
+# on` ne rend que du LE, ou cette manette est invisible), en CONTINU (une inquiry met ~10 s),
+# et appuyer Home+X PENDANT le scan, pas avant. Une fois liee, elle se rattache seule.
 [ -e /dev/input/js0 ] && ok "manette vue : /dev/input/js0" \
-    || skip "aucune manette appairee (etape manuelle : bluetoothctl, manette en mode XInput)"
+    || skip "aucune manette appairee (manuel : scan bredr CONTINU, puis Home+X pendant)"
 echo ""
 }
 
