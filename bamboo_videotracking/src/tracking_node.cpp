@@ -21,7 +21,9 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
+#include <deque>
 
 #include <opencv2/core.hpp>        // cv::flip (miroir de trame, cf. parametre `flip`)
 #include <opencv2/imgcodecs.hpp>
@@ -55,6 +57,10 @@ public:
     // Diagnostic (lot DIAGNOSTICS) : cadence de traitement sous laquelle la tache
     // `detection` passe WARN. 4,2 a 4,4 Hz mesures sur ce RPi (T17, T22).
     det_warn_hz_ = declare_parameter<double>("det_warn_hz", 2.0);
+    // FENETRE GLISSANTE de la cadence, et c'est une correction mesuree (T17 de BambooWS) :
+    // compter les trames sur UNE seconde quantifie un signal a ~1 Hz en 0 ou 1, donc une
+    // periode sur deux affichait "aucune trame traitee" en ERROR alors que le flux coulait.
+    diag_window_s_ = declare_parameter<double>("diag_window_s", 5.0);
     predict_horizon_s_ = declare_parameter<double>("predict_horizon_s", 0.12);
     coast_max_s_ = declare_parameter<double>("coast_max_s", 0.7);
     // predict_min_speed : NOM ET VALEUR du prototype (--predict-min-speed, defaut 0,4), en
@@ -179,16 +185,24 @@ private:
       predict = predict_mode_;
       det_fps = det_.detFps();
     }
-    const rclcpp::Time t = now_steady_.now();
-    double dt = (diag_t_.nanoseconds() == 0) ? 1.0 : (t - diag_t_).seconds();
-    if (dt <= 0.0) {dt = 1.0;}
-    diag_t_ = t;
-    const double hz = frames / dt;
+    // Cadence sur la FENETRE GLISSANTE : chaque passage depose ses trames, on garde ce qui
+    // tient dans diag_window_s_, et l'ERROR exige ZERO trame sur toute la fenetre -- une
+    // vraie absence de flux, pas le creux d'un echantillonnage a 1 Hz.
+    const double t = now_steady_.now().seconds();
+    diag_hist_.emplace_back(t, frames);
+    while (diag_hist_.size() > 2 && t - diag_hist_[1].first >= diag_window_s_) {
+      diag_hist_.pop_front();
+    }
+    unsigned win_frames = 0;
+    for (std::size_t i = 1; i < diag_hist_.size(); ++i) {win_frames += diag_hist_[i].second;}
+    const double span = diag_hist_.size() > 1 ? t - diag_hist_.front().first : 0.0;
+    const double hz = span > 0.0 ? win_frames / span : 0.0;
     const unsigned dec = decode_fail_.load();
     const unsigned d_dec = dec - diag_decode_prev_;
     diag_decode_prev_ = dec;
 
     stat.add("cadence_hz", hz);
+    stat.add("fenetre_s", span);
     stat.add("det_fps_detecteur", det_fps);
     stat.add("detecteur", detector);
     stat.add("tracker", tracker);
@@ -197,8 +211,12 @@ private:
     stat.add("perte", lost.empty() ? "-" : lost);
     stat.add("trames_indecodables_periode", d_dec);
     stat.add("seuil_warn_hz", det_warn_hz_);
-    if (hz <= 0.0) {
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "aucune trame traitee : flux camera absent ?");
+    if (span < 0.5 * diag_window_s_) {
+      // Fenetre pas encore pleine (demarrage) : on ne SAIT pas, on ne crie pas.
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "mesure en cours (demarrage)");
+    } else if (win_frames == 0) {
+      stat.summaryf(diagnostic_msgs::msg::DiagnosticStatus::ERROR,
+        "aucune trame traitee en %.0f s : flux camera absent ?", span);
     } else if (hz < det_warn_hz_) {
       stat.summaryf(diagnostic_msgs::msg::DiagnosticStatus::WARN, "detection lente : %.1f Hz", hz);
     } else if (d_dec > 0) {
@@ -566,10 +584,11 @@ private:
   // --- diagnostic : ecrits SOUS state_mu_ dans onImage, lus sous lui dans diagDetect ---
   double det_warn_hz_{2.0};
   unsigned diag_frames_{0};
+  double diag_window_s_{5.0};
+  std::deque<std::pair<double, unsigned>> diag_hist_;  // (instant, trames deposees)
   unsigned diag_decode_prev_{0};
   bool diag_locked_{false};
   std::string diag_lost_;
-  rclcpp::Time diag_t_{0, 0, RCL_STEADY_TIME};
   std::unique_ptr<diagnostic_updater::Updater> diag_;
 
   // VERROU DE L'ETAT DE SUIVI : `det_` (detecteur + tracker OpenCV) et `kal_` sont

@@ -775,6 +775,7 @@ private:
     out.data.assign(buf.begin(), buf.end());
     pub_->publish(out);
     overlay_rate_.tick();
+    last_frame_ = now_steady_.now();
   }
 
   double latencyMs(int64_t stamp_ns) const
@@ -1001,8 +1002,15 @@ private:
     stat.add("trames_sautees_total", dropped_);
     stat.add("seuil_warn_ms", lat_warn_ms_);
     stat.add("seuil_error_ms", lat_error_ms_);
-    if (last_overlay_fps_ <= 0.0f) {
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "aucune trame incrustee : bus image vide ?");
+    // ERROR sur une ABSENCE REELLE de trame (aucune depuis 5 s), et non sur la cadence d'une
+    // fenetre de stats : a ~1 Hz une fenetre courte tombe a 0 une fois sur deux, et l'ERROR
+    // clignotait alors que le flux coulait (T17 de BambooWS).
+    const double since = last_frame_.nanoseconds() == 0 ? -1.0
+      : (now_steady_.now() - last_frame_).seconds();
+    stat.add("derniere_trame_s", since);
+    if (since < 0.0 || since > 5.0) {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR,
+        "aucune trame incrustee depuis 5 s : bus image vide ?");
     } else if (last_lat_ms_ > lat_error_ms_) {
       stat.summaryf(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "latence %.0f ms", last_lat_ms_);
     } else if (last_lat_ms_ > lat_warn_ms_) {
@@ -1031,6 +1039,7 @@ private:
     }
   }
 
+  rclcpp::Time last_frame_{0, 0, RCL_STEADY_TIME};  // derniere trame incrustee
   float last_lat_ms_{0.0f};
   float last_lat_max_ms_{0.0f};
   double lat_warn_ms_{1000.0};
