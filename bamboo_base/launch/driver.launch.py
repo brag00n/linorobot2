@@ -74,8 +74,8 @@ def generate_launch_description():
                         "qui echoue en nommant les chemins essayes."),
         DeclareLaunchArgument(
             "enable_cmd_vel", default_value="false",
-            description="true = actuation MOTEUR, roues surelevees obligatoires. BambooWS est "
-                        "EN PAUSE (attache M1 cassee) : AUCUN essai au sol."),
+            description="true = actuation MOTEUR : le robot roule des qu'un producteur "
+                        "publie cmd_vel. false par defaut ; le service driver.esp32 l'arme."),
         DeclareLaunchArgument(
             "cmd_vel_topic", default_value="cmd_vel",
             description="Nom REEL de la consigne de deplacement ecoutee par la carte. "

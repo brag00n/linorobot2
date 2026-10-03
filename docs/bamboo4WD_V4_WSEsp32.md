@@ -372,8 +372,12 @@ mesures.
   (`/camera/capture_fps`, `/camera/stream_fps`) et **diffusion H.264 distante 30 fps** (MediaMTX,
   étape 1) : faits (voir §6). Étape 2 gscam2 (MJPG→ROS 30 fps) : à faire.
 - **L4/L5** — `bamboo_interfaces` + driver ESP32 **lecture seule** : faits (télémétrie validée).
-- **L6+** — actuation + calibration (roues surélevées), manette, URDF/TF, EKF, SLAM, navigation :
-  **à faire** (barrière L6 non franchie, choix utilisateur).
+- **L6** — actuation : **armée en permanence** depuis le 2026-10-03 (décision utilisateur après
+  réparation de l'attache moteur M1), seul verrou = appui long sur B de la manette.
+- **Lot QUALIBRATION** (2026-10-03) — modes du robot, calibration du glissement en rotation,
+  compensation dans les drivers (§9) : code livré, compensation à ZÉRO (comportement d'origine),
+  contrôle IMU validé au repos ; calibration au sol à faire.
+- **Suite** — URDF/TF, EKF (vx roues + vyaw IMU), SLAM, navigation : **à faire**.
 
 ---
 
@@ -393,3 +397,123 @@ mesures.
 6. **`DO_SET_SERVO` UNSUPPORTED** : pas de pan/tilt MAVLink → pas de suivi actionné promis.
 7. **micro-ROS inutile** ici (transport = MAVLink série + driver Python) : ne pas s'appuyer sur
    l'agent micro-ROS installé par le stage `hardware`.
+
+---
+
+## 9. Modes du robot, calibration du glissement, compensation de rotation (lot QUALIBRATION)
+
+### 9.1 Le problème
+
+Au sol, sur l'essai du 2026-10-03 :
+- les roues ont compté **4205° de rotation** pour **1972° réels** mesurés par l'IMU, soit un rapport de **2,13** ;
+- le cap final était de −1141° selon les roues, contre −13° réels ;
+- en ligne droite, l'écart restait dans ±6 %.
+
+C'est le **patinage d'un châssis à 4 roues fixes (skid-steer)** : pour tourner, les roues doivent riper. Une consigne `angular.z` n'est donc tenue qu'à moitié, et l'odométrie croit que le robot tourne deux fois plus qu'il ne le fait.
+
+Le défaut vaut quel que soit le producteur de `cmd_vel` : manette, navigation, ou les deux. La correction est donc placée **dans le driver**, en aval de tous les producteurs.
+
+### 9.2 Choix d'architecture : System Modes et arbres de comportement
+
+- **micro-ROS/system_modes** : un mode y est un jeu de valeurs de paramètres par nœud, avec les services `change_mode` / `get_mode` / `get_available_modes` et un sujet latché `mode_request_info`.
+  - Le dépôt n'est **plus maintenu**.
+  - Il suppose des nœuds **lifecycle**, et aucun des nôtres ne l'est.
+  - Décision : on **reprend ses conventions sans le paquet**, dans `bamboo_mode_manager`.
+- **Arbres de comportement (py_trees)** : ils servent **à l'intérieur** d'un mode, pour enchaîner des comportements avec garde et repli.
+  - Aujourd'hui : la séquence de calibration.
+  - Demain : la navigation (Nav2 est lui-même construit en BT).
+  - Ils ne servent pas à choisir le mode : c'est une machine à états simple, pilotée par l'opérateur.
+
+| Élément | Où | Rôle |
+|---|---|---|
+| `bamboo_mode_manager` | `bamboo_control`, conteneur `bamboo_control` | Tient le mode. Modèle dans `config/modes.yaml`. Services `/bamboo/change_mode`, `/bamboo/get_mode`, `/bamboo/get_available_modes`. Sujets latchés `/bamboo/mode` et `/bamboo/mode_request_info`. |
+| `bamboo_teleop` | idem | **Demande** le mode (croix) et le **lit**. Les touches dépendent du mode et du groupe (`keymap.*` de `joy_bamboo.yaml`). Publie `/teleop/state`. |
+| `MotionCompensator` | `bamboo_base/motion_compensation.py`, dans les **deux** drivers | Corrige la consigne et l'odométrie. Publie `/motion_compensation/state`. |
+| `bamboo_calibration` | `bamboo_base/calibration_node.py`, conteneur `bamboo_calibration` (image `behaviors`) | Action `/bamboo_calibration/calibrate`, arbre py_trees. |
+| HUD | `overlay_node` | Panneau mode / groupe / touches, et bandeau `CALIB n/N`. |
+| OLED de l'ESP32 | firmware ≥ 0.4.0, `BAMBOO_HMI_TEXT` | Ligne `Ready <MODE>`. |
+
+### 9.3 La manette en modes
+
+**Contrôles globaux, non réaffectables :**
+
+| Contrôle | Effet |
+|---|---|
+| **B court** | STOP. Annule aussi une calibration en cours. |
+| **B long** | Armer / désarmer la traction. |
+| **Stick gauche** | Conduite. Le pousser **annule** une calibration en cours. |
+| **Croix gauche/droite** | Mode précédent / suivant. Les modes indisponibles sont sautés. |
+| **Croix haut/bas** | Groupe d'actions du mode. |
+
+**Touches par mode et par groupe :**
+
+| Mode | Groupe | Touches |
+|---|---|---|
+| CONDUITE | vitesse | ZL/ZR = plafond de vitesse, −/+ = plancher |
+| TRACKING | vision | X = suivi (X long = recentrage), Y = reconnaissance, A = acquisition, L = tracker, R = prédiction, ZL/ZR = plafond |
+| TRACKING | cible | A = détecteur, Y = apprentissage, L/R = taille de la cible, ZL/ZR = plafond |
+| CALIB | mesure | **A long = lancer**, X = contrôle IMU seul, Y = arcs on/off, R = variante suivante |
+| CALIB | essai | A = appliquer le candidat **en RAM**, X = revenir au fichier, Y = PI de lacet on/off |
+| NAV | — | Indisponible tant que le lot NAV n'existe pas (prérequis `node:/bt_navigator`). |
+
+Une carte de touches fausse est **refusée au démarrage** : touche, action ou groupe inconnu, ou B réaffecté. La manette se replie alors sur la conduite seule, et le diagnostic `bamboo_teleop: modes` passe en ERROR avec la raison.
+
+### 9.4 Les constantes et leur rangement
+
+**Taux de glissement en lacet** : `s = 1 − ω_IMU / ω_roues`, compris entre 0 et 1.
+- La consigne est corrigée en `ω' = ω / (1 − s)` (feed-forward).
+- L'odométrie est corrigée en `ω = ω_roues · (1 − s)`.
+- **s = 0 donne le comportement d'origine.**
+- s est rangé dans une table |v| × |ω|, indexée sur la vitesse **réelle** du corps :
+  - lignes = `v_bins_mps`, colonnes = `w_bins_rps` ;
+  - interpolation bilinéaire, valeurs bornées hors de la table.
+- Option : un **PI de vitesse de lacet** sur le gyro (`yaw_rate_kp/ki/i_max`). Il tient aussi la ligne droite.
+
+**L'APB de la carte n'est pas modifié** : l'ESP32 l'utilise à la fois pour sa consigne et pour le `wz` qu'il renvoie.
+
+Le rangement se fait dans le **fichier canonique du robot**, bloc `/**`, ce qui le rend visible de tous ses nœuds :
+- **une entrée `calib.<variante>` par configuration matérielle** (roues, sol, écartement) ;
+- la variante active est donnée par `hardware_variant` ;
+- `origine` = tout à zéro, c'est la valeur livrée ;
+- `essai` = variante de travail, toujours déclarée, où la calibration pousse un candidat **en RAM** ;
+- une variante peut surcharger `wheel_separation_m` si le matériel change l'écartement ;
+- `imu_gz_sign` = signe du gyro z, **à établir à l'essai** (un signe faux ferait diverger le PI ; la calibration le détecte).
+
+### 9.5 Procédure de calibration
+
+**Avant de commencer :**
+- robot **au sol** ;
+- **batterie chargée** (au moins 11,4 V, réglé dans `bamboo_base/config/calibration.yaml`) ;
+- pour les arcs, environ **2 m × 2 m dégagés**.
+
+**Déroulé :**
+1. Croix → mode **CALIB**, groupe *mesure*. R choisit la variante, c'est-à-dire le nom du candidat.
+2. **X** : contrôle IMU seul, **sans mouvement** (10 s au repos ; seuils |biais| < 0,005 rad/s et dérive < 0,5° en 10 s). Validé au repos le 2026-10-03 : biais −0,0001 rad/s, dérive −0,14°.
+3. **B long** pour armer, puis **A long** pour lancer.
+   - Paliers de rotation sur place : ω_cmd = 0,6 / 1,2 / 2,0 / 3,0 rad/s aux roues, dans les deux sens, avec la compensation neutralisée (`motion_compensation_bypass`).
+   - Puis, si Y les a laissés actifs, les arcs : v = 0,2 / 0,4 × ω = 0,6 / 1,5.
+   - Durée : environ 1 min 30 en rotations seules, environ 2 min 30 avec les arcs.
+   - Le HUD et l'OLED affichent `CALIB n/N`.
+4. **Pour arrêter à tout moment** : B, B long, le stick gauche, un changement de mode, ou la sortie du mode par le gestionnaire. Le chien de garde du driver (0,25 s) arrête le robot si le nœud meurt.
+5. **Résultat** : un **candidat** `calib_candidat_<variante>_<date>.yaml` et son rapport `.json`, écrits **à côté du fichier canonique**. Le candidat est **rejeté** dans quatre cas :
+   - robot soulevé (le gyro ne voit rien alors que les roues tournent) ;
+   - signe du gyro inversé ;
+   - asymétrie entre les sens supérieure à 15 % ;
+   - s hors de [0, 1[.
+6. Groupe *essai* : **A** essaie le candidat en RAM, **Y** essaie le PI, **X** revient au fichier.
+7. Après validation, **recopier** le bloc du candidat sous `calib:` du fichier canonique et poser `hardware_variant`. Le nœud n'écrit **jamais** dans le fichier canonique.
+
+**Sans manette :**
+```
+ros2 action send_goal /bamboo_calibration/calibrate bamboo_interfaces/action/Calibrate "{variant: essai, include_arcs: false, imu_check_only: true}"
+```
+
+### 9.6 Vérifier
+
+- `/motion_compensation/state` : consigne reçue et consigne envoyée, s appliqué, `w_wheels` brut, `gz`. Avec la variante `origine`, `identity: true`.
+- `/imu/data` : `angular_velocity` est rempli (covariance 0,0004) depuis `ATTITUDE.yawspeed`.
+- Diagnostic :
+  - `<driver>: compensation` ;
+  - `<driver>: imu` (`gz_rad_s`) ;
+  - `bamboo_teleop: modes` ;
+  - `bamboo_mode_manager: modes du robot`.

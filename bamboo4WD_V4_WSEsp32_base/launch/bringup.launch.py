@@ -14,8 +14,9 @@ differe, et rien d'autre :
     Pour la meme raison il n'y a ni section `wiring` dans le layout, ni argument de cablage
     servo ici.
 
-ROBOT EN PAUSE : l'attache moteur N20 de M1 est cassee, AUCUN ESSAI AU SOL avant reparation.
-enable_cmd_vel reste false (argument ET fichier canonique).
+ACTUATION : l'argument `enable_cmd_vel` vaut false PAR DEFAUT (un bringup de banc ne doit
+pas armer par surprise) ; le service compose `driver.esp32` l'arme, conformement au fichier
+canonique (vrai depuis le 2026-10-03, attache M1 reparee, seul verrou = appui long B).
 
 Le lidar, le SLAM et la navigation restent des services compose distincts (slam.real,
 navigation.real), hors de ce bringup comme avant.
@@ -113,8 +114,8 @@ def generate_launch_description():
             description="Peripherique manette (ordre d'appairage)."),
         DeclareLaunchArgument(
             "enable_cmd_vel", default_value="false",
-            description="Actuation MOTEUR. Robot EN PAUSE (attache M1 cassee) : reste false, "
-                        "aucun essai au sol."),
+            description="Actuation MOTEUR. false par defaut (banc) ; true = le robot roule "
+                        "des qu'un producteur publie cmd_vel (seul verrou : appui long B)."),
         DeclareLaunchArgument(
             "video_device", default_value="/dev/video0",
             description="Peripherique V4L2 de la camera de CE robot."),

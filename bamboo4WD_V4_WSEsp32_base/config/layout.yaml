@@ -5,8 +5,8 @@
 # (bamboo_base/layout.py). Les DEFAUTS de chaque groupe sont une donnee de CE robot ; la
 # ligne de commande du bringup reste souveraine.
 #
-# Robot EN PAUSE : attache moteur N20 de M1 cassee, AUCUN essai au sol avant reparation.
-# Rien ci-dessous n'arme les moteurs : enable_cmd_vel reste faux (fichier canonique).
+# Rien ci-dessous n'arme les moteurs : c'est `enable_cmd_vel` du fichier canonique (VRAI
+# depuis le 2026-10-03, attache M1 reparee ; seul verrou = appui long B a la manette).
 groups:
   driver:        {enable: true}    # carte WaveShare ESP32, LECTURE SEULE (cf. enable_cmd_vel)
   description:   {enable: true}    # URDF + TF, aucun effet materiel

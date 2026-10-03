@@ -91,9 +91,10 @@ SERVICES = {
                   "BAMBOO_ARM=true, hors de portee de cet outil). EXCLUSIF avec driver.real, "
                   "driver.stm32 et bringup.real (un seul proprietaire du port serie)",
     "driver.stm32": "driver STM32 Yahboom v3 de bambooSTM32YB (pont MAVLink sysid 1) LECTURE SEULE (enable_cmd_vel=false)",
-    "driver.esp32": "driver ESP32 WaveShare de BambooWS (pont MAVLink sysid 2) LECTURE SEULE "
-                    "(enable_cmd_vel=false) -- robot EN PAUSE, AUCUN essai au sol. Basculer "
-                    "par `docker/robot.sh use esp32` plutot que le demarrer seul",
+    "driver.esp32": "driver ESP32 WaveShare de BambooWS (pont MAVLink sysid 2) ARME en permanence "
+                    "(enable_cmd_vel=true depuis le 2026-10-03, seul verrou = appui long B a la "
+                    "manette) ; porte la compensation de rotation. Basculer par "
+                    "`docker/robot.sh use esp32` plutot que le demarrer seul",
     "bamboo_video": "groupe video : acquisition + mux + streaming externe :8080 (autonome)",
     "bamboo_videotracking": "groupe tracking : Tracking/FaceRecog/FaceTrain/ServoCam, s'enregistre sur bamboo_video",
     "bamboo_control": "groupe manette : joy_linux_node + bamboo_teleop -- modes du tracking, pas relatifs des axes servo (robot a nacelle), traction derriere DEUX verrous (motion_enabled, enable_cmd_vel)",
