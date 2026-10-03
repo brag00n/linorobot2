@@ -140,7 +140,13 @@
     # applicatifs en deduisent le mode CAMERA FIXE (cf. videotracking.launch.py).
 
     # --- verrou d'actuation moteur ---------------------------------------
-    # NON NEGOCIABLE ICI : robot EN PAUSE, attache moteur N20 de M1 cassee, AUCUN
-    # essai au sol avant reparation. Le meme verrou que bambooSTM32YB, pour une
-    # autre raison physique.
-    enable_cmd_vel: false
+    # ARME EN PERMANENCE depuis le 2026-10-03, DECISION DE L'UTILISATEUR : l'attache
+    # moteur N20 de M1, raison de la pause et de ce verrou, est reparee. Le SEUL verrou de
+    # traction est desormais celui de la manette (appui LONG sur B, `motion_enabled`,
+    # desarme a chaque demarrage de bamboo_teleop). Ce qui reste comme protection : le
+    # chien de garde du driver (cmd_vel_timeout_s, 0,25 s) et le stop franc au relachement
+    # du stick. ATTENTION : avec un seul verrou, TOUT producteur de cmd_vel fait rouler le
+    # robot (navigation, MCP, script) -- il n'y a plus de second garde-fou.
+    # bambooSTM32YB, lui, GARDE son verrou : sa raison physique (pack 12,6 V brut sur
+    # moteurs 7,4 V) n'a pas change.
+    enable_cmd_vel: true

@@ -605,8 +605,10 @@ services:
 
 #--- Controleur ESP32 de BambooWS (WaveShare General Driver, MAVLink sysid 2) : JUMEAU de
 #    driver.stm32 (lot BASCULE, 2026-10-02). Proprietaire UNIQUE de /dev/esp32 (CP2102).
-#    LECTURE SEULE (enable_cmd_vel:=false) : robot EN PAUSE, attache moteur M1 cassee, AUCUN
-#    essai au sol. Remplace driver.real, qui n'avait ni les volumes de build partages ni
+#    ARME EN PERMANENCE (enable_cmd_vel:=true) depuis le 2026-10-03, decision de
+#    l'utilisateur apres reparation de l'attache moteur M1 : le SEUL verrou de traction est
+#    celui de la manette (appui long sur B). Cf. le fichier canonique du robot, qui dit ce
+#    qui reste comme protection et ce que cela engage. Remplace driver.real, qui n'avait ni les volumes de build partages ni
 #    l'argument robot:= : son `install/` vivait dans sa couche inscriptible, et casse a chaque
 #    deplacement d'un fichier installe (dette connue, --symlink-install).
 #    L'identifiant de robot est FIGE, et c'est la regle des services ETIQUETES : un service
@@ -630,7 +632,7 @@ services:
       source install/setup.bash &&
       (python3 -c 'import serial' 2>/dev/null || (apt-get update && apt-get install -y python3-serial)) &&
       export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
-      ros2 launch bamboo_controler_WSEsp32 driver.launch.py robot:=bamboo4WD_V4_WSEsp32 enable_cmd_vel:=false"
+      ros2 launch bamboo_controler_WSEsp32 driver.launch.py robot:=bamboo4WD_V4_WSEsp32 enable_cmd_vel:=true"
 
 #--- Bringup COMPLET de BambooWS en UN SEUL conteneur (paquet bamboo4WD_V4_WSEsp32_base) :
 #    JUMEAU de bringup.stm32, memes regles. ⚠️ EXCLUSIF avec bamboo_video,
