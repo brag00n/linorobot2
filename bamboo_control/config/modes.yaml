@@ -1,0 +1,58 @@
+# ============================================================================
+# bamboo_mode_manager -- fichier MODELE des modes du robot
+# ============================================================================
+# Conventions de micro-ROS/system_modes, sans le paquet (cf. en-tete de
+# mode_manager_node.py, qui porte l'etude et le choix). Chaque champ est une
+# CHAINE dont les items sont separes par ';' : une liste ROS vide ne se type
+# pas, une chaine vide si.
+#
+#   label          texte court du HUD et de l'OLED (21 colonnes : rester court)
+#   requires       `node:/nom` (noeud vivant) ou `param:nom` (booleen du
+#                  gestionnaire, pousse par le launch : has_gimbal)
+#   enter_modecmd  ModeCmd `cible=valeur` publies a l'entree (groupe suivi)
+#   exit_modecmd   idem a la sortie
+#   enter_params   `/noeud:param=valeur` poses a l'entree
+#   exit_params    idem a la sortie
+#   exit_cancel    actions dont les buts en cours sont ANNULES a la sortie
+#
+# L'ORDRE de `modes` est celui de la croix gauche/droite. Un mode indisponible
+# (prerequis manquant) est SAUTE par la croix et refuse par change_mode, avec
+# sa raison (outil MCP ou `ros2 service call /bamboo/get_available_modes`).
+#
+# Les TOUCHES de chaque mode ne sont PAS ici : elles sont un fait de MANETTE et
+# vivent dans joy_bamboo.yaml (keymap.<mode>.*). Ce fichier dit ce que le mode
+# fait au ROBOT.
+# ============================================================================
+
+bamboo_mode_manager:
+  ros__parameters:
+    modes: ["conduite", "tracking", "calibration", "navigation"]
+    default_mode: "conduite"
+    mode_cmd_topic: "/videotracking/mode_cmd"
+    ack_timeout_s: 1.0
+    start_delay_s: 3.0
+
+    # Conduite seule : le mode de repli, toujours disponible. Il ne touche a
+    # rien en entrant -- le suivi garde l'etat qu'on lui a donne.
+    conduite:
+      label: "CONDUITE"
+
+    # Commandes du groupe videotracking (suivi, reconnaissance, apprentissage).
+    # Rien a l'entree : c'est la carte de touches qui change.
+    tracking:
+      label: "TRACKING"
+
+    # Calibration du glissement en rotation. Disponible seulement si le noeud
+    # tourne (option `calibration_enabled` du fichier canonique). Quitter le
+    # mode ANNULE une calibration en cours : le robot ne doit pas continuer a
+    # tourner dans un mode ou ses touches n'existent plus.
+    calibration:
+      label: "CALIB"
+      requires: "node:/bamboo_calibration"
+      exit_cancel: "/bamboo_calibration/calibrate"
+
+    # Navigation autonome : declaree pour sa place dans la croix, indisponible
+    # tant que le lot NAV n'a pas de bt_navigator (Nav2).
+    navigation:
+      label: "NAV"
+      requires: "node:/bt_navigator"

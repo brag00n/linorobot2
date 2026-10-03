@@ -17,6 +17,7 @@
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>std_srvs</exec_depend>
+  <exec_depend>action_msgs</exec_depend>
   <exec_depend>bamboo_interfaces</exec_depend>
   <!-- Le launch de ce module importe bamboo_base.robot_config pour savoir ou vit le fichier
        canonique du robot (E2) : dependance d'EXECUTION, pas de construction. -->

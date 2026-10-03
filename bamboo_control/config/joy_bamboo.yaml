@@ -85,12 +85,16 @@ bamboo_teleop:
     axis_dpad_x: 6         # croix horizontale (joy_linux la donne en AXE)
     axis_dpad_y: 7         # croix verticale, +1 = BAS, -1 = HAUT (releve)
 
-    # --- vision et modes -------------------------------------------------
-    button_tracking: 3     # X -> bascule le suivi          (touche F du prototype)
-    button_recognition: 2  # Y -> bascule la reconnaissance (touche R)
-    button_acquisition: 1  # A -> bascule l'acquisition     (touche A)
-    button_tracker: 4      # L -> cycle de tracker          (none/mil/vit)
-    button_predict: 5      # R -> cycle de prediction       (off/anticip/coast)
+    # --- index des TOUCHES des modes (cf. RELEVE en tete) -----------------
+    # Ce sont les touches que la carte `keymap` ci-dessous affecte PAR MODE.
+    # B (index 0) n'y figure pas : il est GLOBAL (STOP / armement, plus bas).
+    button_a: 1
+    button_x: 3
+    button_y: 2
+    button_l: 4
+    button_r: 5
+    button_minus: 6
+    button_plus: 7
 
     # --- deplacement du robot --------------------------------------------
     axis_drive_x: 0        # stick GAUCHE X  (- gauche / + droite)
@@ -113,14 +117,10 @@ bamboo_teleop:
     # qu'on revoit, sans toucher au code.
     axes_sign: -1.0
     button_stop: 0         # B  -> STOP franc, DES L'APPUI, meme moteurs desarmes
-    button_speed_min_up: 7    # + -> plancher de vitesse +1
-    button_speed_min_down: 6  # - -> plancher de vitesse -1
 
-    # --- les deux APPUIS LONGS -------------------------------------------
-    # Les clics de stick n'existent pas dans ce mode (cf. RELEVE) : leurs deux
-    # fonctions passent en appui LONG sur un bouton qui garde par ailleurs son
-    # role. Les noms de parametre restent CEUX DU PROTOTYPE, ils designent
-    # desormais le bouton dont l'appui LONG declenche l'action.
+    # --- appui LONG sur B : l'armement -----------------------------------
+    # Les clics de stick n'existent pas dans ce mode (cf. RELEVE) : l'armement
+    # passe en appui LONG sur B, qui garde son STOP au front.
     #
     # B (0) : court = STOP, long = armer/desarmer. L'ordre n'est pas un detail
     # de confort -- un appui n'est "court" qu'une fois RELACHE, donc mettre le
@@ -129,12 +129,82 @@ bamboo_teleop:
     # zero au passage, inoffensif moteurs desarmes, et un geste TENU est une
     # vertu pour le verrou de la traction.
     button_motion: 0       # B appui LONG -> armer / desarmer (touche O du proto)
-    # X (3) : long = recentrage. Seul bouton dont l'action COURTE part au
-    # RELACHEMENT (on ne peut pas savoir avant), tous les autres gardent le front
-    # a l'appui comme le prototype. "Desarmer le suivi puis recentrer" devient un
-    # seul bouton, ce qui est le geste reel.
-    button_recenter: 3     # X appui LONG -> recentrage des axes
+    # Seuil d'appui long, pour B ET pour toute touche de mode qui a un `_long`.
     long_press_s: 0.6
+
+    # =====================================================================
+    # MODES DU ROBOT ET CARTE DES TOUCHES (lot QUALIBRATION, 2026-10-03)
+    # =====================================================================
+    # Le mode est tenu par bamboo_mode_manager (config/modes.yaml) ; ce noeud le
+    # DEMANDE et le LIT. GLOBAUX, dans tous les modes, NON reaffectables :
+    #   B court   STOP franc (annule aussi une calibration en cours)
+    #   B long    armer / desarmer la traction
+    #   stick G   conduite (pousser pendant une calibration l'ANNULE)
+    #   stick D   nacelle, si le robot en a une
+    #   croix G/D mode precedent / suivant (les modes indisponibles sont sautes)
+    #   croix H/B groupe d'actions precedent / suivant du mode
+    #
+    # Forme : keymap.<mode>.groups = "g1;g2" (ordre de la croix haut/bas), puis
+    # keymap.<mode>.<groupe>.<TOUCHE>[_long] = <action>. TOUCHES : A X Y L R ZL
+    # ZR MINUS PLUS. Une touche qui a un `_long` dans un groupe y fait partir son
+    # appui COURT au relachement (on ne sait pas avant qu'il sera court).
+    # Une carte fausse (touche, action ou groupe inconnu, B reaffecte) est
+    # REFUSEE au demarrage : repli sur la conduite seule, diagnostic ERROR.
+    #
+    # Actions connues : tracking recenter recognition acquisition tracker
+    # predict detector training target_grow target_shrink speed_max_up
+    # speed_max_down speed_min_up speed_min_down calib_start calib_imu
+    # calib_arcs calib_variant calib_apply calib_revert calib_pi nav_unavailable
+    fallback_mode: "conduite"     # sans gestionnaire de modes
+    keymap:
+      conduite:
+        groups: "vitesse"
+        vitesse:
+          ZR: "speed_max_up"
+          ZL: "speed_max_down"
+          PLUS: "speed_min_up"
+          MINUS: "speed_min_down"
+      tracking:
+        groups: "vision;cible"
+        vision:
+          X: "tracking"
+          X_long: "recenter"
+          Y: "recognition"
+          A: "acquisition"
+          L: "tracker"
+          R: "predict"
+          ZR: "speed_max_up"
+          ZL: "speed_max_down"
+        cible:
+          A: "detector"
+          Y: "training"
+          L: "target_shrink"
+          R: "target_grow"
+          ZR: "speed_max_up"
+          ZL: "speed_max_down"
+      calibration:
+        groups: "mesure;essai"
+        # A long et non A court : lancer fait TOURNER le robot, le geste doit etre
+        # tenu. Exige en plus la traction armee (B long).
+        mesure:
+          A_long: "calib_start"
+          X: "calib_imu"
+          Y: "calib_arcs"
+          R: "calib_variant"
+        essai:
+          A: "calib_apply"
+          X: "calib_revert"
+          Y: "calib_pi"
+      navigation:
+        groups: "nav"
+        nav:
+          A: "nav_unavailable"
+
+    # Calibration : variantes proposees par R (groupe mesure), separees par ';'.
+    # Le nom devient celui du fichier candidat ET de l'entree calib.<nom> a
+    # recopier dans le fichier canonique du robot apres validation.
+    calibration_variants: "essai;caoutchouc_carrelage;caoutchouc_parquet"
+    calibration_include_arcs: true
 
     # --- axes de servo pilotes a la manette ------------------------------
     # NOMS, jamais de numero de voie : c'est le contrat ServoCmd/Nudge. Changer

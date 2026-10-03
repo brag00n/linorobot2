@@ -65,6 +65,17 @@ JAMAIS tant qu'un appel est en vol -- les pas non envoyes s'accumulent, donc rie
 perdu, seulement regroupe (ce que la liste d'axes de Nudge.srv permet : pan ET tilt dans
 un seul appel, atomiquement).
 
+LES MODES (lot QUALIBRATION, 2026-10-03). Les boutons ne portent plus une fonction fixe :
+ils portent celle du MODE courant (conduite, tracking, calibration, navigation...) et du
+GROUPE d'actions courant de ce mode. Le mode est tenu par bamboo_mode_manager (conventions
+de system_modes, cf. mode_manager_node.py) : ce noeud le DEMANDE (croix gauche/droite ->
+/bamboo/change_mode "__next__"/"__previous__") et le LIT sur /bamboo/mode -- il ne le
+devine jamais. La croix haut/bas change de groupe. La carte des touches vit dans
+joy_bamboo.yaml (`keymap.*`, cf. keymap_model.py) ; B et la croix restent GLOBAUX (STOP,
+armement, modes) dans tous les modes, et une carte qui les reprendrait est refusee.
+Ce qui est affiche (mode, groupe, touches, etat on/off) part sur /teleop/state, que le HUD
+du flux augmente et l'OLED de l'ESP32 reprennent.
+
 PERTE DE MANETTE = ARRET DE LA CAMERA. Sans /joy depuis `joy_timeout_s`, la vitesse est
 remise a zero. Avec `autorepeat_rate: 25.0` cote joy_linux, un stick tenu republie en
 continu : le silence signifie donc reellement "plus de manette", et pas "stick immobile".
@@ -80,11 +91,13 @@ from diagnostic_msgs.msg import DiagnosticStatus
 from diagnostic_updater import Updater
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool
+from std_srvs.srv import SetBool, Trigger
 from sensor_msgs.msg import Joy
 
-from bamboo_interfaces.action import TrainFaces
-from bamboo_interfaces.msg import ModeCmd
-from bamboo_interfaces.srv import Nudge
+from bamboo_interfaces.action import Calibrate, TrainFaces
+from bamboo_interfaces.msg import ModeCmd, RobotMode, TeleopState
+from bamboo_interfaces.srv import ChangeMode, Nudge
+from bamboo_control.keymap_model import KEYS, LONG, PREFIX, displayKey, parseKeymap
 
 # Enumerations RESOLUES ICI (cf. docstring : le consommateur refuse une valeur vide).
 # A garder alignees sur face_detection.cpp (detecteurs et trackers) et sur
@@ -92,6 +105,14 @@ from bamboo_interfaces.srv import Nudge
 _TRACKERS = ("none", "mil", "vit")
 _DETECTORS = ("haar", "dnn", "yunet")
 _PREDICTS = ("off", "anticip", "coast")
+
+# Carte de REPLI, si celle du fichier est refusee : la conduite et ses reglages de vitesse,
+# rien d'autre. Le diagnostic `modes` passe alors en ERROR et dit pourquoi.
+_FALLBACK_KEYMAP = {
+    "conduite": {"groups": ["vitesse"], "bind": {"vitesse": {
+        "ZR": "speed_max_up", "ZL": "speed_max_down",
+        "PLUS": "speed_min_up", "MINUS": "speed_min_down"}}},
+}
 
 
 class TeleopNode(Node):
@@ -125,29 +146,31 @@ class TeleopNode(Node):
             else 1.0
         # Face Nintendo numerotee a la Xbox : le B PHYSIQUE prend l'index 0, la ou on
         # attendrait A. Releve, pas deduit.
+        # B (STOP au front, armement en appui long) est GLOBAL : il ne passe pas par la
+        # carte des touches des modes, et aucune ne peut le reprendre.
         self._btn = {
-            "tracking": self.declare_parameter("button_tracking", 3).value,
-            "recognition": self.declare_parameter("button_recognition", 2).value,
-            "acquisition": self.declare_parameter("button_acquisition", 1).value,
-            "tracker": self.declare_parameter("button_tracker", 4).value,
-            "predict": self.declare_parameter("button_predict", 5).value,
-            "recenter": self.declare_parameter("button_recenter", 3).value,
             "stop": self.declare_parameter("button_stop", 0).value,
             "motion": self.declare_parameter("button_motion", 0).value,
-            "speed_min_up": self.declare_parameter("button_speed_min_up", 7).value,
-            "speed_min_down": self.declare_parameter("button_speed_min_down", 6).value,
+        }
+        # Index des TOUCHES des modes (releve en tete de joy_bamboo.yaml). ZL/ZR sont des
+        # AXES (gachettes tout ou rien), lus par _axisRaw.
+        self._keyIdx = {
+            "A": self.declare_parameter("button_a", 1).value,
+            "X": self.declare_parameter("button_x", 3).value,
+            "Y": self.declare_parameter("button_y", 2).value,
+            "L": self.declare_parameter("button_l", 4).value,
+            "R": self.declare_parameter("button_r", 5).value,
+            "MINUS": self.declare_parameter("button_minus", 6).value,
+            "PLUS": self.declare_parameter("button_plus", 7).value,
         }
         # Cette manette ne DECLARE PAS de clic de stick (descripteur a 10 codes, sans
-        # BTN_THUMBL/BTN_THUMBR) : les deux fonctions que le proto leur confie n'ont plus
-        # de bouton libre, les 14 autres etant pris. Elles passent donc en appui LONG sur
-        # un bouton qui garde son role court -- armement sur B, recentrage sur X. Le
-        # partage est DEDUIT de l'egalite des index, pas code en dur : sur une manette
-        # qui declare ses clics de stick, il suffit de donner des index distincts et les
-        # deux fronts redeviennent independants, sans toucher a ce fichier.
+        # BTN_THUMBL/BTN_THUMBR) : l'armement passe donc en appui LONG sur B, qui garde son
+        # STOP au front. Le partage est DEDUIT de l'egalite des index : sur une manette qui
+        # declare ses clics de stick, des index distincts rendent les deux fronts
+        # independants, sans toucher a ce fichier.
         self._longPress = max(0.1, float(
             self.declare_parameter("long_press_s", 0.6).value))
         self._sharedMotion = (self._btn["motion"] == self._btn["stop"])
-        self._sharedRecenter = (self._btn["recenter"] == self._btn["tracking"])
 
         # --- axes de servo : des NOMS, jamais un numero de voie ---------------
         self._panName = self.declare_parameter("pan_axis_name", "pan").value
@@ -245,6 +268,43 @@ class TeleopNode(Node):
         self._joySub = self.create_subscription(Joy, "joy", self._onJoy, 10)
         self._nudgeCli = self.create_client(Nudge, nudgeSrv)
         self._trainCli = ActionClient(self, TrainFaces, trainAction)
+
+        # --- calibration (bamboo_calibration) ----------------------------------
+        calNode = str(self.declare_parameter("calibration_node", "/bamboo_calibration").value)
+        self._calCli = ActionClient(self, Calibrate, calNode + "/calibrate")
+        self._calApplyCli = self.create_client(Trigger, calNode + "/apply_candidate")
+        self._calRevertCli = self.create_client(Trigger, calNode + "/revert")
+        self._calPiCli = self.create_client(SetBool, calNode + "/set_pi")
+        self._calVariants = [v.strip() for v in str(self.declare_parameter(
+            "calibration_variants", "essai").value).split(";") if v.strip()] or ["essai"]
+        self._calVariant = self._calVariants[0]
+        self._calArcs = bool(self.declare_parameter("calibration_include_arcs", True).value)
+        self._calGoal = None          # future d'envoi, puis but en cours
+        self._calHandle = None
+        self._calText = ""
+        self._calApplied = False
+        self._calPi = False
+
+        # --- modes du robot (bamboo_mode_manager) ------------------------------
+        # Sans gestionnaire, on reste dans `fallback_mode` : la conduite marche toujours.
+        self._mode = str(self.declare_parameter("fallback_mode", "conduite").value)
+        self._modeLabel = self._mode.upper()
+        self._group = 0
+        self._modeCli = self.create_client(
+            ChangeMode, self.declare_parameter("change_mode_service",
+                                               "/bamboo/change_mode").value)
+        self._modeInFlight = False
+        self._keymapError = ""
+        self._actions = self._buildActions()
+        self._keymap = self._loadKeymap()
+        # Etat AFFICHE (HUD, OLED) : latche, a chaque changement et au moins a 1 Hz.
+        self._statePub = self.create_publisher(
+            TeleopState, self.declare_parameter("teleop_state_topic", "/teleop/state").value,
+            latched)
+        self._stateTimer = self.create_timer(1.0, self._publishState)
+        self._modeStateSub = self.create_subscription(
+            RobotMode, self.declare_parameter("robot_mode_topic", "/bamboo/mode").value,
+            self._onRobotMode, latched)
 
         self._timer = self.create_timer(1.0 / self._nudgeHz, self._onNudgeTick)
         self._velTimer = self.create_timer(1.0 / self._cmdHz, self._onDriveTick)
@@ -381,7 +441,13 @@ class TeleopNode(Node):
         stat.add("abonnes_modes", str(subs))
         stat.add("dernier_seq", str(self._seq))
         stat.add("apprentissage_pret", str(train))
-        if subs == 0:
+        stat.add("mode_robot", self._mode)
+        stat.add("groupe", self._groupName() or "-")
+        stat.add("gestionnaire_modes", str(self._modeCli.service_is_ready()))
+        if self._keymapError:
+            stat.summary(DiagnosticStatus.ERROR,
+                         "carte des touches REFUSEE (repli conduite) : %s" % self._keymapError)
+        elif subs == 0:
             stat.summary(DiagnosticStatus.WARN,
                          "aucun abonne a %s : groupe suivi arrete ?" % self._modePub.topic_name)
         elif not train:
@@ -478,7 +544,9 @@ class TeleopNode(Node):
 
         if self._edge("stop", self._button(msg, self._btn["stop"]), now):
             # STOP inconditionnel : il vaut meme moteurs DESARMES, parce qu un zero franc
-            # est la seule chose qu on veut pouvoir emettre sans reflechir.
+            # est la seule chose qu on veut pouvoir emettre sans reflechir. Il ANNULE aussi
+            # une calibration en cours : le robot y tourne tout seul.
+            self._calibCancel("STOP")
             self._stopMotion()
 
         # Armement. Sur cette manette le bouton est le MEME que le STOP (pas de clic de
@@ -492,93 +560,48 @@ class TeleopNode(Node):
         if armer:
             self._motionOn = not self._motionOn
             if not self._motionOn:
+                self._calibCancel("desarmement")
                 self._stopMotion()               # desarmer ARRETE, il ne fige pas
+            self._publishState()
             self.get_logger().warning(
                 "moteurs %s a la manette (le verrou `enable_cmd_vel` du driver reste "
                 "maitre)" % ("ARMES" if self._motionOn else "desarmes"))
 
-        if self._edge("speed_min_up", self._button(msg, self._btn["speed_min_up"]), now):
-            self._bumpSpeedMin(+1)
-        if self._edge("speed_min_down",
-                      self._button(msg, self._btn["speed_min_down"]), now):
-            self._bumpSpeedMin(-1)
-
-        # Gachettes : lecture BRUTE (repos -1), front a > 0.5.
-        if self._edge("trigger_r",
-                      1 if self._axisRaw(msg, self._axTrigR) > 0.5 else 0, now):
-            self._bumpSpeedMax(+1)
-        if self._edge("trigger_l",
-                      1 if self._axisRaw(msg, self._axTrigL) > 0.5 else 0, now):
-            self._bumpSpeedMax(-1)
-
-        # --- boutons de mode : toujours une valeur ABSOLUE -------------------
-        # Suivi et recentrage partagent X sur cette manette : appui court = suivi, appui
-        # long = recentrage. X est donc le SEUL bouton dont l action parte au relachement.
-        # "Desarmer le suivi puis recentrer" tient alors dans un seul bouton, ce qui est
-        # le geste reel -- tant que le suivi verrouille un visage, onTrack reecrit la cible
-        # a chaque detection et un recentrage serait aussitot efface.
-        if self._sharedRecenter:
-            ev = self._holdEdge("tracking", self._button(msg, self._btn["tracking"]), now)
-            if ev == "long":
-                self._sendMode("recenter", "now")
-            elif ev == "short":
-                self._trackingOn = not self._trackingOn
-                self._sendMode("tracking", "on" if self._trackingOn else "off")
-        elif self._edge("tracking", self._button(msg, self._btn["tracking"]), now):
-            self._trackingOn = not self._trackingOn
-            self._sendMode("tracking", "on" if self._trackingOn else "off")
-
-        if self._edge("recognition", self._button(msg, self._btn["recognition"]), now):
-            # Bascule off <-> recognition. Depuis "acquisition" on retombe sur "off" :
-            # les deux modes sont exclusifs cote facerecog_node, et ce bouton est celui
-            # qui COUPE -- c'est la seule facon de sortir de l'acquisition en un appui.
-            self._recog = "off" if self._recog != "off" else "recognition"
-            self._sendMode("recognition", self._recog if self._recog != "off" else "off")
-
-        if self._edge("acquisition", self._button(msg, self._btn["acquisition"]), now):
-            if self._recog == "acquisition":
-                self._recog = "recognition"
-                self._sendMode("recognition", "recognition")
-            else:
-                self._recog = "acquisition"
-                self._sendMode("acquisition", "acquisition")
-
-        if self._edge("tracker", self._button(msg, self._btn["tracker"]), now):
-            self._tracker = self._next(_TRACKERS, self._tracker)
-            self._sendMode("tracker", self._tracker)
-
-        if self._edge("predict", self._button(msg, self._btn["predict"]), now):
-            self._predict = self._next(_PREDICTS, self._predict)
-            self._sendMode("predict", self._predict)
-
-        # Recentrage a bouton PROPRE : seulement si on ne le partage pas avec le suivi
-        # (sinon il est deja traite en appui long, plus haut). Consomme par servocam_node
-        # SEUL : sans le groupe tracking il n'y a pas de notion de position de repos cote
-        # hote, donc rien ne bouge. C'est coherent, pas un bug.
-        if not self._sharedRecenter and self._edge(
-                "recenter", self._button(msg, self._btn["recenter"]), now):
-            self._sendMode("recenter", "now")
-
-        # --- croix directionnelle, vue comme deux boutons virtuels -----------
+        # --- croix : GLOBALE, dans tous les modes -----------------------------
         # SIGNE RELEVE, et il est CONTRE-INTUITIF : sur l'axe 7 le HAUT vaut -1 et le BAS
-        # +1 (convention du noyau, comme pour l'axe vertical d'un stick). Ce fichier avait
-        # l'inverse avant la mesure -- le detecteur et l'apprentissage etaient echanges.
-        dy = self._axis(msg, self._axDpadY)
-        if self._edge("dpad_up", 1 if dy < -0.5 else 0, now):
-            self._detector = self._next(_DETECTORS, self._detector)
-            self._sendMode("detector", self._detector)
-        if self._edge("dpad_down", 1 if dy > 0.5 else 0, now):
-            self._startTraining()
-
-        # Taille de la surface cible (proto : _resize_target, pas de 0,01). La valeur porte
-        # un DELTA SIGNE : l etat vit cote serveur, ce noeud ne le duplique pas. Une cible
-        # ModeCmd inconnue etant ignoree EN SILENCE, ce D-pad est sans effet tant que
-        # servocam_node et overlay_node ne la consomment pas.
+        # +1 (convention du noyau, comme pour l'axe vertical d'un stick).
         dx = self._axis(msg, self._axDpadX)
+        dy = self._axis(msg, self._axDpadY)
         if self._edge("dpad_right", 1 if dx > 0.5 else 0, now):
-            self._sendMode("deadzone", "%+.3f" % self._targetStep)
+            self._requestMode("__next__")
         if self._edge("dpad_left", 1 if dx < -0.5 else 0, now):
-            self._sendMode("deadzone", "%+.3f" % -self._targetStep)
+            self._requestMode("__previous__")
+        if self._edge("dpad_up", 1 if dy < -0.5 else 0, now):
+            self._cycleGroup(-1)
+        if self._edge("dpad_down", 1 if dy > 0.5 else 0, now):
+            self._cycleGroup(+1)
+
+        # --- touches du MODE et du GROUPE courants ---------------------------
+        # Une touche qui a un appui LONG dans ce groupe passe par _holdEdge (son appui court
+        # part alors au RELACHEMENT) ; sinon elle part au front, comme le prototype.
+        bind = self._binding()
+        for key in KEYS:
+            value = self._keyValue(msg, key)
+            tag = "key:" + key
+            short, long_ = bind.get(key), bind.get(key + LONG)
+            if long_ is not None:
+                ev = self._holdEdge(tag, value, now)
+                if ev == "long":
+                    self._run(long_)
+                elif ev == "short" and short is not None:
+                    self._run(short)
+            elif short is not None:
+                if self._edge(tag, value, now):
+                    self._run(short)
+            else:
+                # Garder le front a jour : une touche liee plus tard (changement de groupe)
+                # ne doit pas partir sur un appui deja en cours.
+                self._prev[tag] = value
 
     # ----------------------------------------------------------- deplacement
     @staticmethod
@@ -648,6 +671,9 @@ class TeleopNode(Node):
             fwd = -self._axis(msg, self._axDriveY)   # avant = stick vers le HAUT (LY < 0)
             turn = -self._axis(msg, self._axDriveX)  # gauche = + (angular.z anti-horaire)
         driving = (fwd != 0.0 or turn != 0.0)
+        if driving and self._calBusy():
+            # La manette REPREND LA MAIN : pousser le stick pendant une calibration l'annule.
+            self._calibCancel("stick gauche")
         if driving:
             self._holdVelocityAnalog(fwd, turn)
             if not self._gpDriving:                  # front montant : demarrage franc
@@ -780,6 +806,302 @@ class TeleopNode(Node):
         self.get_logger().info(
             "apprentissage %d/%d : %s"
             % (fb.feedback.step, fb.feedback.total, fb.feedback.line))
+
+    # ---------------------------------------------------------------- modes
+    def _loadKeymap(self):
+        """Carte des touches depuis les surcharges `keymap.*` du YAML, validee.
+
+        Les noms dependent du fichier (modes, groupes) : on les DECLARE depuis les
+        surcharges, une surcharge non declaree etant invisible en Humble.
+        """
+        overrides = getattr(self, "_parameter_overrides", {}) or {}
+        params = {}
+        for name, prm in overrides.items():
+            if name.split(".")[0] == PREFIX:
+                params[name] = self.declare_parameter(name, prm.value).value
+        try:
+            km = parseKeymap(params, set(self._actions))
+        except ValueError as exc:
+            self._keymapError = str(exc)
+            self.get_logger().error("carte des touches REFUSEE, repli conduite seule : %s" % exc)
+            return dict(_FALLBACK_KEYMAP)
+        if self._btn["stop"] in self._keyIdx.values():
+            self._keymapError = "un index de touche de mode est celui de B (STOP)"
+            self.get_logger().error("carte des touches REFUSEE : %s" % self._keymapError)
+            return dict(_FALLBACK_KEYMAP)
+        if not km:
+            self.get_logger().warn("aucune carte `keymap.*` : repli conduite seule")
+            return dict(_FALLBACK_KEYMAP)
+        return km
+
+    def _buildActions(self):
+        """nom -> (execution, libelle, etat on/off ou None). Le libelle peut etre dynamique."""
+        step = self._targetStep
+        return {
+            "tracking": (self._actTracking, lambda: "suivi", lambda: self._trackingOn),
+            "recenter": (lambda: self._sendMode("recenter", "now"), lambda: "recentrage", None),
+            "recognition": (self._actRecognition, lambda: "reconnaissance",
+                            lambda: self._recog == "recognition"),
+            "acquisition": (self._actAcquisition, lambda: "acquisition",
+                            lambda: self._recog == "acquisition"),
+            "tracker": (self._actTracker, lambda: "tracker %s" % self._tracker, None),
+            "predict": (self._actPredict, lambda: "prediction %s" % self._predict, None),
+            "detector": (self._actDetector, lambda: "detecteur %s" % self._detector, None),
+            "training": (self._startTraining, lambda: "apprentissage",
+                         lambda: self._trainGoal is not None and not self._trainGoal.done()),
+            "target_grow": (lambda: self._sendMode("deadzone", "%+.3f" % step),
+                            lambda: "cible +", None),
+            "target_shrink": (lambda: self._sendMode("deadzone", "%+.3f" % -step),
+                              lambda: "cible -", None),
+            "speed_max_up": (lambda: self._bumpSpeedMax(+1),
+                             lambda: "plafond %d +" % self._speedMax, None),
+            "speed_max_down": (lambda: self._bumpSpeedMax(-1),
+                               lambda: "plafond %d -" % self._speedMax, None),
+            "speed_min_up": (lambda: self._bumpSpeedMin(+1),
+                             lambda: "plancher %d +" % self._speedMin, None),
+            "speed_min_down": (lambda: self._bumpSpeedMin(-1),
+                               lambda: "plancher %d -" % self._speedMin, None),
+            "calib_start": (lambda: self._calibStart(False), lambda: "lancer calibration",
+                            self._calBusy),
+            "calib_imu": (lambda: self._calibStart(True), lambda: "controle IMU", None),
+            "calib_arcs": (self._calibToggleArcs, lambda: "arcs", lambda: self._calArcs),
+            "calib_variant": (self._calibNextVariant,
+                              lambda: "variante %s" % self._calVariant, None),
+            "calib_apply": (self._calibApply, lambda: "appliquer en RAM",
+                            lambda: self._calApplied),
+            "calib_revert": (self._calibRevert, lambda: "revenir au fichier", None),
+            "calib_pi": (self._calibTogglePi, lambda: "PI de lacet", lambda: self._calPi),
+            "nav_unavailable": (lambda: self.get_logger().warn(
+                "navigation : pas encore de lot NAV"), lambda: "(lot NAV a venir)", None),
+        }
+
+    def _run(self, name):
+        self._actions[name][0]()
+        self._publishState()
+
+    def _keyValue(self, msg, key):
+        if key == "ZL":
+            return 1 if self._axisRaw(msg, self._axTrigL) > 0.5 else 0
+        if key == "ZR":
+            return 1 if self._axisRaw(msg, self._axTrigR) > 0.5 else 0
+        return self._button(msg, self._keyIdx[key])
+
+    def _groups(self):
+        return (self._keymap.get(self._mode) or {}).get("groups", [])
+
+    def _groupName(self):
+        g = self._groups()
+        return g[self._group % len(g)] if g else ""
+
+    def _binding(self):
+        m = self._keymap.get(self._mode) or {}
+        return m.get("bind", {}).get(self._groupName(), {})
+
+    def _cycleGroup(self, step):
+        g = self._groups()
+        if len(g) > 1:
+            self._group = (self._group + step) % len(g)
+            self.get_logger().info("groupe %s / %s" % (self._mode, self._groupName()))
+        self._publishState()
+
+    def _requestMode(self, which):
+        if self._modeInFlight:
+            return
+        if not self._modeCli.service_is_ready():
+            self._warnOnce("mode_manager_absent",
+                           "aucun gestionnaire de modes sur %s : on reste en %s"
+                           % (self._modeCli.srv_name, self._mode))
+            return
+        self._calibCancel("changement de mode")
+        self._modeInFlight = True
+        self._modeCli.call_async(ChangeMode.Request(mode=which)).add_done_callback(
+            self._onModeDone)
+
+    def _onModeDone(self, future):
+        self._modeInFlight = False
+        try:
+            res = future.result()
+        except Exception as exc:                                    # noqa: BLE001
+            self.get_logger().warn("changement de mode echoue : %s" % exc)
+            return
+        if not res.success:
+            self.get_logger().warn("mode refuse : %s" % res.message)
+
+    def _onRobotMode(self, m):
+        """Le mode APPLIQUE, tenu par le gestionnaire : le seul qui fasse foi ici."""
+        if m.mode != self._mode:
+            self._group = 0
+        self._mode, self._modeLabel = m.mode, m.label or m.mode.upper()
+        if self._mode not in self._keymap:
+            self._warnOnce("keymap_" + self._mode,
+                           "mode %s sans carte de touches : seules B et la croix agissent"
+                           % self._mode)
+        self.get_logger().info("mode du robot : %s%s" % (self._modeLabel,
+                                                          " (DEGRADE)" if m.degraded else ""))
+        self._publishState()
+
+    def _publishState(self):
+        st = TeleopState()
+        st.header.stamp = self.get_clock().now().to_msg()
+        st.mode = self._modeLabel
+        st.group = self._groupName()
+        st.groups = list(self._groups())
+        for key, action in sorted(self._binding().items(),
+                                  key=lambda kv: (KEYS.index(kv[0].replace(LONG, "")),
+                                                  kv[0].endswith(LONG))):
+            _fn, label, active = self._actions[action]
+            st.keys.append(displayKey(key))
+            st.labels.append(label())
+            st.active.append(bool(active()) if active is not None else False)
+        st.armed = self._motionOn
+        st.busy = self._calBusy()
+        st.busy_text = self._calText if st.busy else ""
+        self._statePub.publish(st)
+
+    # ---------------------------------------------------------- actions de mode
+    def _actTracking(self):
+        self._trackingOn = not self._trackingOn
+        self._sendMode("tracking", "on" if self._trackingOn else "off")
+
+    def _actRecognition(self):
+        # Bascule off <-> recognition. Depuis "acquisition" on retombe sur "off" : les deux
+        # modes sont exclusifs cote facerecog_node, et cette action est celle qui COUPE.
+        self._recog = "off" if self._recog != "off" else "recognition"
+        self._sendMode("recognition", self._recog if self._recog != "off" else "off")
+
+    def _actAcquisition(self):
+        if self._recog == "acquisition":
+            self._recog = "recognition"
+            self._sendMode("recognition", "recognition")
+        else:
+            self._recog = "acquisition"
+            self._sendMode("acquisition", "acquisition")
+
+    def _actTracker(self):
+        self._tracker = self._next(_TRACKERS, self._tracker)
+        self._sendMode("tracker", self._tracker)
+
+    def _actPredict(self):
+        self._predict = self._next(_PREDICTS, self._predict)
+        self._sendMode("predict", self._predict)
+
+    def _actDetector(self):
+        self._detector = self._next(_DETECTORS, self._detector)
+        self._sendMode("detector", self._detector)
+
+    # ------------------------------------------------------------- calibration
+    def _calBusy(self):
+        return self._calGoal is not None
+
+    def _calibStart(self, imu_only):
+        if self._calBusy():
+            self.get_logger().warn("calibration deja en cours : appui ignore")
+            return
+        if not imu_only and not self._motionOn:
+            # Le robot va TOURNER : on exige l'armement a la manette, geste volontaire.
+            self.get_logger().warn("calibration refusee : traction desarmee (appui long B)")
+            return
+        if not self._calCli.server_is_ready():
+            self._warnOnce("calib_absent", "aucun serveur %s : bamboo_calibration ne tourne "
+                                           "pas (calibration_enabled=false ?)"
+                           % self._calCli._action_name)
+            return
+        goal = Calibrate.Goal(variant=self._calVariant, include_arcs=self._calArcs,
+                              imu_check_only=bool(imu_only))
+        self._calText = "CALIB IMU" if imu_only else "CALIB 0/?"
+        self.get_logger().warn("calibration %s lancee (variante %s, arcs %s)"
+                               % ("IMU SEULE" if imu_only else "COMPLETE", self._calVariant,
+                                  self._calArcs))
+        self._calGoal = self._calCli.send_goal_async(goal,
+                                                     feedback_callback=self._onCalFeedback)
+        self._calGoal.add_done_callback(self._onCalAccepted)
+
+    def _onCalAccepted(self, future):
+        try:
+            handle = future.result()
+        except Exception as exc:                                    # noqa: BLE001
+            self.get_logger().error("calibration : envoi echoue : %s" % exc)
+            self._calGoal = None
+            self._publishState()
+            return
+        if not handle.accepted:
+            self.get_logger().warn("calibration REFUSEE par bamboo_calibration")
+            self._calGoal = None
+            self._publishState()
+            return
+        self._calHandle = handle
+        handle.get_result_async().add_done_callback(self._onCalResult)
+
+    def _onCalFeedback(self, fb):
+        f = fb.feedback
+        self._calText = "CALIB %d/%d" % (f.step, f.total)
+        self.get_logger().info("calibration %d/%d : %s" % (f.step, f.total, f.line))
+        self._publishState()
+
+    def _onCalResult(self, future):
+        try:
+            res = future.result().result
+            self.get_logger().warn("calibration terminee : %s%s" % (
+                "SUCCES" if res.success else "ECHEC",
+                (" -> " + res.candidate_path) if res.candidate_path else ""))
+        except Exception as exc:                                    # noqa: BLE001
+            self.get_logger().error("calibration : resultat illisible : %s" % exc)
+        self._calGoal = self._calHandle = None
+        self._publishState()
+
+    def _calibCancel(self, why):
+        if self._calHandle is not None:
+            self.get_logger().warn("calibration ANNULEE (%s)" % why)
+            self._calHandle.cancel_goal_async()
+
+    def _calibToggleArcs(self):
+        self._calArcs = not self._calArcs
+
+    def _calibNextVariant(self):
+        self._calVariant = self._next(tuple(self._calVariants), self._calVariant)
+
+    def _callTrigger(self, cli, what, after=None):
+        if not cli.service_is_ready():
+            self.get_logger().warn("%s : service %s absent" % (what, cli.srv_name))
+            return
+
+        def done(f):
+            try:
+                r = f.result()
+                self.get_logger().info("%s : %s" % (what, r.message))
+                if after is not None and r.success:
+                    after()
+            except Exception as exc:                                # noqa: BLE001
+                self.get_logger().warn("%s echoue : %s" % (what, exc))
+            self._publishState()
+        cli.call_async(Trigger.Request()).add_done_callback(done)
+
+    def _calibApply(self):
+        self._callTrigger(self._calApplyCli, "candidat en RAM",
+                          lambda: setattr(self, "_calApplied", True))
+
+    def _calibRevert(self):
+        def after():
+            self._calApplied = False
+            self._calPi = False
+        self._callTrigger(self._calRevertCli, "retour au fichier", after)
+
+    def _calibTogglePi(self):
+        if not self._calPiCli.service_is_ready():
+            self.get_logger().warn("PI de lacet : service %s absent" % self._calPiCli.srv_name)
+            return
+        want = not self._calPi
+
+        def done(f):
+            try:
+                r = f.result()
+                if r.success:
+                    self._calPi = want
+                self.get_logger().info("PI de lacet : %s" % r.message)
+            except Exception as exc:                                # noqa: BLE001
+                self.get_logger().warn("PI de lacet echoue : %s" % exc)
+            self._publishState()
+        self._calPiCli.call_async(SetBool.Request(data=want)).add_done_callback(done)
 
     def _warnOnce(self, key, text):
         if key in self._warned:

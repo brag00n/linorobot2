@@ -1,4 +1,7 @@
-"""Lance le groupe manette : joy_linux_node + bamboo_teleop.
+"""Lance le groupe manette : joy_linux_node + bamboo_teleop + bamboo_mode_manager.
+
+bamboo_mode_manager tient les MODES du robot (config/modes.yaml) : la manette les demande
+et les lit, elle ne les tient pas (cf. mode_manager_node.py).
 
 NOM DU FICHIER IMPOSE : les deux paquets de bringup incluent `control.launch.py` par ce
 nom exact (`bamboo4WD_V4_YBStm32_base/launch/bringup.launch.py`). Le renommer casse
@@ -64,6 +67,17 @@ def _teleop(config, has_gimbal):
     )
 
 
+def _modeManager(has_gimbal):
+    """Le gestionnaire des MODES du robot (config/modes.yaml), meme raison que _teleop :
+    `has_gimbal` (prerequis `param:has_gimbal` des modes) doit arriver en BOOLEEN."""
+    return Node(
+        package="bamboo_control", executable="mode_manager_node", name="bamboo_mode_manager",
+        parameters=[os.path.join(get_package_share_directory("bamboo_control"), "config",
+                                 "modes.yaml"), {"has_gimbal": has_gimbal}],
+        output="screen",
+    )
+
+
 def _checkAxes(context, *args, **kwargs):
     """Confronte les noms d'axes vises par la manette a la table `servo_axes` du robot.
 
@@ -100,7 +114,7 @@ def _checkAxes(context, *args, **kwargs):
         # WARN "serveur absent" permanent qui apprendrait a ignorer le diagnostic.
         return [LogInfo(msg="manette : %s n'a pas de `servo_axes` -- robot SANS NACELLE, le "
                             "stick droit est inactif (traction et modes seuls)." % robot),
-                _teleop(_configPath(), False)]
+                _teleop(_configPath(), False), _modeManager(False)]
     missing = [name for name in wanted if name not in axes]
     if missing:
         raise RuntimeError(
@@ -111,7 +125,7 @@ def _checkAxes(context, *args, **kwargs):
             % (", ".join(missing), robot, ", ".join(sorted(axes))))
     return [LogInfo(msg="manette : axes %s resolus dans servo_axes de %s"
                         % (" et ".join(wanted), robot)),
-            _teleop(_configPath(), True)]
+            _teleop(_configPath(), True), _modeManager(True)]
 
 
 def generate_launch_description():

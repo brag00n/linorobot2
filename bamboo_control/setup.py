@@ -26,6 +26,8 @@ setup(
     entry_points={
         "console_scripts": [
             "teleop_node = bamboo_control.teleop_node:main",
+            # Modes du robot (conventions system_modes, cf. l'en-tete du module).
+            "mode_manager_node = bamboo_control.mode_manager_node:main",
         ],
     },
 )

@@ -136,6 +136,14 @@ analyzers:
           startswith: [ 'gamepad_state:' ]
           expected: [ 'gamepad_state: sortie' ]
           timeout: 5.0
+        modes:
+          type: diagnostic_aggregator/GenericAnalyzer
+          # Gestionnaire des MODES du robot (lot QUALIBRATION) : vit dans le meme groupe de
+          # launch que la manette, donc dans ce module.
+          path: 6 bamboo_mode_manager
+          startswith: [ 'bamboo_mode_manager:' ]
+          expected: [ 'bamboo_mode_manager: modes du robot' ]
+          timeout: 5.0
         # joy_linux_node publie son PROPRE diagnostic, "Joystick not open." en ERROR des que la
         # manette est eteinte : il mettrait le robot ENTIER en ERROR chaque fois qu'on la range,
         # contre la regle du lot (manette optionnelle = WARN). On l'ecarte, sans rien perdre :
