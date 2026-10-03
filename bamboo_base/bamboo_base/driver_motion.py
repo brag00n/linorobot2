@@ -28,6 +28,8 @@ from bamboo_base.motion_compensation import MotionCompensator, body_rate_from_wh
 # Variance du gyro z annoncee dans /imu, (rad/s)^2. Ordre de grandeur du QMI8658 apres
 # zone morte ; a affiner avec la mesure au repos de la calibration (etape IMU).
 _GZ_VARIANCE = 0.0004
+# Variance de l'accelerometre, (m/s2)^2 : ordre de grandeur, comme celle du gyro.
+_ACC_VARIANCE = 0.01
 
 
 class DriverMotion:
@@ -76,7 +78,18 @@ class DriverMotion:
         return v, w
 
     def fill_imu(self, imu, snap):
-        """Vitesses gyro de la carte dans sensor_msgs/Imu, ou -1 (absentes) sinon."""
+        """Gyro et accelerometre de la carte dans sensor_msgs/Imu, ou -1 (absents) sinon."""
+        ax = snap.get("ax")
+        age = snap.get("accel_age")
+        if ax is not None and age is not None and age < 1.0:
+            # SCALED_IMU (microcode ESP32 >= 0.5.0), deja en m/s2 et dans le repere carte.
+            imu.linear_acceleration.x = float(ax)
+            imu.linear_acceleration.y = float(snap.get("ay") or 0.0)
+            imu.linear_acceleration.z = float(snap.get("az") or 0.0)
+            for i in (0, 4, 8):
+                imu.linear_acceleration_covariance[i] = _ACC_VARIANCE
+        else:
+            imu.linear_acceleration_covariance[0] = -1.0
         gz = snap.get("gz")
         if gz is None:
             imu.angular_velocity_covariance[0] = -1.0

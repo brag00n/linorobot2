@@ -992,11 +992,9 @@ class Stm32MavlinkDriver(Node):
         imu.orientation.y = qy
         imu.orientation.z = qz
         imu.orientation.w = qw
-        # Gyro : ATTITUDE.*speed en rad/s si la carte les emet (A CONSTATER sur le STM32),
-        # sinon -1 en tete de covariance ("grandeur non fournie", convention ROS). Pas
-        # d'accelerometre brut dans le snapshot -> -1.
+        # Gyro (ATTITUDE.*speed) et accelerometre (SCALED_IMU) si la carte les emet (A
+        # CONSTATER sur le STM32), sinon -1 en tete de covariance ("grandeur non fournie").
         self._motion.fill_imu(imu, snap)
-        imu.linear_acceleration_covariance[0] = -1.0
         self.pub_imu.publish(imu)
 
         # --- magnetometre : le MPU9250 en a un, d'ou un cap ABSOLU possible ---

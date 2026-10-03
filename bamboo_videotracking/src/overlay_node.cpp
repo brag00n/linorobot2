@@ -671,7 +671,7 @@ private:
   }
 
   /// Carte CAM, meme grammaire que `_draw_cam_card` du proto (colonnes FIXES). En
-  /// (x, y) : elle vit desormais dans la colonne de DROITE, sous la boite du mode.
+  /// (x, y) : elle vit desormais en haut a DROITE (la boite du mode a pris la gauche).
   void drawCard(
     cv::Mat & im, const bamboo_interfaces::msg::TrackState & ts, int x, int y, double u)
   {
@@ -744,7 +744,7 @@ private:
     return (st && fresh(last_teleop_, 3.0)) ? st : nullptr;
   }
 
-  /// Boite MODE / groupe + touches du mode courant, en haut a droite, fond fonce
+  /// Boite MODE / groupe + touches du mode courant, en haut a gauche, fond fonce
   /// semi-transparent et contour pointille (grammaire de la carte CAM). Retourne le Y sous
   /// la boite ; inchange si la manette se tait (boite masquee).
   int drawModeBox(cv::Mat & im, int x, int y, int w, double u)
@@ -827,8 +827,8 @@ private:
         {150, "w " + fmt(c->w_wheels, 2), kVal}});
       cardRow(im, x, yc + 6 * step, u, {
         {10, "comp", kLabel}, {60, c->variant, c->identity ? kOff : kOn},
-        {150, "s", kLabel}, {180, fmt(c->slip, 2), kVal},
-        {220, "odo w", kLabel}, {268, fmt(c->w_odom, 2), kVal}});
+        {150, "s", kLabel}, {168, fmt(c->slip, 2), kVal},
+        {215, "odo", kLabel}, {250, fmt(c->w_odom, 2), kVal}});
     } else {
       cardRow(im, x, yc + 2 * step, u, {{10, "cmd", kLabel}, {60, "driver muet", kOff}});
     }
@@ -850,8 +850,8 @@ private:
       const bool acc_ok = m->linear_acceleration_covariance[0] >= 0.0;
       cardRow(im, x, yc + 5 * step, u, {
         {10, "r/p", kLabel}, {60, fmt(roll, 1) + " / " + fmt(pitch, 1), kVal},
-        {150, "acc", kLabel},
-        {190, acc_ok ? fmt(m->linear_acceleration.x, 1) + " " +
+        {170, "acc", kLabel},
+        {205, acc_ok ? fmt(m->linear_acceleration.x, 1) + " " +
           fmt(m->linear_acceleration.y, 1) : "n/d (carte)", acc_ok ? kVal : kOff}});
     } else {
       cardRow(im, x, yc + 4 * step, u, {{10, "imu", kLabel}, {60, "--", kOff}});
@@ -954,14 +954,15 @@ private:
     if (draw_marker_) {drawMainMarker(im, ts, u);}
 
     // --- DISPOSITION (demande utilisateur 2026-10-03) ------------------------------------
-    //   haut DROITE : boite du MODE, puis carte CONTEXTUELLE du mode (CAM/MOTEURS/MESURES)
+    //   haut GAUCHE : boite du MODE (mode / groupe, touches)
+    //   haut DROITE : carte CONTEXTUELLE du mode (CAM / MOTEURS / MESURES)
     //   bas GAUCHE  : pastilles d'etat, comme le prototype (3 lignes)
     //   bas DROITE  : latence/desynchro et consignes servo
     // Le flux externe est en lecture seule : les pastilles montrent l'ETAT, pas un bouton.
     const int col_w = iu(300, u);
     const int col_x = std::max(iu(8, u), im.cols - iu(8, u) - col_w);
-    int col_y = drawModeBox(im, col_x, iu(8, u), col_w, u);
-    if (draw_card_) {drawContextCard(im, ts, col_x, col_y + iu(6, u), u);}
+    drawModeBox(im, iu(8, u), iu(8, u), col_w, u);
+    if (draw_card_) {drawContextCard(im, ts, col_x, iu(8, u), u);}
 
     const int row_h = iu(26, u);
     const int row3 = im.rows - iu(8, u) - iu(22, u);

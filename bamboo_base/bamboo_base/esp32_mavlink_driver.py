@@ -671,10 +671,9 @@ class Esp32MavlinkDriver(Node):
             qx, qy, qz, qw = _quat_from_euler(r, p, yv)
             imu.orientation.x, imu.orientation.y = qx, qy
             imu.orientation.z, imu.orientation.w = qz, qw
-            # Gyro : ATTITUDE.yawspeed & co, en rad/s (-1 si la couche hote ne le porte
-            # pas). Accelerations : non remontees -> covariance a -1 (donnee absente).
+            # Gyro (ATTITUDE.*speed, rad/s) et accelerometre (SCALED_IMU, m/s2, microcode
+            # >= 0.5.0) ; covariance -1 pour ce que la carte ne remonte pas.
             self._motion.fill_imu(imu, snap)
-            imu.linear_acceleration_covariance[0] = -1.0
             self.pub_imu.publish(imu)
 
         # batterie.
