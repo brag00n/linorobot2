@@ -311,11 +311,14 @@ class CalibrationNode(Node):
         self._lock = threading.Lock()
         self._busy = False
         self._last = None             # dernier calcul REUSSI : {variant, table, ...}
+        # La variante `essai` est-elle ACTIVE dans le driver (candidat ou PI en RAM) ? Tenu
+        # ici : l'etat du driver n'est plus ecoute au repos (cf. _listen).
+        self._ramActive = False
 
-        self.create_subscription(Imu, "/imu/data", self._onImu, qos_profile_sensor_data,
-                                 callback_group=self._cbg)
-        self.create_subscription(MotionCompensationState, STATE_TOPIC, self._onState, 10,
-                                 callback_group=self._cbg)
+        # Abonnements RAPIDES (IMU et etat de compensation, 30 Hz) crees PENDANT un but
+        # seulement : au repos, le MultiThreadedExecutor de rclpy brulait 26 % d'un coeur
+        # a les recevoir pour rien (mesure 2026-10-04, RPi deja sature). Cf. _listen().
+        self._fastSubs = []
         self.create_subscription(BatteryState, "/battery", self._onBattery, 10,
                                  callback_group=self._cbg)
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
@@ -351,6 +354,24 @@ class CalibrationNode(Node):
 
     def _onTeleop(self, m):
         self.lastTeleop = m
+
+    def _listen(self, on):
+        """Cree ou detruit les abonnements rapides. Attend un premier echantillon."""
+        if on and not self._fastSubs:
+            self._fastSubs = [
+                self.create_subscription(Imu, "/imu/data", self._onImu,
+                                         qos_profile_sensor_data, callback_group=self._cbg),
+                self.create_subscription(MotionCompensationState, STATE_TOPIC, self._onState,
+                                         10, callback_group=self._cbg)]
+            t = time.monotonic()
+            while (self.freshGz() is None or self.lastState is None) and (
+                    time.monotonic() - t < 3.0):
+                time.sleep(0.05)
+        elif not on:
+            for sub in self._fastSubs:
+                self.destroy_subscription(sub)
+            self._fastSubs = []
+            self.lastImu = self.lastState = None
 
     def freshGz(self):
         if self.lastImu is None or time.monotonic() - self.lastImuT > self.p["gyro_max_age_s"]:
@@ -500,6 +521,7 @@ class CalibrationNode(Node):
             "IMU SEULE" if goal.imu_check_only else "COMPLETE", goal.variant or "essai",
             goal.include_arcs))
         lastLine = None
+        self._listen(True)
         ctx.note("%s variante %s%s" % ("IMU seule," if goal.imu_check_only else "complete,",
                                        goal.variant or SCRATCH_VARIANT,
                                        ", arcs" if goal.include_arcs else ""))
@@ -525,6 +547,7 @@ class CalibrationNode(Node):
                 ok, why = self._setDriverSync([("motion_compensation_bypass", False)])
                 if not ok:
                     self.get_logger().error("bypass NON retabli : %s" % why)
+            self._listen(False)
             with self._lock:
                 self._busy = False
         self.get_logger().info(py_trees.display.unicode_tree(root, show_status=True))
@@ -583,6 +606,7 @@ class CalibrationNode(Node):
                       v_bins_mps=self.p["v_bins_mps"], w_bins_rps=self.p["w_bins_rps"],
                       yaw_slip=self._last["table"])
         ok, why = self._setDriverSync(self._scratch(values))
+        self._ramActive = self._ramActive or ok
         resp.success = ok
         resp.message = ("candidat %s applique EN RAM (variante %s) : le fichier canonique "
                         "n'est pas modifie" % (self._last["variant"], SCRATCH_VARIANT)
@@ -591,13 +615,14 @@ class CalibrationNode(Node):
 
     def _onRevert(self, _req, resp):
         ok, why = self._setDriverSync([("hardware_variant", self.fileVariant)])
+        if ok:
+            self._ramActive = False
         resp.success = ok
         resp.message = ("retour a la variante du fichier : %s" % self.fileVariant) if ok else why
         return resp
 
     def _onSetPi(self, req, resp):
-        st = self.lastState
-        if st is not None and st.variant == SCRATCH_VARIANT:
+        if self._ramActive:
             items = []
         else:
             # Pas encore en RAM : on part de la variante du FICHIER, PI en plus.
@@ -607,6 +632,7 @@ class CalibrationNode(Node):
         items += [("%s.%s.yaw_rate_kp" % (PREFIX, SCRATCH_VARIANT), kp),
                   ("%s.%s.yaw_rate_ki" % (PREFIX, SCRATCH_VARIANT), ki)]
         ok, why = self._setDriverSync(items)
+        self._ramActive = self._ramActive or ok
         resp.success = ok
         resp.message = ("PI de lacet %s EN RAM (kp %.2f ki %.2f)" % (
             "ACTIF" if req.data else "coupe", kp, ki)) if ok else why

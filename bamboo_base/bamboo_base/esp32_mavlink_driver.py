@@ -273,6 +273,12 @@ class Esp32MavlinkDriver(Node):
         # d'amorcage compilees. Le fichier canonique fait foi -> on le repousse a chaque
         # connexion, puis on relit pour le prouver.
         self._push_board_config(geom=True, pid=True, log_level=True)
+        # ...et on RETENTE tant que la relecture n'est pas prouvee. Le lien serie s'ouvre en
+        # TACHE DE FOND : la poussee ci-dessus part souvent avant lui ("port indisponible"),
+        # et sans nouvel essai la carte restait sur ses valeurs COMPILEES -- PID 0,2/0,3/0 au
+        # lieu de celui du fichier, constate le 2026-10-04 (diagnostic "relecture non
+        # prouvee"). 2 s : le temps d'une ouverture de port, sans charger l'UART.
+        self.config_retry_timer = self.create_timer(2.0, self._retry_board_config)
 
         # Le journal de la carte est drainé a 2 Hz, pas dans _tick : ces lignes sont rares
         # et la file hote est bornee (200), donc rien ne presse -- inutile de payer ce
@@ -342,6 +348,13 @@ class Esp32MavlinkDriver(Node):
             if not ok:
                 self.get_logger().warn(f"seuil de journal non ecrit : {err}")
         self._readback_board_config()
+
+    def _retry_board_config(self):
+        """Repousse TOUTE la configuration si elle n'a pas encore ete relue, port ouvert."""
+        if self.board_cfg is not None or not self.link.connected:
+            return
+        self.get_logger().warn("configuration carte non relue : nouvel essai de poussee")
+        self._push_board_config(geom=True, pid=True, log_level=True)
 
     def _readback_board_config(self):
         """Relit geometrie et PID DANS la carte : seule preuve que l'ecriture a porte.
