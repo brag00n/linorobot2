@@ -1,0 +1,8 @@
+# Demande de changement de mode du robot (bamboo_mode_manager, /bamboo/change_mode).
+# `mode` = identifiant, ou "__next__" / "__previous__" : le gestionnaire choisit alors le
+# mode DISPONIBLE suivant ou precedent dans son ordre (c'est ce que fait la croix).
+string mode
+---
+bool success
+string message          # raison d'un refus (prerequis manquant, comportement en cours...)
+string mode             # mode en vigueur apres l'appel

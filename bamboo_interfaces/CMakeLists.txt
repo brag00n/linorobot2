@@ -11,6 +11,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/WheelRpm.msg"
   "msg/Esp32Status.msg"
   "msg/Stm32Status.msg"
+  "msg/MotionCompensationState.msg"
   # --- contrat servo : axes NOMMES, aucune carte nommee ---
   "msg/ServoCmd.msg"
   # --- groupe videotracking ---
@@ -18,13 +19,21 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TrackState.msg"
   "msg/RecognitionResult.msg"
   "msg/TrackingStats.msg"
+  # --- modes du robot et manette ---
+  "msg/RobotMode.msg"
+  "msg/TeleopState.msg"
   # --- services ---
   "srv/Nudge.srv"
   "srv/RegisterOverlay.srv"
   "srv/RecognizeFile.srv"
   "srv/AcquireFile.srv"
+  "srv/ChangeMode.srv"
+  "srv/GetMode.srv"
+  "srv/GetAvailableModes.srv"
   # --- action (apprentissage : long et annulable) ---
   "action/TrainFaces.action"
+  # --- action (calibration du glissement : longue, annulable, le robot tourne) ---
+  "action/Calibrate.action"
   DEPENDENCIES std_msgs action_msgs
 )
 

@@ -1,0 +1,5 @@
+---
+string[] modes          # dans l'ordre de la croix
+string[] labels
+bool[] available
+string[] reasons        # vide si disponible, sinon le prerequis manquant
