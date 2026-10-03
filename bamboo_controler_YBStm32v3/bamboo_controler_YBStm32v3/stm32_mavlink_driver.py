@@ -86,6 +86,7 @@ from geometry_msgs.msg import Twist, TransformStamped
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 from bamboo_base.driver_diagnostics import DriverDiagnostics
+from bamboo_base.driver_motion import DriverMotion
 
 from bamboo_interfaces.msg import WheelRpm, Stm32Status, ServoCmd
 from bamboo_interfaces.srv import Nudge
@@ -326,6 +327,10 @@ class Stm32MavlinkDriver(Node):
         self._snap = {}
         # Derniere relecture reussie de la SRAM de la carte, publiee dans Stm32Status.
         self.board_cfg = None
+        # Compensation de rotation + gyro, commune avec l'ESP32 (bamboo_base/driver_motion).
+        # Variante `origine` (tout a zero) = comportement d'origine, a l'identique. Avant
+        # toute poussee de geometrie : une variante peut imposer son ecartement.
+        self._motion = DriverMotion(self)
 
         # --- table d'axes servo (le seul lien axe -> voie materielle) ---
         self.axes = self._load_servo_axes()
@@ -487,7 +492,8 @@ class Stm32MavlinkDriver(Node):
             # APB = DEMI-voie, le firmware la redouble
             # (kinematics.setWheelsYDistance(2 * apb_mm / 1000)).
             circ_mm = math.pi * self.wheel_diameter * 1000.0
-            apb_mm = 0.5 * self.wheel_sep * 1000.0
+            # Ecartement EN VIGUEUR (celui de la variante materielle s'il est donne).
+            apb_mm = 0.5 * self._motion.wheel_sep * 1000.0
             ok, err = self.link.setWheelGeom(self.cpr, circ_mm, apb_mm, save=save)
             if not ok:
                 self.get_logger().error(
@@ -750,6 +756,9 @@ class Stm32MavlinkDriver(Node):
         if "board_readback_timeout_s" in new and float(new["board_readback_timeout_s"]) <= 0.0:
             return SetParametersResult(
                 successful=False, reason="board_readback_timeout_s doit etre > 0")
+        err = self._motion.check(params)
+        if err:
+            return SetParametersResult(successful=False, reason=err)
 
         # --- application (toutes les valeurs du lot sont acceptables) ---
         if "counts_per_rev" in new:
@@ -791,7 +800,8 @@ class Stm32MavlinkDriver(Node):
             if self.publish_odom_tf and self.tf_broadcaster is None:
                 self.tf_broadcaster = TransformBroadcaster(self)
 
-        touch_geom = any(k in new for k in self._GEOM_PARAMS)
+        # Une variante qui change l'ecartement est un changement de geometrie comme un autre.
+        touch_geom = self._motion.apply(params) or any(k in new for k in self._GEOM_PARAMS)
         touch_pid = any(k in new for k in self._PID_PARAMS)
         if touch_geom or touch_pid:
             # save=False : un reglage a chaud reste en SRAM. La flash, c'est save_board_config.
@@ -858,12 +868,17 @@ class Stm32MavlinkDriver(Node):
         """
         for _ in range(3):
             self.link.sendCmdVel(0.0, 0.0)
+        self._motion.reset()
 
     def _on_cmd_vel(self, msg):
         if not self.enable_cmd_vel:
             return
-        self.link.sendCmdVel(float(msg.linear.x), float(msg.angular.z))
-        self._last_cmd_t = self.get_clock().now()
+        now = self.get_clock().now()
+        # Consigne de CORPS -> consigne carte (identite si la variante est a zero).
+        vx, wz = self._motion.command(float(msg.linear.x), float(msg.angular.z),
+                                      now.nanoseconds * 1e-9)
+        self.link.sendCmdVel(vx, wz)
+        self._last_cmd_t = now
 
     # --- diagnostics ----------------------------------------------------------
     def actuation_extra(self, stat):
@@ -927,8 +942,8 @@ class Stm32MavlinkDriver(Node):
             dist_per_tic = math.pi * self.wheel_diameter / cpr
             v_l = sp[self.left_idx] * dist_per_tic * (-1.0 if self.inv_left else 1.0)
             v_r = sp[self.right_idx] * dist_per_tic * (-1.0 if self.inv_right else 1.0)
-            v = 0.5 * (v_l + v_r)
-            w = (v_r - v_l) / self.wheel_sep if self.wheel_sep > 1e-6 else 0.0
+            # Lacet corrige du glissement (identite si la variante est a zero).
+            v, w = self._motion.odometry(v_l, v_r)
             self.th += w * dt
             self.x += v * math.cos(self.th) * dt
             self.y += v * math.sin(self.th) * dt
@@ -977,9 +992,10 @@ class Stm32MavlinkDriver(Node):
         imu.orientation.y = qy
         imu.orientation.z = qz
         imu.orientation.w = qw
-        # -1 en tete de covariance = "cette grandeur n'est pas fournie", convention ROS : la
-        # carte ne remonte ni gyro ni accelerometre brut dans ce snapshot.
-        imu.angular_velocity_covariance[0] = -1.0
+        # Gyro : ATTITUDE.*speed en rad/s si la carte les emet (A CONSTATER sur le STM32),
+        # sinon -1 en tete de covariance ("grandeur non fournie", convention ROS). Pas
+        # d'accelerometre brut dans le snapshot -> -1.
+        self._motion.fill_imu(imu, snap)
         imu.linear_acceleration_covariance[0] = -1.0
         self.pub_imu.publish(imu)
 
@@ -1002,6 +1018,8 @@ class Stm32MavlinkDriver(Node):
         batt.voltage = float(snap.get("battery") or 0.0)
         batt.present = True
         self.pub_batt.publish(batt)
+
+        self._motion.publish_state(stamp, snap)
 
         # --- etat brut agrege (diagnostic MCP) ---
         st = Stm32Status()

@@ -12,6 +12,8 @@
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>bamboo_interfaces</exec_depend>
   <!-- driver_diagnostics.py, partage par les drivers des deux robots (lot BASCULE). -->
   <exec_depend>diagnostic_updater</exec_depend>

@@ -19,5 +19,6 @@ analyzers:
                       'esp32_mavlink_driver: batterie',
                       'esp32_mavlink_driver: imu',
                       'esp32_mavlink_driver: configuration carte',
-                      'esp32_mavlink_driver: actuation' ]
+                      'esp32_mavlink_driver: actuation',
+                      'esp32_mavlink_driver: compensation' ]
           timeout: 5.0

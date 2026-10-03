@@ -153,3 +153,37 @@
     # ...et c'est son etat NORMAL : le diagnostic du driver le dit en OK, au lieu d'un WARN
     # permanent qui apprendrait a ignorer la pastille SANTE.
     armed_nominal: true
+
+    # --- compensation de rotation (glissement skid-steer) ------------------
+    # Lue par TOUS les noeuds du robot (bloc /**) : le driver l'applique
+    # (bamboo_base/motion_compensation.py), la calibration et le gestionnaire de
+    # modes la lisent. UNE ENTREE PAR CONFIGURATION MATERIELLE (roues, sol,
+    # ecartement), la variante active etant `hardware_variant`.
+    #
+    # s = taux de glissement en LACET = 1 - w_IMU / w_roues, dans [0, slip_max].
+    #   0 = aucun glissement = COMPORTEMENT D'ORIGINE. Consigne w' = w / (1 - s),
+    #   odometrie w = w_roues * (1 - s). Table |v| x |w| : lignes = v_bins_mps,
+    #   colonnes = w_bins_rps, interpolation bilineaire bornee.
+    # yaw_rate_kp/ki : PI de vitesse de lacet sur le gyro (0 = boucle ouverte).
+    # wheel_separation_m : 0 = garder celle du robot ; > 0 = la variante la change.
+    #
+    # NE PAS ECRIRE ICI SANS VALIDATION (JOURNAL.md) : la calibration produit un
+    # fichier CANDIDAT (calib_candidat_<variante>_<date>.yaml) a recopier ci-dessous.
+    hardware_variant: "origine"
+    calib:
+      origine:
+        description: "aucune compensation (comportement d'origine)"
+        v_bins_mps: [0.0, 0.2, 0.4]
+        w_bins_rps: [0.5, 1.0, 1.5]
+        yaw_slip: [0.0, 0.0, 0.0,
+                   0.0, 0.0, 0.0,
+                   0.0, 0.0, 0.0]
+        yaw_rate_kp: 0.0
+        yaw_rate_ki: 0.0
+        yaw_rate_i_max: 0.0
+        wheel_separation_m: 0.0
+    # Signe du gyro z par rapport a la convention ROS (+ = anti-horaire vu du
+    # dessus). A ETABLIR A L'ESSAI : un signe faux ferait diverger le PI.
+    imu_gz_sign: 1.0
+    # Mode calibration (bamboo_calibration + mode `calibration` de la manette).
+    calibration_enabled: true

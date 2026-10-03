@@ -20,6 +20,7 @@ Ce que le DRIVER fournit (attributs lus a chaque passage, donc commutables a cha
   batt_warn_v, batt_error_v, batt_over_v               echelle de SON pack
 Et, facultatif, `actuation_extra(stat)` pour ce qui n'existe que sur une carte (les servos du
 STM32). Une capacite absente n'apparait pas : la tache de l'ESP32 ne parle pas de servos.
+De meme `_motion` (driver_motion.DriverMotion) ajoute une SIXIEME tache, `compensation`.
 """
 
 from diagnostic_msgs.msg import DiagnosticStatus
@@ -42,6 +43,8 @@ class DriverDiagnostics:
         self.updater.add("imu", self._imu)
         self.updater.add("configuration carte", self._board_cfg)
         self.updater.add("actuation", self._actuation)
+        if getattr(driver, "_motion", None) is not None:
+            self.updater.add("compensation", self._compensation)
 
     # ------------------------------------------------------------------ outils
     def link_age(self):
@@ -121,6 +124,10 @@ class DriverDiagnostics:
             val = d._snap.get(k)
             stat.add(k + "_deg", "?" if val is None else "%.1f" % val)
         stat.add("imu_age", "jamais" if a is None else "%.2f" % a)
+        gz = d._snap.get("gz")
+        # Absent = la couche hote ou le protocole ne porte pas le gyro : la compensation
+        # tourne alors sans PI, et la calibration refusera de mesurer.
+        stat.add("gz_rad_s", "absent" if gz is None else "%+.3f" % gz)
         if a is None:
             stat.summary(DiagnosticStatus.ERROR, "aucune trame d'attitude recue")
         elif a > d.link_error_s:
@@ -144,6 +151,9 @@ class DriverDiagnostics:
         stat.add("apb_mm", "%.1f" % cfg["apb_mm"])
         stat.summary(DiagnosticStatus.OK, "configuration poussee et relue")
         return stat
+
+    def _compensation(self, stat):
+        return self._d._motion.comp.diagnose(stat, DiagnosticStatus.OK, DiagnosticStatus.WARN)
 
     def _actuation(self, stat):
         d = self._d

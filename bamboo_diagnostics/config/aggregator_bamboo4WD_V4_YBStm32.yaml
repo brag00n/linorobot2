@@ -17,7 +17,8 @@ analyzers:
                       'stm32_mavlink_driver: batterie',
                       'stm32_mavlink_driver: imu',
                       'stm32_mavlink_driver: configuration carte',
-                      'stm32_mavlink_driver: actuation' ]
+                      'stm32_mavlink_driver: actuation',
+                      'stm32_mavlink_driver: compensation' ]
           timeout: 5.0
 
     # --- La nacelle : composant du groupe de suivi, sur CE robot seulement ------------
