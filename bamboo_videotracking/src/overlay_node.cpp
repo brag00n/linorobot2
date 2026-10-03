@@ -33,11 +33,17 @@
 #include <opencv2/imgproc.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <diagnostic_updater/diagnostic_updater.hpp>
+#include <sensor_msgs/msg/battery_state.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
+#include <sensor_msgs/msg/imu.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
 
 #include "bamboo_interfaces/msg/mode_cmd.hpp"
+#include "bamboo_interfaces/msg/motion_compensation_state.hpp"
+#include "bamboo_interfaces/msg/wheel_rpm.hpp"
 #include "bamboo_interfaces/msg/recognition_result.hpp"
 #include "bamboo_interfaces/msg/track_state.hpp"
 #include "bamboo_interfaces/msg/servo_cmd.hpp"
@@ -67,9 +73,15 @@ void putShadowed(cv::Mat & im, const std::string & s, cv::Point at, double sc, i
   cv::putText(im, s, at, cv::FONT_HERSHEY_SIMPLEX, sc, kInk, th, cv::LINE_AA);
 }
 
-/// Pastille d'etat d'un mode : remplie quand actif, cerclee quand inactif.
+void cardBg(cv::Mat & im, cv::Rect r, double alpha = 0.55);
+
+/// Pastille d'etat d'un mode : remplie quand actif ; INACTIVE, cerclee sur un fond fonce
+/// semi-transparent (comme le proto) -- sans ce fond, le libelle blanc se perd sur une
+/// image claire et une pastille eteinte se lit comme du texte pose sur l'image.
+/// `on_col` : couleur de remplissage (vert par defaut, orange pour l'armement).
 int modePill(
-  cv::Mat & im, int x, int y, const std::string & label, bool on, double u = 1.0)
+  cv::Mat & im, int x, int y, const std::string & label, bool on, double u = 1.0,
+  const cv::Scalar & on_col = cv::Scalar(0, 255, 0))
 {
   // `u` comme partout ailleurs dans ce HUD : sans lui, les pastilles resteraient de
   // taille 480p sur un flux 720p, seules a ne pas suivre.
@@ -78,7 +90,8 @@ int modePill(
   int base = 0;
   const cv::Size ts = cv::getTextSize(label, cv::FONT_HERSHEY_SIMPLEX, sc, 1, &base);
   const cv::Rect r(x, y, ts.width + 2 * pad, ts.height + 2 * pad);
-  const cv::Scalar col = on ? kLocked : cv::Scalar(90, 90, 90);
+  const cv::Scalar col = on ? on_col : cv::Scalar(90, 90, 90);
+  if (!on) {cardBg(im, r);}
   cv::rectangle(im, r, col, on ? cv::FILLED : 1, cv::LINE_AA);
   cv::putText(im, label, cv::Point(x + pad, y + pad + ts.height - 1),
     cv::FONT_HERSHEY_SIMPLEX, sc, on ? kShade : kInk, 1, cv::LINE_AA);
@@ -135,6 +148,7 @@ int gamepadPill(cv::Mat & im, int x, int y, int state, double u = 1.0)
   int base = 0;
   const cv::Size ts = cv::getTextSize(label, cv::FONT_HERSHEY_SIMPLEX, sc, 1, &base);
   const cv::Rect r(x, y, ts.width + dot_gap + 2 * dot_r + 2 * pad, ts.height + 2 * pad);
+  cardBg(im, r);
   cv::rectangle(im, r, cv::Scalar(90, 90, 90), 1, cv::LINE_AA);
   cv::putText(im, label, cv::Point(x + pad, y + pad + ts.height - 1),
     cv::FONT_HERSHEY_SIMPLEX, sc, kInk, 1, cv::LINE_AA);
@@ -160,6 +174,7 @@ int healthPill(cv::Mat & im, int x, int y, int level, double u = 1.0)
   int base = 0;
   const cv::Size ts = cv::getTextSize(label, cv::FONT_HERSHEY_SIMPLEX, sc, 1, &base);
   const cv::Rect r(x, y, ts.width + dot_gap + 2 * dot_r + 2 * pad, ts.height + 2 * pad);
+  cardBg(im, r);
   cv::rectangle(im, r, cv::Scalar(90, 90, 90), 1, cv::LINE_AA);
   cv::putText(im, label, cv::Point(x + pad, y + pad + ts.height - 1),
     cv::FONT_HERSHEY_SIMPLEX, sc, kInk, 1, cv::LINE_AA);
@@ -227,7 +242,7 @@ void dashedRect(cv::Mat & im, cv::Rect r, const cv::Scalar & col, double u)
 /// Fond de carte assombri (proto `_card_bg`, alpha 0.55). Le proto melange la ROI avec un
 /// rectangle noir ; melanger avec du noir revient a MULTIPLIER par (1 - alpha), donc on
 /// evite l'allocation d'une Mat de zeros a chaque trame pour le meme resultat exact.
-void cardBg(cv::Mat & im, cv::Rect r, double alpha = 0.55)
+void cardBg(cv::Mat & im, cv::Rect r, double alpha)
 {
   const cv::Rect roi = r & cv::Rect(0, 0, im.cols, im.rows);
   if (roi.width <= 0 || roi.height <= 0) {return;}
@@ -380,6 +395,53 @@ public:
         teleop_ = m;
         last_teleop_ = now_steady_.now();
       }, teleop_opts);
+    // --- carte CONTEXTUELLE (CONDUITE / CALIB) : telemetrie du driver -------------------
+    // Messages minuscules a 10-30 Hz : on garde le dernier, horodate, et la carte dit
+    // "--" si la source se tait (une valeur perimee doit se VOIR perimee).
+    comp_sub_ = create_subscription<bamboo_interfaces::msg::MotionCompensationState>(
+      declare_parameter<std::string>("compensation_topic", "/motion_compensation/state"),
+      rclcpp::QoS(10).reliable(),
+      [this](bamboo_interfaces::msg::MotionCompensationState::ConstSharedPtr m) {
+        comp_ = m;
+        last_comp_ = now_steady_.now();
+      });
+    rpm_sub_ = create_subscription<bamboo_interfaces::msg::WheelRpm>(
+      declare_parameter<std::string>("wheel_rpm_topic", "/wheel_rpm"),
+      rclcpp::QoS(10).reliable(),
+      [this](bamboo_interfaces::msg::WheelRpm::ConstSharedPtr m) {
+        rpm_ = m;
+        last_rpm_ = now_steady_.now();
+      });
+    // Consigne PAR MOTEUR telle que le PID de la carte la voit (velocity en RPM).
+    req_sub_ = create_subscription<sensor_msgs::msg::JointState>(
+      declare_parameter<std::string>("req_states_topic", "/req_states"),
+      rclcpp::QoS(10).reliable(),
+      [this](sensor_msgs::msg::JointState::ConstSharedPtr m) {
+        req_ = m;
+        last_req_ = now_steady_.now();
+      });
+    // IMU en sensor_data : compatible avec un emetteur reliable comme best-effort.
+    imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
+      declare_parameter<std::string>("imu_topic", "/imu/data"), rclcpp::SensorDataQoS(),
+      [this](sensor_msgs::msg::Imu::ConstSharedPtr m) {
+        imu_ = m;
+        last_imu_ = now_steady_.now();
+      });
+    batt_sub_ = create_subscription<sensor_msgs::msg::BatteryState>(
+      declare_parameter<std::string>("battery_topic", "/battery"),
+      rclcpp::QoS(10).reliable(),
+      [this](sensor_msgs::msg::BatteryState::ConstSharedPtr m) {
+        batt_v_ = m->voltage;
+        last_batt_ = now_steady_.now();
+      });
+    // Rapport de calibration (lignes de mesure), LATCHE par bamboo_calibration : meme
+    // raison que /teleop/state pour couper l'intra-process.
+    rclcpp::SubscriptionOptions calib_opts;
+    calib_opts.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
+    calib_sub_ = create_subscription<std_msgs::msg::String>(
+      declare_parameter<std::string>("calibration_report_topic", "/bamboo_calibration/report"),
+      rclcpp::QoS(1).reliable().transient_local(),
+      [this](std_msgs::msg::String::ConstSharedPtr m) {calib_report_ = m;}, calib_opts);
     gamepad_sub_ = create_subscription<std_msgs::msg::Bool>(
       gamepad_state_topic_, rclcpp::QoS(1).reliable(),
       [this](std_msgs::msg::Bool::ConstSharedPtr m) {
@@ -608,14 +670,14 @@ private:
     put(im, "pred", px + iu(8, u), py - iu(8, u), kOrange, 0.5 * u);
   }
 
-  /// Carte CAM, meme grammaire que `_draw_cam_card` du proto (colonnes FIXES).
-  void drawCard(cv::Mat & im, const bamboo_interfaces::msg::TrackState & ts, double u)
+  /// Carte CAM, meme grammaire que `_draw_cam_card` du proto (colonnes FIXES). En
+  /// (x, y) : elle vit desormais dans la colonne de DROITE, sous la boite du mode.
+  void drawCard(
+    cv::Mat & im, const bamboo_interfaces::msg::TrackState & ts, int x, int y, double u)
   {
     // 300x137 a l'echelle 1 : en-tete 38 + SIX lignes au pas de 19 (= 114) + 4 de
     // jambage. Le plan annoncait 118, qui ne tient que cinq lignes -- on garde les six
     // du proto plutot que d'en amputer une, soit 13,4 % de l'image en 640x480.
-    const int x = iu(8, u);
-    const int y = iu(8, u);
     cardBg(im, cv::Rect(x, y, iu(300, u), iu(137, u)));
     dashedRect(im, cv::Rect(x, y, iu(300, u), iu(137, u)), kBorder, u);
 
@@ -668,31 +730,183 @@ private:
     }
   }
 
-  /// Panneau MODE / groupe + touches du mode courant, sous les pastilles. MASQUE quand
-  /// /teleop/state se tait depuis 3 s (emis a 1 Hz au moins) : un panneau fige montrerait
-  /// des touches qui ne sont peut-etre plus les bonnes.
-  void drawModePanel(cv::Mat & im, int x, int y, double u)
+  /// Vrai si la source a parle dans les `max_s` dernieres secondes.
+  bool fresh(const rclcpp::Time & t, double max_s)
+  {
+    return t.nanoseconds() > 0 && (now_steady_.now() - t).seconds() <= max_s;
+  }
+
+  /// Etat de la manette s'il est FRAIS (emis a 1 Hz au moins), sinon nul : une boite figee
+  /// montrerait des touches qui ne sont peut-etre plus les bonnes.
+  bamboo_interfaces::msg::TeleopState::ConstSharedPtr teleopFresh()
   {
     const auto st = teleop_;
-    if (!st || (now_steady_.now() - last_teleop_).seconds() > 3.0) {return;}
+    return (st && fresh(last_teleop_, 3.0)) ? st : nullptr;
+  }
+
+  /// Boite MODE / groupe + touches du mode courant, en haut a droite, fond fonce
+  /// semi-transparent et contour pointille (grammaire de la carte CAM). Retourne le Y sous
+  /// la boite ; inchange si la manette se tait (boite masquee).
+  int drawModeBox(cv::Mat & im, int x, int y, int w, double u)
+  {
+    const auto st = teleopFresh();
+    if (!st) {return y;}
+    const size_t n = std::min({st->keys.size(), st->labels.size(), st->active.size()});
+    const bool busy = st->busy && !st->busy_text.empty();
+    const int h = iu(28, u) + static_cast<int>(n) * iu(16, u) + (busy ? iu(24, u) : 0) +
+      iu(4, u);
+    const cv::Rect r(x, y, w, h);
+    cardBg(im, r);
+    dashedRect(im, r, kBorder, u);
     std::string title = st->mode;
     if (!st->group.empty()) {title += " / " + st->group;}
-    if (st->armed) {title += "  ARME";}
-    putShadowed(im, title, cv::Point(x, y + iu(12, u)), 0.5 * u);
-    int yy = y + iu(30, u);
-    const size_t n = std::min({st->keys.size(), st->labels.size(), st->active.size()});
+    put(im, title, x + iu(10, u), y + iu(18, u), kVal, 0.5 * u);
+    if (st->groups.size() > 1) {
+      // Rappel de la croix haut/bas : le groupe n'est qu'UN parmi plusieurs.
+      put(im, std::to_string(st->groups.size()) + " groupes", x + w - iu(80, u),
+        y + iu(18, u), kLabel, 0.4 * u);
+    }
+    int yy = y + iu(36, u);
     for (size_t i = 0; i < n; ++i) {
       // Pastille d'etat : remplie = action active, cerclee = inactive ou sans etat.
-      const cv::Point c(x + iu(5, u), yy - iu(4, u));
-      cv::circle(im, c, std::max(2, iu(4, u)), st->active[i] ? kOn : kOff,
-        st->active[i] ? cv::FILLED : 1, cv::LINE_AA);
-      put(im, st->keys[i], x + iu(14, u), yy, kLabel, 0.42 * u);
-      put(im, st->labels[i], x + iu(70, u), yy, kVal, 0.42 * u);
+      cv::circle(im, cv::Point(x + iu(14, u), yy - iu(4, u)), std::max(2, iu(4, u)),
+        st->active[i] ? kOn : kOff, st->active[i] ? cv::FILLED : 1, cv::LINE_AA);
+      put(im, st->keys[i], x + iu(26, u), yy, kLabel, 0.42 * u);
+      put(im, st->labels[i], x + iu(88, u), yy, kVal, 0.42 * u);
       yy += iu(16, u);
     }
-    if (st->busy && !st->busy_text.empty()) {
+    if (busy) {
       // Le robot TOURNE tout seul : en gros, avec le rappel du geste qui l arrete.
-      putShadowed(im, st->busy_text + "  (B = STOP)", cv::Point(x, yy + iu(8, u)), 0.6 * u, 2);
+      put(im, st->busy_text + "  (B = STOP)", x + iu(10, u), yy + iu(8, u), kZoneOut,
+        0.55 * u, 2);
+    }
+    return y + h;
+  }
+
+  /// En-tete commun des cartes CONDUITE et CALIB : cadre, titre, batterie.
+  void cardFrame(cv::Mat & im, int x, int y, int h, const std::string & title, bool dot_on,
+    double u)
+  {
+    cardBg(im, cv::Rect(x, y, iu(300, u), h));
+    dashedRect(im, cv::Rect(x, y, iu(300, u), h), kBorder, u);
+    const int hy = y + iu(18, u);
+    cv::circle(im, cv::Point(x + iu(13, u), hy - iu(5, u)), std::max(2, iu(5, u)),
+      dot_on ? kZoneOut : kOff, cv::FILLED);
+    put(im, title, x + iu(25, u), hy, kVal, 0.5 * u);
+    const bool b = fresh(last_batt_, 5.0);
+    put(im, b ? fmt(batt_v_, 2) + " V" : "-- V", x + iu(220, u), hy, b ? kVal : kOff, 0.45 * u);
+  }
+
+  /// Carte CONDUITE : RPM par moteur (mesure et consigne du PID de la carte), vitesses,
+  /// IMU, compensation. Pastille orange = traction ARMEE cote driver.
+  void drawDriveCard(cv::Mat & im, int x, int y, double u)
+  {
+    const auto c = fresh(last_comp_, 1.0) ? comp_ : nullptr;
+    const int h = iu(38 + 7 * 19 + 4, u);
+    cardFrame(im, x, y, h, "MOTEURS", c && c->armed, u);
+    const int yc = y + iu(38, u);
+    const int step = iu(19, u);
+    auto four = [&](int row, const char * lab, const std::vector<double> * v) {
+        std::vector<Field> f{{10, lab, kLabel}};
+        for (int i = 0; i < 4; ++i) {
+          const bool ok = v && static_cast<int>(v->size()) > i;
+          f.push_back({60 + 60 * i, ok ? fmt((*v)[i], 0) : "--", ok ? kVal : kOff});
+        }
+        cardRow(im, x, yc + row * step, u, f);
+      };
+    const auto rpm = fresh(last_rpm_, 1.0) ? rpm_ : nullptr;
+    const auto req = fresh(last_req_, 1.0) ? req_ : nullptr;
+    four(0, "rpm", rpm ? &rpm->rpm : nullptr);
+    four(1, "dem", req ? &req->velocity : nullptr);
+    if (c) {
+      cardRow(im, x, yc + 2 * step, u, {
+        {10, "cmd", kLabel}, {60, "v " + fmt(c->vx_in, 2), kVal},
+        {150, "w " + fmt(c->wz_in, 2), kVal}});
+      cardRow(im, x, yc + 3 * step, u, {
+        {10, "roues", kLabel}, {60, "v " + fmt(c->v_wheels, 2), kVal},
+        {150, "w " + fmt(c->w_wheels, 2), kVal}});
+      cardRow(im, x, yc + 6 * step, u, {
+        {10, "comp", kLabel}, {60, c->variant, c->identity ? kOff : kOn},
+        {150, "s", kLabel}, {180, fmt(c->slip, 2), kVal},
+        {220, "odo w", kLabel}, {268, fmt(c->w_odom, 2), kVal}});
+    } else {
+      cardRow(im, x, yc + 2 * step, u, {{10, "cmd", kLabel}, {60, "driver muet", kOff}});
+    }
+    const auto m = fresh(last_imu_, 1.0) ? imu_ : nullptr;
+    if (m) {
+      const auto & q = m->orientation;
+      const double yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
+          1.0 - 2.0 * (q.y * q.y + q.z * q.z)) * 180.0 / M_PI;
+      const double roll = std::atan2(2.0 * (q.w * q.x + q.y * q.z),
+          1.0 - 2.0 * (q.x * q.x + q.y * q.y)) * 180.0 / M_PI;
+      const double sp = std::max(-1.0, std::min(1.0, 2.0 * (q.w * q.y - q.z * q.x)));
+      const double pitch = std::asin(sp) * 180.0 / M_PI;
+      const bool gz_ok = m->angular_velocity_covariance[0] >= 0.0;
+      cardRow(im, x, yc + 4 * step, u, {
+        {10, "imu", kLabel}, {60, "gz " + (gz_ok ? fmt(m->angular_velocity.z, 2) : "--"),
+          gz_ok ? kVal : kOff},
+        {150, "cap " + fmt(yaw, 0), kVal}});
+      // L'ACCELEROMETRE n'est pas remonte par la carte (covariance -1) : on le DIT.
+      const bool acc_ok = m->linear_acceleration_covariance[0] >= 0.0;
+      cardRow(im, x, yc + 5 * step, u, {
+        {10, "r/p", kLabel}, {60, fmt(roll, 1) + " / " + fmt(pitch, 1), kVal},
+        {150, "acc", kLabel},
+        {190, acc_ok ? fmt(m->linear_acceleration.x, 1) + " " +
+          fmt(m->linear_acceleration.y, 1) : "n/d (carte)", acc_ok ? kVal : kOff}});
+    } else {
+      cardRow(im, x, yc + 4 * step, u, {{10, "imu", kLabel}, {60, "--", kOff}});
+    }
+  }
+
+  /// Carte CALIB : mesure EN DIRECT (consigne, roues, gyro, s instantane), puis les lignes
+  /// du rapport de bamboo_calibration (repos IMU, paliers, verdict).
+  void drawCalibCard(cv::Mat & im, int x, int y, double u)
+  {
+    std::vector<std::string> lines;
+    if (calib_report_) {
+      std::istringstream in(calib_report_->data);
+      std::string l;
+      while (std::getline(in, l)) {if (!l.empty()) {lines.push_back(l);}}
+    }
+    const size_t max_lines = 8;
+    if (lines.size() > max_lines) {lines.erase(lines.begin(), lines.end() - max_lines);}
+    const auto c = fresh(last_comp_, 1.0) ? comp_ : nullptr;
+    const int h = iu(38 + 2 * 19 + 4, u) + static_cast<int>(lines.size()) * iu(15, u);
+    cardFrame(im, x, y, h, "MESURES", c && c->bypass, u);
+    const int yc = y + iu(38, u);
+    const int step = iu(19, u);
+    if (c) {
+      const bool turning = std::abs(c->w_wheels) > 0.05 && !std::isnan(c->gz);
+      cardRow(im, x, yc, u, {
+        {10, "w cmd", kLabel}, {70, fmt(c->wz_out, 2), kVal},
+        {150, "w roues", kLabel}, {230, fmt(c->w_wheels, 2), kVal}});
+      cardRow(im, x, yc + step, u, {
+        {10, "gz", kLabel}, {70, std::isnan(c->gz) ? "--" : fmt(c->gz, 2), kVal},
+        {150, "s inst", kLabel},
+        {230, turning ? fmt(1.0 - c->gz / c->w_wheels, 2) : "--", turning ? kVal : kOff}});
+    } else {
+      cardRow(im, x, yc, u, {{10, "driver muet", kOff}});
+    }
+    int yy = yc + 2 * step;
+    for (const auto & l : lines) {
+      put(im, l, x + iu(10, u), yy, kVal, 0.38 * u);
+      yy += iu(15, u);
+    }
+  }
+
+  /// Carte de la colonne de droite SELON LE MODE : TRACKING -> CAM, CONDUITE et NAV ->
+  /// moteurs, CALIB -> mesures. Sans etat de manette : CAM, l'affichage d'origine.
+  void drawContextCard(
+    cv::Mat & im, const bamboo_interfaces::msg::TrackState & ts, int x, int y, double u)
+  {
+    const auto st = teleopFresh();
+    const std::string mode = st ? st->mode : "";
+    if (mode == "CONDUITE" || mode == "NAV") {
+      drawDriveCard(im, x, y, u);
+    } else if (mode == "CALIB") {
+      drawCalibCard(im, x, y, u);
+    } else {
+      drawCard(im, ts, x, y, u);
     }
   }
 
@@ -732,50 +946,64 @@ private:
       // On AFFICHE la cause de perte : sans elle, l'operateur voit "plus de cadre" et ne
       // peut pas distinguer un visage sorti du champ d'un tracker qui a decroche.
       putShadowed(
-        im, "perdu: " + ts.lost_reason, cv::Point(8, im.rows - iu(10, u)), 0.45 * u);
+        im, "perdu: " + ts.lost_reason,
+        cv::Point(iu(8, u), im.rows - iu(8 + 22 + 2 * 26 + 10, u)), 0.45 * u);
     }
 
     if (draw_prediction_) {drawPrediction(im, ts, u);}
     if (draw_marker_) {drawMainMarker(im, ts, u);}
 
-    // Pastilles d'etat : c'est la reponse a l'exigence "boutons activation des modes" --
-    // le flux externe est en lecture seule, donc on montre l'ETAT, pas un bouton cliquable.
-    // En HAUT A DROITE, la carte occupant desormais le haut a gauche.
-    const int pill_y = iu(8, u);
-    const int pill_x0 = std::max(iu(8, u), im.cols - iu(330, u));
+    // --- DISPOSITION (demande utilisateur 2026-10-03) ------------------------------------
+    //   haut DROITE : boite du MODE, puis carte CONTEXTUELLE du mode (CAM/MOTEURS/MESURES)
+    //   bas GAUCHE  : pastilles d'etat, comme le prototype (3 lignes)
+    //   bas DROITE  : latence/desynchro et consignes servo
+    // Le flux externe est en lecture seule : les pastilles montrent l'ETAT, pas un bouton.
+    const int col_w = iu(300, u);
+    const int col_x = std::max(iu(8, u), im.cols - iu(8, u) - col_w);
+    int col_y = drawModeBox(im, col_x, iu(8, u), col_w, u);
+    if (draw_card_) {drawContextCard(im, ts, col_x, col_y + iu(6, u), u);}
+
+    const int row_h = iu(26, u);
+    const int row3 = im.rows - iu(8, u) - iu(22, u);
+    const int row2 = row3 - row_h;
+    const int row1 = row2 - row_h;
+    const int pill_x0 = iu(8, u);
     int x = pill_x0;
-    x = modePill(im, x, pill_y, "TRACK", tracking_on_, u);
+    x = modePill(im, x, row1, "TRACK", tracking_on_, u);
     x = modePill(
-      im, x, pill_y, "RECO", recog_mode_ == "recognition" || recog_mode_ == "acquisition", u);
-    x = modePill(im, x, pill_y, "ACQ", recog_mode_ == "acquisition", u);
-    x = modePill(im, x, pill_y, track_mode_.empty() ? "-" : track_mode_, ts.locked, u);
-    modePill(im, x, pill_y, predict_mode_.empty() ? "off" : predict_mode_,
+      im, x, row1, "RECO", recog_mode_ == "recognition" || recog_mode_ == "acquisition", u);
+    x = modePill(im, x, row1, "ACQ", recog_mode_ == "acquisition", u);
+    x = modePill(im, x, row1, track_mode_.empty() ? "-" : track_mode_, ts.locked, u);
+    modePill(im, x, row1, predict_mode_.empty() ? "off" : predict_mode_,
       predict_mode_ != "off" && !predict_mode_.empty(), u);
 
-    // MANETTE sur une SECONDE ligne : la premiere s'arrete au bord de la carte (x = 308 a
-    // 640 px de large), il n'y a pas la place d'une sixieme pastille sans la chevaucher.
-    // Gris si l'etat se tait depuis 4 periodes : bamboo_teleop publie a 2 Hz, donc 2 s de
-    // silence ne peut pas etre un simple retard.
+    // MANETTE + SANTE. MANETTE grise si l'etat se tait depuis 4 periodes (2 Hz) ; SANTE
+    // grise apres 3 s de silence (agregateur a 1 Hz).
     int gp_state = -1;
     if (have_gamepad_ && (now_steady_.now() - last_gamepad_).seconds() <= 2.0) {
       gp_state = gamepad_ok_ ? 1 : 0;
     }
-    const int row2_x = gamepadPill(im, pill_x0, pill_y + iu(26, u), gp_state, u);
-    // SANTE a cote de MANETTE. Gris apres 3 s de silence : l'agregateur publie a 1 Hz.
+    const int row2_x = gamepadPill(im, pill_x0, row2, gp_state, u);
     int health = -1;
     if (health_level_ >= 0 && (now_steady_.now() - last_health_).seconds() <= 3.0) {
       health = health_level_;
     }
-    healthPill(im, row2_x, pill_y + iu(26, u), health, u);
+    healthPill(im, row2_x, row2, health, u);
 
-    drawModePanel(im, pill_x0, pill_y + iu(56, u), u);
+    // DEUX VERROUS de traction, deux pastilles (orange = arme) :
+    //   ARME SYS  le driver accepte cmd_vel (`enable_cmd_vel`, fichier canonique)
+    //   ARME B    la manette publie (appui LONG sur B)
+    // "?" = source muette : on ne sait pas, on ne pretend pas.
+    const auto cst = fresh(last_comp_, 2.0) ? comp_ : nullptr;
+    const auto tst = teleopFresh();
+    x = modePill(im, pill_x0, row3, cst ? "ARME SYS" : "ARME SYS ?", cst && cst->armed, u,
+      kZoneOut);
+    modePill(im, x, row3, tst ? "ARME B" : "ARME B ?", tst && tst->armed, u, kZoneOut);
 
     const double lat_ms = latencyMs(f.stamp_ns);
     if (lat_ms > lat_max_ms_) {lat_max_ms_ = lat_ms;}
     lat_sum_ms_ += lat_ms;
     ++lat_n_;
-
-    if (draw_card_) {drawCard(im, ts, u);}
 
     if (draw_stats_) {
       // LATENCE et DESYNCHRO, en gros et en bas a gauche : ce sont les deux chiffres qui
@@ -789,7 +1017,11 @@ private:
       std::ostringstream s;
       s << std::fixed << std::setprecision(0)
         << "lat " << lat_ms << " ms   desync " << desync_ms << " ms";
-      putShadowed(im, s.str(), cv::Point(iu(8, u), im.rows - iu(28, u)), 0.5 * u);
+      // En bas a DROITE (les pastilles ont pris le bas a gauche), aligne sur le bord.
+      int b0 = 0;
+      const int lw = cv::getTextSize(s.str(), cv::FONT_HERSHEY_SIMPLEX, 0.5 * u, 1, &b0).width;
+      putShadowed(im, s.str(), cv::Point(im.cols - iu(8, u) - lw, im.rows - iu(28, u)),
+        0.5 * u);
 
       // Consignes servo VUES PASSER, en bas a droite. Vert quand elles se TAISENT : c'est
       // la contre-epreuve de la zone morte (T14), la boite doit verdir au meme instant.
@@ -798,11 +1030,15 @@ private:
         std::ostringstream sv;
         sv << std::fixed << std::setprecision(0) << "pan " << pan_deg_
            << "  tilt " << tilt_deg_ << "  cmd " << std::setprecision(1) << age_s << "s";
-        put(im, sv.str(), im.cols - iu(250, u), im.rows - iu(10, u),
+        int b1 = 0;
+        const int sw = cv::getTextSize(sv.str(), cv::FONT_HERSHEY_SIMPLEX, 0.5 * u, 1, &b1).width;
+        put(im, sv.str(), im.cols - iu(8, u) - sw, im.rows - iu(10, u),
           (age_s > 0.5) ? kOn : kZoneOut, 0.5 * u);
       } else {
-        put(im, "servo: aucune consigne", im.cols - iu(250, u), im.rows - iu(10, u),
-          kOff, 0.5 * u);
+        const std::string none = "servo: aucune consigne";
+        int b1 = 0;
+        const int sw = cv::getTextSize(none, cv::FONT_HERSHEY_SIMPLEX, 0.5 * u, 1, &b1).width;
+        put(im, none, im.cols - iu(8, u) - sw, im.rows - iu(10, u), kOff, 0.5 * u);
       }
     }
 
@@ -990,6 +1226,12 @@ private:
   rclcpp::Subscription<bamboo_interfaces::msg::ServoCmd>::SharedPtr servo_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gamepad_sub_;
   rclcpp::Subscription<bamboo_interfaces::msg::TeleopState>::SharedPtr teleop_sub_;
+  rclcpp::Subscription<bamboo_interfaces::msg::MotionCompensationState>::SharedPtr comp_sub_;
+  rclcpp::Subscription<bamboo_interfaces::msg::WheelRpm>::SharedPtr rpm_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr req_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr batt_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr calib_sub_;
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticStatus>::SharedPtr health_sub_;
   rclcpp::Client<bamboo_interfaces::srv::RegisterOverlay>::SharedPtr mux_cli_;
   rclcpp::TimerBase::SharedPtr stats_timer_;
@@ -1000,6 +1242,13 @@ private:
   bamboo_interfaces::msg::RecognitionResult::ConstSharedPtr rec_;
   // Dernier etat de la manette (mode, groupe, touches) : meme convention que rec_.
   bamboo_interfaces::msg::TeleopState::ConstSharedPtr teleop_;
+  // Cartes CONDUITE / CALIB : derniers messages, meme convention que rec_.
+  bamboo_interfaces::msg::MotionCompensationState::ConstSharedPtr comp_;
+  bamboo_interfaces::msg::WheelRpm::ConstSharedPtr rpm_;
+  sensor_msgs::msg::JointState::ConstSharedPtr req_;
+  sensor_msgs::msg::Imu::ConstSharedPtr imu_;
+  std_msgs::msg::String::ConstSharedPtr calib_report_;
+  float batt_v_{0.0f};
   std::string recog_mode_{"off"};
   std::string track_mode_{"mil"};
   std::string predict_mode_{"off"};
@@ -1023,6 +1272,11 @@ private:
   rclcpp::Clock now_steady_{RCL_STEADY_TIME};
   rclcpp::Time last_gamepad_{0, 0, RCL_STEADY_TIME};
   rclcpp::Time last_teleop_{0, 0, RCL_STEADY_TIME};
+  rclcpp::Time last_comp_{0, 0, RCL_STEADY_TIME};
+  rclcpp::Time last_rpm_{0, 0, RCL_STEADY_TIME};
+  rclcpp::Time last_req_{0, 0, RCL_STEADY_TIME};
+  rclcpp::Time last_imu_{0, 0, RCL_STEADY_TIME};
+  rclcpp::Time last_batt_{0, 0, RCL_STEADY_TIME};
   // -1 = jamais recu : la pastille SANTE reste grise tant que l'agregateur n'a rien dit.
   int health_level_{-1};
   rclcpp::Time last_health_{0, 0, RCL_STEADY_TIME};

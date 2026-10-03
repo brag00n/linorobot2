@@ -48,6 +48,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profi
 from geometry_msgs.msg import Twist
 from rcl_interfaces.srv import SetParametersAtomically
 from sensor_msgs.msg import BatteryState, Imu
+from std_msgs.msg import String
 from std_srvs.srv import SetBool, Trigger
 
 from bamboo_interfaces.action import Calibrate
@@ -79,6 +80,11 @@ class Ctx:
         self.faults, self.warns, self.pairs = [], [], []
         self.candidate = ""
         self.report = ""
+        self.lines = []        # rapport LISIBLE (carte MESURES du HUD), une ligne par fait
+
+    def note(self, text):
+        self.lines.append(text)
+        self.node.publishReport(self.lines)
 
 
 class Leaf(py_trees.behaviour.Behaviour):
@@ -149,6 +155,8 @@ class RestImu(Leaf):
         ok, msg = cm.rest_ok(st, n.p["imu_max_bias"], n.p["imu_max_drift_deg"])
         st["ok"], st["verdict"] = ok, msg
         self.ctx.imu.append(st)
+        self.ctx.note("IMU %s biais %.4f derive %.2f deg" % (
+            "OK" if ok else "HORS SEUIL", st["biais_gz"], st["derive_cap_deg"]))
         self.say(("OK " if ok else "HORS SEUIL ") + msg)
         return Status.SUCCESS if ok else Status.FAILURE
 
@@ -219,6 +227,9 @@ class Step(Leaf):
             return Status.RUNNING
         st = cm.step_stats(self.v, self.w, self.gz, self.ww, self.vw)
         self.ctx.steps.append(st)
+        self.ctx.note("%-14s imu %+.2f roues %+.2f s %s" % (
+            self.name, st["w_imu"], st["w_roues"],
+            "--" if st["s"] is None else "%.2f" % st["s"]))
         self.say("w_imu %.3f, w_roues %.3f -> s %s" % (
             st["w_imu"], st["w_roues"], "?" if st["s"] is None else "%.3f" % st["s"]))
         return Status.SUCCESS
@@ -236,8 +247,11 @@ class Compute(Leaf):
             self.ctx.node.get_logger().warn("calibration : " + w)
         if c.faults:
             self.say("REJET : " + " ; ".join(c.faults))
+            for f in c.faults:
+                c.note("REJET " + f[:48])
             return Status.FAILURE
         self.say("table s = %s" % c.table)
+        c.note("TABLE s " + " ".join("%.2f" % x for x in c.table))
         return Status.SUCCESS
 
 
@@ -309,6 +323,9 @@ class CalibrationNode(Node):
         self.create_subscription(TeleopState, "/teleop/state", self._onTeleop, latched,
                                  callback_group=self._cbg)
         self.pubVel = self.create_publisher(Twist, "cmd_vel", 10)
+        # Rapport LISIBLE pour le HUD (carte MESURES du mode CALIB) : latche, une ligne par
+        # fait mesure, le dernier but seulement.
+        self.pubReport = self.create_publisher(String, "~/report", latched)
 
         ActionServer(self, Calibrate, "~/calibrate", execute_callback=self._execute,
                      goal_callback=self._onGoal, cancel_callback=lambda _g: CancelResponse.ACCEPT,
@@ -389,6 +406,9 @@ class CalibrationNode(Node):
         if not cli.wait_for_service(timeout_sec=1.0):
             return None
         return cli.call_async(Trigger.Request())
+
+    def publishReport(self, lines):
+        self.pubReport.publish(String(data="\n".join(lines)))
 
     def drive(self, v, w):
         t = Twist()
@@ -480,6 +500,9 @@ class CalibrationNode(Node):
             "IMU SEULE" if goal.imu_check_only else "COMPLETE", goal.variant or "essai",
             goal.include_arcs))
         lastLine = None
+        ctx.note("%s variante %s%s" % ("IMU seule," if goal.imu_check_only else "complete,",
+                                       goal.variant or SCRATCH_VARIANT,
+                                       ", arcs" if goal.include_arcs else ""))
         try:
             while rclpy.ok():
                 if gh.is_cancel_requested:
@@ -505,6 +528,10 @@ class CalibrationNode(Node):
             with self._lock:
                 self._busy = False
         self.get_logger().info(py_trees.display.unicode_tree(root, show_status=True))
+        if ctx.abort:
+            ctx.note("ABANDON " + ctx.abort[:46])
+        elif root.status == Status.SUCCESS:
+            ctx.note("FINI : candidat ecrit" if ctx.candidate else "FINI")
 
         success = root.status == Status.SUCCESS and not ctx.abort
         if gh.is_cancel_requested:
