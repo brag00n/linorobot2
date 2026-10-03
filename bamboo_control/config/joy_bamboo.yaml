@@ -154,12 +154,18 @@ bamboo_teleop:
     # Actions connues : tracking recenter recognition acquisition tracker
     # predict detector training target_grow target_shrink speed_max_up
     # speed_max_down speed_min_up speed_min_down calib_start calib_imu
-    # calib_arcs calib_variant calib_apply calib_revert calib_pi nav_unavailable
+    # calib_arcs calib_variant calib_apply calib_revert calib_pi flip_image
+    # nav_unavailable
+    #
+    # ZR LONG = MIROIR HORIZONTAL de l'image (flip de tracking_node, h <-> none), dans
+    # TOUS les groupes. Consequence assumee : ZR COURT (plafond de vitesse) part alors au
+    # RELACHEMENT. Refuse sur un robot a nacelle (le pan s'inverserait).
     fallback_mode: "conduite"     # sans gestionnaire de modes
     keymap:
       conduite:
         groups: "vitesse"
         vitesse:
+          ZR_long: "flip_image"
           ZR: "speed_max_up"
           ZL: "speed_max_down"
           PLUS: "speed_min_up"
@@ -167,6 +173,7 @@ bamboo_teleop:
       tracking:
         groups: "vision;cible"
         vision:
+          ZR_long: "flip_image"
           X: "tracking"
           X_long: "recenter"
           Y: "recognition"
@@ -176,6 +183,7 @@ bamboo_teleop:
           ZR: "speed_max_up"
           ZL: "speed_max_down"
         cible:
+          ZR_long: "flip_image"
           A: "detector"
           Y: "training"
           L: "target_shrink"
@@ -187,17 +195,26 @@ bamboo_teleop:
         # A long et non A court : lancer fait TOURNER le robot, le geste doit etre
         # tenu. Exige en plus la traction armee (B long).
         mesure:
+          ZR_long: "flip_image"
           A_long: "calib_start"
           X: "calib_imu"
           Y: "calib_arcs"
           R: "calib_variant"
         essai:
+          ZR_long: "flip_image"
           A: "calib_apply"
           X: "calib_revert"
           Y: "calib_pi"
+      sante:
+        groups: "detail"
+        detail:
+          ZR_long: "flip_image"
+          ZR: "speed_max_up"
+          ZL: "speed_max_down"
       navigation:
         groups: "nav"
         nav:
+          ZR_long: "flip_image"
           A: "nav_unavailable"
 
     # Calibration : variantes proposees par R (groupe mesure), separees par ';'.
@@ -272,6 +289,10 @@ bamboo_teleop:
     # raisonnement valide -- il republie un stick TENU, donc ne plus rien recevoir ne peut
     # pas vouloir dire "stick immobile". Vaut aussi pour les pas servo.
     joy_timeout_s: 0.5
+    # MANETTE PERDUE (Bluetooth) au-dela de ce silence : traction DESARMEE et arretee ;
+    # au retour de la manette, B LONG pour rearmer. Plus long que joy_timeout_s (qui ne
+    # fait que stopper) pour ne pas desarmer sur un hoquet radio.
+    disarm_on_loss_s: 1.0
     # Pas de la taille de surface cible (croix gauche/droite), envoye en DELTA
     # SIGNE sur la cible ModeCmd `deadzone` : l'etat vit cote serveur.
     target_step: 0.01

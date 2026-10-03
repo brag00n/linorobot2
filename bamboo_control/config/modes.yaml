@@ -26,7 +26,7 @@
 
 bamboo_mode_manager:
   ros__parameters:
-    modes: ["conduite", "tracking", "calibration", "navigation"]
+    modes: ["conduite", "tracking", "calibration", "navigation", "sante"]
     default_mode: "conduite"
     mode_cmd_topic: "/videotracking/mode_cmd"
     ack_timeout_s: 1.0
@@ -56,3 +56,9 @@ bamboo_mode_manager:
     navigation:
       label: "NAV"
       requires: "node:/bt_navigator"
+
+    # Sante du robot : la carte du HUD (haut droite) liste tout ce qui n'est pas VERT dans
+    # l'arbre de diagnostic agrege (modules et composants, avec leur message). Lecture
+    # seule : rien a l'entree ni a la sortie.
+    sante:
+      label: "SANTE"

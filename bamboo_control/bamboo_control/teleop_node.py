@@ -86,7 +86,8 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from rcl_interfaces.msg import SetParametersResult
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue, SetParametersResult
+from rcl_interfaces.srv import GetParameters, SetParameters
 from diagnostic_msgs.msg import DiagnosticStatus
 from diagnostic_updater import Updater
 from geometry_msgs.msg import Twist
@@ -204,6 +205,15 @@ class TeleopNode(Node):
         self._motionOn = bool(self.declare_parameter("motion_enabled", False).value)
         self._targetStep = float(self.declare_parameter("target_step", 0.01).value)
         self._joyTimeout = float(self.declare_parameter("joy_timeout_s", 0.5).value)
+        # PERTE DE MANETTE (Bluetooth coupe, manette eteinte) : au-dela de ce silence de /joy,
+        # la traction est DESARMEE -- pas seulement stoppee. Au retour de la manette il faut
+        # un appui LONG sur B pour rearmer : un robot qui repartirait seul au retour du lien
+        # sur un stick reste pousse est exactement ce que l'homme-mort interdit. Plus long que
+        # joy_timeout_s (qui ne fait que stopper) pour ne pas desarmer sur un hoquet radio.
+        self._disarmOnLoss = float(self.declare_parameter("disarm_on_loss_s", 1.0).value)
+        # Miroir horizontal de l'image (action `flip_image`, ZR long) : parametre `flip` du
+        # noeud de suivi, qui l'applique A LA TRAME avant detection.
+        self._trackNode = str(self.declare_parameter("tracking_node", "/tracking_node").value)
 
         modeTopic = self.declare_parameter("mode_topic", "/videotracking/mode_cmd").value
         gamepadTopic = self.declare_parameter(
@@ -284,6 +294,9 @@ class TeleopNode(Node):
         self._calText = ""
         self._calApplied = False
         self._calPi = False
+        self._flipOn = None           # inconnu tant que tracking_node n'a pas ete interroge
+        self._flipGet = self.create_client(GetParameters, self._trackNode + "/get_parameters")
+        self._flipSet = self.create_client(SetParameters, self._trackNode + "/set_parameters")
 
         # --- modes du robot (bamboo_mode_manager) ------------------------------
         # Sans gestionnaire, on reste dans `fallback_mode` : la conduite marche toujours.
@@ -688,7 +701,18 @@ class TeleopNode(Node):
         Le silence de /joy vaut perte de manette : `autorepeat_rate` republie un stick
         TENU, donc ne plus rien recevoir ne peut pas vouloir dire "stick immobile".
         """
-        if time.monotonic() - self._lastJoy > self._joyTimeout:
+        silence = time.monotonic() - self._lastJoy
+        if self._motionOn and self._lastJoy > 0.0 and silence > self._disarmOnLoss:
+            # Manette PERDUE : desarmement, arret, annulation d'une calibration. Le rearmement
+            # exige un appui LONG sur B, une fois la manette revenue.
+            self._motionOn = False
+            self._calibCancel("manette perdue")
+            self._stopMotion()
+            self.get_logger().error(
+                "manette PERDUE depuis %.1f s : traction DESARMEE (B long pour rearmer)"
+                % silence)
+            self._publishState()
+        if silence > self._joyTimeout:
             if self._gpDriving:
                 self._warnOnce("joy_lost_drive",
                                "manette perdue en pleine poussee : STOP franc")
@@ -871,6 +895,8 @@ class TeleopNode(Node):
                             lambda: self._calApplied),
             "calib_revert": (self._calibRevert, lambda: "revenir au fichier", None),
             "calib_pi": (self._calibTogglePi, lambda: "PI de lacet", lambda: self._calPi),
+            "flip_image": (self._actFlip, lambda: "miroir image",
+                           lambda: bool(self._flipOn)),
             "nav_unavailable": (lambda: self.get_logger().warn(
                 "navigation : pas encore de lot NAV"), lambda: "(lot NAV a venir)", None),
         }
@@ -984,6 +1010,45 @@ class TeleopNode(Node):
     def _actPredict(self):
         self._predict = self._next(_PREDICTS, self._predict)
         self._sendMode("predict", self._predict)
+
+    def _actFlip(self):
+        """Bascule le miroir HORIZONTAL de l'image (`flip` de tracking_node : h <-> none).
+
+        REFUSE sur un robot a NACELLE : le triplet (flip, invert_pan, invert_tilt) est
+        indivisible (cf. videotracking.yaml) -- miroiter sans inverser le pan ferait FUIR
+        le visage a la camera. Sur une camera fixe (BambooWS), rien ne depend du sens.
+        On relit d'abord la valeur en vigueur : un autre client (MCP) a pu la changer.
+        """
+        if self._hasGimbal:
+            self.get_logger().warn("miroir refuse : robot a nacelle, le pan s'inverserait "
+                                   "(regler flip ET invert_pan ensemble, a l'arret)")
+            return
+        if not (self._flipGet.service_is_ready() and self._flipSet.service_is_ready()):
+            self.get_logger().warn("miroir : %s absent (groupe suivi arrete ?)" % self._trackNode)
+            return
+
+        def got(f):
+            try:
+                cur = f.result().values[0].string_value
+            except Exception as exc:                                # noqa: BLE001
+                self.get_logger().warn("miroir : lecture de flip echouee : %s" % exc)
+                return
+            want = "none" if cur == "h" else "h"
+            v = ParameterValue(type=ParameterType.PARAMETER_STRING, string_value=want)
+            req = SetParameters.Request(parameters=[Parameter(name="flip", value=v)])
+
+            def done(g):
+                try:
+                    ok = g.result().results[0].successful
+                except Exception:                                   # noqa: BLE001
+                    ok = False
+                if ok:
+                    self._flipOn = (want == "h")
+                self.get_logger().info("miroir image : %s" % (
+                    ("ACTIF" if want == "h" else "coupe") if ok else "REFUSE"))
+                self._publishState()
+            self._flipSet.call_async(req).add_done_callback(done)
+        self._flipGet.call_async(GetParameters.Request(names=["flip"])).add_done_callback(got)
 
     def _actDetector(self):
         self._detector = self._next(_DETECTORS, self._detector)

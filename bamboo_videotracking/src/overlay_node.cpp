@@ -39,6 +39,7 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
 
 #include "bamboo_interfaces/msg/mode_cmd.hpp"
@@ -395,6 +396,34 @@ public:
         teleop_ = m;
         last_teleop_ = now_steady_.now();
       }, teleop_opts);
+    // DETAIL de la pastille SANTE : les MODULES (premier niveau sous /Robot) de l'arbre
+    // agrege, a 1 Hz. On n'en garde que le nom court et le niveau ; le detail des taches
+    // reste dans Foxglove et l'outil MCP `diagnostics`.
+    agg_sub_ = create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
+      declare_parameter<std::string>("diagnostics_agg_topic", "/diagnostics_agg"),
+      rclcpp::QoS(1).reliable(),
+      [this](diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr m) {
+        std::vector<std::pair<std::string, int>> mods;
+        std::vector<HealthItem> bad;
+        for (const auto & st : m->status) {
+          // Tout ce qui n'est pas VERT, pour la carte du mode SANTE -- mais les FEUILLES
+          // seulement : un groupe de l'agregateur ne dit que "Warning"/"Error"/"Stale",
+          // c'est-a-dire le resume de ses enfants, qu'on afficherait alors en double.
+          const bool summary = st.message == "Warning" || st.message == "Error" ||
+            st.message == "Stale" || st.message == "OK";
+          if (st.level != 0 && st.name != "/Robot" && !summary) {
+            bad.push_back({healthPath(st.name), st.message, static_cast<int>(st.level)});
+          }
+          // "/Robot/<module>" exactement : deux segments.
+          if (st.name.rfind("/Robot/", 0) != 0) {continue;}
+          const std::string rest = st.name.substr(7);
+          if (rest.empty() || rest.find('/') != std::string::npos) {continue;}
+          mods.emplace_back(shortModule(rest), static_cast<int>(st.level));
+        }
+        modules_ = mods;
+        health_items_ = bad;
+        last_agg_ = now_steady_.now();
+      });
     // --- carte CONTEXTUELLE (CONDUITE / CALIB) : telemetrie du driver -------------------
     // Messages minuscules a 10-30 Hz : on garde le dernier, horodate, et la carte dit
     // "--" si la source se tait (une valeur perimee doit se VOIR perimee).
@@ -730,6 +759,86 @@ private:
     }
   }
 
+  /// Nom COURT d'un module de l'arbre agrege, pour la liste sous SANTE. L'ordre des tests
+  /// compte : "bamboo_videotracking" contient "bamboo_video".
+  static std::string shortModule(const std::string & path)
+  {
+    if (path.find("bamboo_control") != std::string::npos) {return "Manette";}
+    if (path.find("bamboo_videotracking") != std::string::npos) {return "Suivi";}
+    if (path.find("bamboo_video") != std::string::npos) {return "Video";}
+    if (path.find("driver.esp32") != std::string::npos) {return "Esp32";}
+    if (path.find("driver.stm32") != std::string::npos) {return "Stm32";}
+    if (path.find("infrastructure") != std::string::npos) {return "Infra";}
+    if (path.find("systeme") != std::string::npos) {return "RPi";}
+    return path.substr(0, path.find(' '));
+  }
+
+  /// Chemin LISIBLE d'une entree de l'arbre : "Module > dernier segment", le module en nom
+  /// court (cf. shortModule) et sans le prefixe "<noeud>: " de la tache.
+  static std::string healthPath(const std::string & name)
+  {
+    std::string rest = name.rfind("/Robot/", 0) == 0 ? name.substr(7) : name;
+    const size_t a = rest.find('/');
+    const std::string mod = shortModule(rest.substr(0, a));
+    if (a == std::string::npos) {return mod;}
+    std::string leaf = rest.substr(rest.rfind('/') + 1);
+    const size_t c = leaf.find(": ");
+    if (c != std::string::npos) {leaf = leaf.substr(c + 2);}
+    return mod + " > " + leaf;
+  }
+
+  /// Liste des modules en ORANGE (WARN) ou ROUGE (ERROR), a droite de SANTE : dit OU
+  /// chercher sans ouvrir Foxglove. Masquee si l'agregateur se tait (SANTE est alors grise).
+  void drawHealthDetail(cv::Mat & im, int x, int y, double u)
+  {
+    if (!fresh(last_agg_, 3.0)) {return;}
+    for (const auto & m : modules_) {
+      if (m.second != 1 && m.second != 2) {continue;}
+      x = modePill(im, x, y, m.first, true, u, m.second == 2 ? kBad : kZoneOut);
+    }
+  }
+
+  /// Carte du mode SANTE : chaque module/composant/tache NON VERT de l'arbre agrege, avec
+  /// son message. Couleur = niveau (orange WARN, rouge ERROR, gris PERIME). Le chemin est
+  /// abrege (sans "/Robot/") et tronque : le detail complet reste dans Foxglove / MCP.
+  void drawHealthCard(cv::Mat & im, int x, int y, double u)
+  {
+    const bool ok = fresh(last_agg_, 3.0);
+    const auto items = health_items_;
+    const size_t max_lines = 11;
+    const size_t n = ok ? std::min(items.size(), max_lines) : 0;
+    const int lh = iu(30, u);              // deux lignes par entree : chemin puis message
+    const int h = iu(38, u) + std::max<int>(1, static_cast<int>(n)) * lh +
+      (ok && items.size() > max_lines ? iu(16, u) : 0) + iu(4, u);
+    cardBg(im, cv::Rect(x, y, iu(300, u), h));
+    dashedRect(im, cv::Rect(x, y, iu(300, u), h), kBorder, u);
+    int worst = -1;
+    for (const auto & it : items) {worst = std::max(worst, it.level == 3 ? 0 : it.level);}
+    const int hy = y + iu(18, u);
+    const cv::Scalar wc = !ok ? kOff : worst == 2 ? kBad : worst == 1 ? kZoneOut : kOn;
+    cv::circle(im, cv::Point(x + iu(13, u), hy - iu(5, u)), std::max(2, iu(5, u)), wc,
+      cv::FILLED);
+    put(im, "SANTE", x + iu(25, u), hy, kVal, 0.5 * u);
+    put(im, !ok ? "agregateur muet" :
+      (items.empty() ? "tout est vert" : std::to_string(items.size()) + " non vert(s)"),
+      x + iu(110, u), hy, kLabel, 0.45 * u);
+    int yy = y + iu(38, u);
+    auto cut = [](const std::string & t, size_t k) {
+        return t.size() > k ? t.substr(0, k - 2) + ".." : t;
+      };
+    for (size_t i = 0; i < n; ++i) {
+      const auto & it = items[i];
+      const cv::Scalar c = it.level == 2 ? kBad : it.level == 1 ? kZoneOut : kOff;
+      put(im, cut(it.path, 38), x + iu(10, u), yy, c, 0.38 * u);
+      put(im, cut(it.message, 42), x + iu(18, u), yy + iu(13, u), kVal, 0.36 * u);
+      yy += lh;
+    }
+    if (ok && items.size() > max_lines) {
+      put(im, "... +" + std::to_string(items.size() - max_lines) + " (Foxglove / MCP)",
+        x + iu(10, u), yy, kLabel, 0.38 * u);
+    }
+  }
+
   /// Vrai si la source a parle dans les `max_s` dernieres secondes.
   bool fresh(const rclcpp::Time & t, double max_s)
   {
@@ -905,6 +1014,8 @@ private:
       drawDriveCard(im, x, y, u);
     } else if (mode == "CALIB") {
       drawCalibCard(im, x, y, u);
+    } else if (mode == "SANTE") {
+      drawHealthCard(im, x, y, u);
     } else {
       drawCard(im, ts, x, y, u);
     }
@@ -989,7 +1100,8 @@ private:
     if (health_level_ >= 0 && (now_steady_.now() - last_health_).seconds() <= 3.0) {
       health = health_level_;
     }
-    healthPill(im, row2_x, row2, health, u);
+    const int detail_x = healthPill(im, row2_x, row2, health, u);
+    drawHealthDetail(im, detail_x, row2, u);
 
     // DEUX VERROUS de traction, deux pastilles (orange = arme) :
     //   ARME SYS  le driver accepte cmd_vel (`enable_cmd_vel`, fichier canonique)
@@ -1024,22 +1136,15 @@ private:
       putShadowed(im, s.str(), cv::Point(im.cols - iu(8, u) - lw, im.rows - iu(28, u)),
         0.5 * u);
 
-      // Consignes servo VUES PASSER, en bas a droite. Vert quand elles se TAISENT : c'est
-      // la contre-epreuve de la zone morte (T14), la boite doit verdir au meme instant.
-      if (servo_seen_) {
-        const double age_s = (now_steady_.now() - last_servo_).seconds();
-        std::ostringstream sv;
-        sv << std::fixed << std::setprecision(0) << "pan " << pan_deg_
-           << "  tilt " << tilt_deg_ << "  cmd " << std::setprecision(1) << age_s << "s";
-        int b1 = 0;
-        const int sw = cv::getTextSize(sv.str(), cv::FONT_HERSHEY_SIMPLEX, 0.5 * u, 1, &b1).width;
-        put(im, sv.str(), im.cols - iu(8, u) - sw, im.rows - iu(10, u),
-          (age_s > 0.5) ? kOn : kZoneOut, 0.5 * u);
-      } else {
-        const std::string none = "servo: aucune consigne";
-        int b1 = 0;
-        const int sw = cv::getTextSize(none, cv::FONT_HERSHEY_SIMPLEX, 0.5 * u, 1, &b1).width;
-        put(im, none, im.cols - iu(8, u) - sw, im.rows - iu(10, u), kOff, 0.5 * u);
+      // CADENCE DU HUD (trames annotees publiees par seconde, fenetre des stats), en bas a
+      // droite a la place des consignes servo (demande utilisateur 2026-10-04). Orange sous
+      // 10 fps : le flux saccade et la latence affichee ne dit plus tout.
+      const std::string hud = "HUD " + fmt(last_overlay_fps_, 1) + " fps";
+      int b1 = 0;
+      const int sw = cv::getTextSize(hud, cv::FONT_HERSHEY_SIMPLEX, 0.5 * u, 1, &b1).width;
+      putShadowed(im, hud, cv::Point(im.cols - iu(8, u) - sw, im.rows - iu(10, u)), 0.5 * u);
+      if (last_overlay_fps_ < 10.0) {
+        put(im, hud, im.cols - iu(8, u) - sw, im.rows - iu(10, u), kZoneOut, 0.5 * u);
       }
     }
 
@@ -1233,6 +1338,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr batt_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr calib_sub_;
+  rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr agg_sub_;
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticStatus>::SharedPtr health_sub_;
   rclcpp::Client<bamboo_interfaces::srv::RegisterOverlay>::SharedPtr mux_cli_;
   rclcpp::TimerBase::SharedPtr stats_timer_;
@@ -1250,6 +1356,16 @@ private:
   sensor_msgs::msg::Imu::ConstSharedPtr imu_;
   std_msgs::msg::String::ConstSharedPtr calib_report_;
   float batt_v_{0.0f};
+  // Modules de l'arbre agrege : (nom court, niveau). Remplace d'un bloc a 1 Hz.
+  std::vector<std::pair<std::string, int>> modules_;
+  // Tout ce qui n'est pas vert (mode SANTE), a toute profondeur.
+  struct HealthItem
+  {
+    std::string path;
+    std::string message;
+    int level;
+  };
+  std::vector<HealthItem> health_items_;
   std::string recog_mode_{"off"};
   std::string track_mode_{"mil"};
   std::string predict_mode_{"off"};
@@ -1278,6 +1394,7 @@ private:
   rclcpp::Time last_req_{0, 0, RCL_STEADY_TIME};
   rclcpp::Time last_imu_{0, 0, RCL_STEADY_TIME};
   rclcpp::Time last_batt_{0, 0, RCL_STEADY_TIME};
+  rclcpp::Time last_agg_{0, 0, RCL_STEADY_TIME};
   // -1 = jamais recu : la pastille SANTE reste grise tant que l'agregateur n'a rien dit.
   int health_level_{-1};
   rclcpp::Time last_health_{0, 0, RCL_STEADY_TIME};

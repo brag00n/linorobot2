@@ -19,7 +19,7 @@ ACTIONS = {"tracking", "recenter", "recognition", "acquisition", "tracker", "pre
            "detector", "training", "target_grow", "target_shrink", "speed_max_up",
            "speed_max_down", "speed_min_up", "speed_min_down", "calib_start", "calib_imu",
            "calib_arcs", "calib_variant", "calib_apply", "calib_revert", "calib_pi",
-           "nav_unavailable"}
+           "flip_image", "nav_unavailable"}
 
 
 def _flatten(d, prefix=""):
