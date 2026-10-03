@@ -1,0 +1,51 @@
+# ============================================================================
+# bamboo_calibration -- sequence de mesure du glissement en rotation
+# ============================================================================
+# Faits de PROCEDURE, pas de robot : la geometrie et les variantes viennent du
+# fichier canonique (bloc /**), empile AVANT ce fichier par calibration.launch.py.
+# Le noeud et son arbre sont decrits en tete de bamboo_base/calibration_node.py.
+# ============================================================================
+bamboo_calibration:
+  ros__parameters:
+    rate_hz: 10.0                 # cadence de l'arbre ET de la consigne cmd_vel
+
+    # --- preconditions et garde -------------------------------------------
+    # Pack 3S de BambooWS : 12,6 V plein. Sous 11,4 V la mesure ne vaudrait que
+    # pour une batterie basse (10,1 V sous charge le 2026-10-03).
+    min_battery_v: 11.4
+    require_teleop_armed: true    # exige l'armement a la manette (appui long B)
+    max_duration_s: 240.0
+    gyro_max_age_s: 0.3
+
+    # --- IMU au repos (etape 0) --------------------------------------------
+    imu_rest_s: 10.0
+    imu_max_bias: 0.005           # rad/s (la carte a deja une zone morte de 0,01)
+    imu_max_drift_deg: 0.5        # derive du cap sur imu_rest_s
+    recalibrate_settle_s: 4.0     # la carte moyenne ~2 s apres PREFLIGHT_CALIBRATION
+
+    # --- paliers -------------------------------------------------------------
+    # Consignes en vitesse ROUES (compensation neutralisee) : le robot n'en tient
+    # qu'environ la moitie au sol, d'ou des valeurs plus hautes que les bornes de
+    # la table (w_bins_rps, en vitesse REELLE). 3,0 rad/s aux roues = 0,19 m/s en
+    # peripherie de roue, loin de la saturation (~0,89 m/s).
+    spin_w_cmd: [0.6, 1.2, 2.0, 3.0]
+    arc_v: [0.2, 0.4]             # = lignes v>0 de la table
+    arc_w_cmd: [0.6, 1.5]
+    settle_s: 1.0                 # mise en regime, exclue de la mesure
+    measure_s: 3.0
+    pause_s: 1.5
+
+    # --- table produite (memes bornes que calib.* du fichier canonique) ---
+    v_bins_mps: [0.0, 0.2, 0.4]
+    w_bins_rps: [0.5, 1.0, 1.5]
+    slip_max: 0.8
+    # Lignes v>0 sans arcs mesures : "copy" = recopier la ligne v=0, "zero".
+    fill_unmeasured_rows: "copy"
+
+    # --- controles de qualite ------------------------------------------------
+    max_dispersion: 0.10          # ecart-type / moyenne du gyro sur un palier
+    max_asymmetry: 0.15           # ecart de s entre les deux sens
+
+    # --- essai en RAM (groupe `essai` du mode calibration) ------------------
+    pi_test_kp: 0.5
+    pi_test_ki: 0.0

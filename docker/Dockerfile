@@ -300,3 +300,19 @@ RUN wget -O .shm_off.xml https://raw.githubusercontent.com/eProsima/Fast-DDS/107
 COPY ./docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT [ "/entrypoint.sh" ]
+
+# --- Comportements : arbres py_trees (calibration aujourd'hui, NAV demain) -------------
+# IMAGE DEDIEE, meme raison que `diagnostics` : py_trees n'est pas dans l'image `hardware`,
+# et l'y ajouter imposerait de la reconstruire (plusieurs heures sur RPi4). Les paquets du
+# depot (bamboo_base : calibration_node, motion_compensation) sont compiles par
+# docker/rosbuild.sh dans l'espace de travail PARTAGE, monte par le service.
+FROM --platform=$BUILDPLATFORM ros:${ROS_DISTRO}-ros-base as behaviors
+
+RUN apt-get update && apt-get install -y     ros-${ROS_DISTRO}-py-trees-ros     ros-${ROS_DISTRO}-py-trees-ros-interfaces     ros-${ROS_DISTRO}-diagnostic-updater     python3-yaml     wget
+
+WORKDIR /root
+RUN wget -O .shm_off.xml https://raw.githubusercontent.com/eProsima/Fast-DDS/107ea8d64942102696840cd7d3e4cf93fa7a143e/examples/cpp/dds/AdvancedConfigurationExample/shm_off.xml
+
+COPY ./docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT [ "/entrypoint.sh" ]

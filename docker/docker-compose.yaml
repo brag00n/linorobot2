@@ -528,6 +528,42 @@ services:
       source install/setup.bash &&
       ros2 launch bamboo_diagnostics diagnostics.launch.py robot:=${ROBOT}"
 
+#--- Calibration du glissement en rotation (lot QUALIBRATION, bamboo_base/calibration_node) :
+#    serveur de l'action /bamboo_calibration/calibrate, lancee depuis le mode `calibration` de
+#    la manette. LE ROBOT TOURNE pendant une calibration : elle n'est acceptee que traction
+#    armee a la manette, et la manette l'annule (STOP, desarmement, stick, changement de mode).
+#    IMAGE DEDIEE `behaviors` (py_trees_ros), meme raison que `diagnostics`. Le depot est
+#    monte en ECRITURE : les candidats s'ecrivent a cote du fichier canonique du robot, ou
+#    l'utilisateur les recopiera apres validation (rien n'est ecrit dans le canonique).
+#    ETIQUETTE `esp32` : seul BambooWS l'autorise (`calibration_enabled` de son canonique) ;
+#    bambooSTM32YB reste desarme (pack 12,6 V brut sur moteurs 7,4 V).
+  bamboo_calibration:
+    image: linorobot2-behaviors:${ROS_DISTRO}
+    profiles: ["boot", "esp32"]
+    restart: unless-stopped
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile
+      args:
+        ROS_DISTRO: ${ROS_DISTRO}
+      target: behaviors
+    hostname: linorobot2-behaviors-${ROS_DISTRO}
+    stdin_open: true
+    tty: true
+    networks:
+    - linorobot2.network
+    ipc: host
+    volumes:
+      - ..:/root/linorobot2_ws/src/linorobot2
+      - ws_build:/root/linorobot2_ws/build:ro
+      - ws_install:/root/linorobot2_ws/install:ro
+    command: >
+      bash -lc "cd /root/linorobot2_ws &&
+      test -f install/setup.bash || echo 'ESPACE DE TRAVAIL NON CONSTRUIT -- lancer docker/rosbuild.sh dans un conteneur hardware (voir son en-tete)' >&2 &&
+      test -f install/setup.bash &&
+      source install/setup.bash &&
+      ros2 launch bamboo_base calibration.launch.py robot:=${ROBOT}"
+
 #--- Controleur STM32 (Yahboom ROS Control Board V3.0, pont MAVLink sysid 1) : proprietaire
 #    UNIQUE du CH340. LECTURE SEULE par defaut (enable_cmd_vel:=false) : le pack 12,6 V arrive
 #    brut sur des moteurs 7,4 V. Les SERVOS, eux, passent par /servo/cmd et sont bornes cote
