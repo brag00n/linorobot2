@@ -398,9 +398,12 @@ class TeleopNode(Node):
         stat.add("seuil_warn_hz", "%.0f" % self._joyRateWarn)
         stat.add("joy_timeout_s", "%.2f" % self._joyTimeout)
         if not self._gamepadConnected():
-            # WARN et jamais ERROR : la manette est OPTIONNELLE. La dire en panne a chaque fois
-            # qu'on la range apprendrait a ignorer le diagnostic.
-            stat.summary(DiagnosticStatus.WARN, "manette absente (pastille MANETTE rouge)")
+            # OK et non WARN : l'absence est DEJA signalee, plus pres de sa cause, par le
+            # composant `js0: peripherique` de bamboo_health (manette eteinte ou hors de
+            # portee). Deux WARN pour un seul fait faisaient compter double la meme alerte
+            # (constate 2026-10-04, mode SANTE). Cette tache garde ce qui n'appartient qu'a
+            # elle : la cadence de /joy quand la manette EST la.
+            stat.summary(DiagnosticStatus.OK, "manette absente : voir js0 (traction desarmee)")
         elif hz < self._joyRateWarn:
             stat.summary(DiagnosticStatus.WARN, "/joy lent : %.1f Hz" % hz)
         else:
