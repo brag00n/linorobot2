@@ -179,6 +179,9 @@ class Esp32MavlinkDriver(Node):
         self.declare_parameter("batt_warn_v", 10.5)
         self.declare_parameter("batt_error_v", 9.0)
         self.declare_parameter("batt_over_v", 13.0)
+        # L'etat ARME est-il l'etat NORMAL de ce robot ? Lu dans son fichier canonique, a cote
+        # d'enable_cmd_vel : c'est la meme decision. Ne sert qu'au diagnostic.
+        self.declare_parameter("armed_nominal", False)
 
         g = lambda n: self.get_parameter(n).value
         self.link_fresh_s = float(g("link_fresh_s"))
@@ -187,6 +190,7 @@ class Esp32MavlinkDriver(Node):
         self.batt_warn_v = float(g("batt_warn_v"))
         self.batt_error_v = float(g("batt_error_v"))
         self.batt_over_v = float(g("batt_over_v"))
+        self.armed_nominal = bool(g("armed_nominal"))
         # Dernier snapshot du lien, GARDE par _tick qui l'appelle deja : le diagnostic ne
         # relit rien sur le port.
         self._snap = {}

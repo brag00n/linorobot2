@@ -15,6 +15,7 @@ proprietaire du lien.
 
 Ce que le DRIVER fournit (attributs lus a chaque passage, donc commutables a chaud) :
   link, _snap, board_cfg, enable_cmd_vel
+  armed_nominal (facultatif)                           l'etat ARME est-il l'etat normal ?
   link_fresh_s, link_error_s, link_bad_warn            seuils de liaison
   batt_warn_v, batt_error_v, batt_over_v               echelle de SON pack
 Et, facultatif, `actuation_extra(stat)` pour ce qui n'existe que sur une carte (les servos du
@@ -150,10 +151,17 @@ class DriverDiagnostics:
         extra = getattr(d, "actuation_extra", None)
         if extra is not None:
             extra(stat)
-        # ARMEE = WARN, et ce n'est pas une panne : sur les deux robots le defaut est desarme
-        # (pack 12,6 V brut sur moteurs 7,4 V pour l'un, attache M1 cassee pour l'autre), donc
-        # tout armement doit se voir.
-        if d.enable_cmd_vel:
+        # L'etat NORMAL depend du robot, et c'est le fichier canonique qui le dit
+        # (`armed_nominal`). Hors de cet etat, l'armement est un WARN : pas une panne, mais
+        # ce qui doit se voir. bambooSTM32YB : normal = DESARME (pack 12,6 V brut sur moteurs
+        # 7,4 V). BambooWS : normal = ARME depuis le 2026-10-03, le seul verrou etant la
+        # manette -- un WARN permanent y apprendrait a ignorer le diagnostic.
+        nominal = bool(getattr(d, "armed_nominal", False))
+        stat.add("arme_est_normal", str(nominal))
+        if d.enable_cmd_vel and nominal:
+            stat.summary(DiagnosticStatus.OK,
+                         "traction armee (etat normal de ce robot : verrou a la manette)")
+        elif d.enable_cmd_vel:
             stat.summary(DiagnosticStatus.WARN, "traction ARMEE (enable_cmd_vel=true)")
         else:
             stat.summary(DiagnosticStatus.OK, "traction desarmee (enable_cmd_vel=false)")

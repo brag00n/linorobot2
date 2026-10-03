@@ -150,3 +150,6 @@
     # bambooSTM32YB, lui, GARDE son verrou : sa raison physique (pack 12,6 V brut sur
     # moteurs 7,4 V) n'a pas change.
     enable_cmd_vel: true
+    # ...et c'est son etat NORMAL : le diagnostic du driver le dit en OK, au lieu d'un WARN
+    # permanent qui apprendrait a ignorer la pastille SANTE.
+    armed_nominal: true
