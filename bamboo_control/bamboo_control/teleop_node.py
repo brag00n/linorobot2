@@ -115,6 +115,14 @@ class TeleopNode(Node):
         self._axDriveY = self.declare_parameter("axis_drive_y", 1).value
         self._axTrigL = self.declare_parameter("axis_trigger_l", 2).value
         self._axTrigR = self.declare_parameter("axis_trigger_r", 5).value
+        # SIGNE de TOUS les axes, applique a la LECTURE (_axis et _axisRaw), avant toute loi.
+        # Releve T20 bis de BambooWS (2026-10-03) : la meme manette, meme mode XInput, rendait
+        # les HUIT axes inverses par rapport au releve T20 du 2026-09-30, a index identiques --
+        # sticks, gachettes et croix. Une seule valeur suffit donc, et elle remet aussi les
+        # gachettes dans la convention de la loi (repos -1, appui +1). Ce qui a change entre
+        # les deux releves n'est pas etabli : la manette est desormais LIEE (bonding).
+        self._axesSign = -1.0 if float(self.declare_parameter("axes_sign", 1.0).value) < 0 \
+            else 1.0
         # Face Nintendo numerotee a la Xbox : le B PHYSIQUE prend l'index 0, la ou on
         # attendrait A. Releve, pas deduit.
         self._btn = {
@@ -383,21 +391,24 @@ class TeleopNode(Node):
         return stat
 
     # ---------------------------------------------------------------- entrees
-    @staticmethod
-    def _axisRaw(msg, idx):
+    def _axisRaw(self, msg, idx):
         """Lecture BRUTE, pour les gachettes.
 
         Defaut -1.0 et non 0.0 : une gachette au repos vaut -1, et l'absence d'axe doit
-        donc se lire "relachee". Ne passe PAS par la loi d'axe (cf. en-tete).
+        donc se lire "relachee". Ne passe PAS par la loi d'axe (cf. en-tete). Le signe
+        `axes_sign` s'applique a la valeur lue, PAS au defaut : il ramene une manette
+        inversee dans la convention, il ne doit pas fabriquer une gachette enfoncee.
         """
-        return float(msg.axes[idx]) if 0 <= idx < len(msg.axes) else -1.0
+        if 0 <= idx < len(msg.axes):
+            return self._axesSign * float(msg.axes[idx])
+        return -1.0
 
     def _axis(self, msg, idx):
         """Loi d'axe du proto (RobotMain._axis), transposee telle quelle.
 
         Lecture TOLERANTE : une manette plus pauvre que la table ne fait pas crasher.
         """
-        v = float(msg.axes[idx]) if 0 <= idx < len(msg.axes) else 0.0
+        v = self._axesSign * float(msg.axes[idx]) if 0 <= idx < len(msg.axes) else 0.0
         m = abs(v)
         if m <= self._deadzone:
             return 0.0

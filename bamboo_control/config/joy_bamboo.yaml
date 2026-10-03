@@ -99,6 +99,19 @@ bamboo_teleop:
                            # BRUTE, jamais par la zone morte, qui lirait
                            # "enfoncee" une gachette au repos.
     axis_trigger_r: 5      # ZR -> plafond de vitesse +1, idem
+
+    # SIGNE DE TOUS LES AXES (releve T20 bis de BambooWS, 2026-10-03). La meme manette,
+    # meme mode XInput (045e:02e0), rend aujourd'hui les HUIT axes INVERSES par rapport au
+    # releve T20 du 2026-09-30 ci-dessus, index et boutons inchanges :
+    #   axe 0/3 gauche = +, axe 1/4 haut = +, axe 6 gauche = +, axe 7 haut = +,
+    #   ZL/ZR (2/5) repos = +1, appui = -1.
+    # -1 les remet tous dans la convention de la table ci-dessus et de la loi. Symptome si
+    # la valeur est fausse : avant/arriere ET gauche/droite inverses au roulage, croix haut
+    # lue comme bas (donc l'APPRENTISSAGE au lieu du detecteur), ZL/ZR sans effet.
+    # Cause non etablie : la difference visible entre les deux releves est que la manette
+    # est desormais LIEE (Bonded: yes). Si elle change encore d'etat, c'est CETTE valeur
+    # qu'on revoit, sans toucher au code.
+    axes_sign: -1.0
     button_stop: 0         # B  -> STOP franc, DES L'APPUI, meme moteurs desarmes
     button_speed_min_up: 7    # + -> plancher de vitesse +1
     button_speed_min_down: 6  # - -> plancher de vitesse -1
