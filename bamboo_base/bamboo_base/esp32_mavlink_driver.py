@@ -48,7 +48,8 @@ import math
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (DurabilityPolicy, QoSProfile, ReliabilityPolicy,
+                       qos_profile_sensor_data)
 
 from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 
@@ -57,7 +58,7 @@ from sensor_msgs.msg import Imu, BatteryState, MagneticField, JointState
 from geometry_msgs.msg import Twist, TransformStamped
 from tf2_ros import TransformBroadcaster
 
-from bamboo_interfaces.msg import WheelRpm, Esp32Status
+from bamboo_interfaces.msg import WheelRpm, Esp32Status, RobotMode, TeleopState
 from bamboo_base.driver_diagnostics import DriverDiagnostics
 from bamboo_base.driver_motion import DriverMotion
 
@@ -183,6 +184,9 @@ class Esp32MavlinkDriver(Node):
         # L'etat ARME est-il l'etat NORMAL de ce robot ? Lu dans son fichier canonique, a cote
         # d'enable_cmd_vel : c'est la meme decision. Ne sert qu'au diagnostic.
         self.declare_parameter("armed_nominal", False)
+        # Ligne "Ready" de l'OLED = mode du robot (BAMBOO_HMI_TEXT, microcode >= 0.4.0 ;
+        # un microcode plus ancien ignore le message, sans effet).
+        self.declare_parameter("hmi_text_enabled", True)
 
         g = lambda n: self.get_parameter(n).value
         self.link_fresh_s = float(g("link_fresh_s"))
@@ -274,6 +278,22 @@ class Esp32MavlinkDriver(Node):
         # et la file hote est bornee (200), donc rien ne presse -- inutile de payer ce
         # parcours 30 fois par seconde.
         self.log_timer = self.create_timer(0.5, self._drain_board_logs)
+
+        # --- ecran de la carte : le MODE du robot sur la ligne "Ready" ---------
+        # Sources LATCHEES : le mode applique (bamboo_mode_manager) et, pendant une
+        # calibration, l'avancement (bamboo_teleop). Renvoye a 1 Hz : la carte efface le
+        # texte apres 5 s de silence, donc un driver ou un gestionnaire arrete ne laisse
+        # pas un mode perime a l'ecran.
+        self._hmiMode = ""
+        self._hmiBusy = ""
+        self._hmiSent = None
+        if bool(g("hmi_text_enabled")):
+            latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                                 durability=DurabilityPolicy.TRANSIENT_LOCAL)
+            self.create_subscription(RobotMode, "/bamboo/mode", self._on_robot_mode, latched)
+            self.create_subscription(TeleopState, "/teleop/state", self._on_teleop_state,
+                                     latched)
+            self.hmi_timer = self.create_timer(1.0, self._send_hmi)
 
         # Enregistre EN DERNIER : le callback touche a des membres et au lien serie, il ne
         # doit donc pas pouvoir s'executer sur un objet a demi construit.
@@ -509,6 +529,29 @@ class Esp32MavlinkDriver(Node):
         for _ in range(3):
             self.link.sendCmdVel(0.0, 0.0)
         self._motion.reset()
+
+    # --- ecran de la carte ---------------------------------------------------
+    def _on_robot_mode(self, m):
+        self._hmiMode = m.label or m.mode.upper()
+        self._send_hmi()
+
+    def _on_teleop_state(self, m):
+        busy = m.busy_text if m.busy else ""
+        if busy != self._hmiBusy:
+            self._hmiBusy = busy
+            self._send_hmi()
+
+    def _send_hmi(self):
+        text = self._hmiBusy or self._hmiMode
+        if not text:
+            return
+        sender = getattr(self.link, "sendHmiText", None)
+        if sender is None:
+            return
+        ok, err = sender(text)
+        if not ok and self._hmiSent is not False:
+            self.get_logger().warn("texte OLED non envoye : %s" % (err or "port indisponible"))
+        self._hmiSent = bool(ok)
 
     # --- actuation (L6 uniquement) -----------------------------------------
     def _on_cmd_vel(self, msg):

@@ -41,6 +41,7 @@
 #include "bamboo_interfaces/msg/recognition_result.hpp"
 #include "bamboo_interfaces/msg/track_state.hpp"
 #include "bamboo_interfaces/msg/servo_cmd.hpp"
+#include "bamboo_interfaces/msg/teleop_state.hpp"
 #include "bamboo_interfaces/msg/tracking_stats.hpp"
 #include "bamboo_interfaces/srv/register_overlay.hpp"
 #include "bamboo_videotracking/frame_bus.hpp"
@@ -363,6 +364,22 @@ public:
         health_level_ = static_cast<int>(m->level);
         last_health_ = now_steady_.now();
       });
+    // MODES DU ROBOT ET TOUCHES DE LA MANETTE (lot QUALIBRATION) : publie LATCHE par
+    // bamboo_teleop, a chaque changement et au moins a 1 Hz. Meme QoS que l'emetteur
+    // (transient_local), sinon un overlay demarre apres le dernier changement ne verrait rien.
+    // INTRA-PROCESS COUPE pour CET abonnement : le conteneur de composables l'active, et
+    // rclcpp refuse alors toute durabilite autre que volatile ("intraprocess communication
+    // allowed only with volatile durability" -- l'overlay ne se chargeait plus du tout).
+    // L'emetteur vit dans un autre processus : on ne perd rien.
+    rclcpp::SubscriptionOptions teleop_opts;
+    teleop_opts.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
+    teleop_sub_ = create_subscription<bamboo_interfaces::msg::TeleopState>(
+      declare_parameter<std::string>("teleop_state_topic", "/teleop/state"),
+      rclcpp::QoS(1).reliable().transient_local(),
+      [this](bamboo_interfaces::msg::TeleopState::ConstSharedPtr m) {
+        teleop_ = m;
+        last_teleop_ = now_steady_.now();
+      }, teleop_opts);
     gamepad_sub_ = create_subscription<std_msgs::msg::Bool>(
       gamepad_state_topic_, rclcpp::QoS(1).reliable(),
       [this](std_msgs::msg::Bool::ConstSharedPtr m) {
@@ -651,6 +668,34 @@ private:
     }
   }
 
+  /// Panneau MODE / groupe + touches du mode courant, sous les pastilles. MASQUE quand
+  /// /teleop/state se tait depuis 3 s (emis a 1 Hz au moins) : un panneau fige montrerait
+  /// des touches qui ne sont peut-etre plus les bonnes.
+  void drawModePanel(cv::Mat & im, int x, int y, double u)
+  {
+    const auto st = teleop_;
+    if (!st || (now_steady_.now() - last_teleop_).seconds() > 3.0) {return;}
+    std::string title = st->mode;
+    if (!st->group.empty()) {title += " / " + st->group;}
+    if (st->armed) {title += "  ARME";}
+    putShadowed(im, title, cv::Point(x, y + iu(12, u)), 0.5 * u);
+    int yy = y + iu(30, u);
+    const size_t n = std::min({st->keys.size(), st->labels.size(), st->active.size()});
+    for (size_t i = 0; i < n; ++i) {
+      // Pastille d'etat : remplie = action active, cerclee = inactive ou sans etat.
+      const cv::Point c(x + iu(5, u), yy - iu(4, u));
+      cv::circle(im, c, std::max(2, iu(4, u)), st->active[i] ? kOn : kOff,
+        st->active[i] ? cv::FILLED : 1, cv::LINE_AA);
+      put(im, st->keys[i], x + iu(14, u), yy, kLabel, 0.42 * u);
+      put(im, st->labels[i], x + iu(70, u), yy, kVal, 0.42 * u);
+      yy += iu(16, u);
+    }
+    if (st->busy && !st->busy_text.empty()) {
+      // Le robot TOURNE tout seul : en gros, avec le rappel du geste qui l arrete.
+      putShadowed(im, st->busy_text + "  (B = STOP)", cv::Point(x, yy + iu(8, u)), 0.6 * u, 2);
+    }
+  }
+
   void draw(const Frame & f, const bamboo_interfaces::msg::TrackState & ts)
   {
     // LA COPIE. Le prototype dessinait dans la ndarray qu'il venait de publier ; ici la
@@ -722,6 +767,8 @@ private:
       health = health_level_;
     }
     healthPill(im, row2_x, pill_y + iu(26, u), health, u);
+
+    drawModePanel(im, pill_x0, pill_y + iu(56, u), u);
 
     const double lat_ms = latencyMs(f.stamp_ns);
     if (lat_ms > lat_max_ms_) {lat_max_ms_ = lat_ms;}
@@ -942,6 +989,7 @@ private:
   rclcpp::Subscription<bamboo_interfaces::msg::ModeCmd>::SharedPtr mode_sub_;
   rclcpp::Subscription<bamboo_interfaces::msg::ServoCmd>::SharedPtr servo_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gamepad_sub_;
+  rclcpp::Subscription<bamboo_interfaces::msg::TeleopState>::SharedPtr teleop_sub_;
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticStatus>::SharedPtr health_sub_;
   rclcpp::Client<bamboo_interfaces::srv::RegisterOverlay>::SharedPtr mux_cli_;
   rclcpp::TimerBase::SharedPtr stats_timer_;
@@ -950,6 +998,8 @@ private:
   // --- etat affiche ---
   bamboo_interfaces::msg::TrackState::ConstSharedPtr track_;
   bamboo_interfaces::msg::RecognitionResult::ConstSharedPtr rec_;
+  // Dernier etat de la manette (mode, groupe, touches) : meme convention que rec_.
+  bamboo_interfaces::msg::TeleopState::ConstSharedPtr teleop_;
   std::string recog_mode_{"off"};
   std::string track_mode_{"mil"};
   std::string predict_mode_{"off"};
@@ -972,6 +1022,7 @@ private:
   // sinon apparaitre un fps absurde, et c'est ce chiffre qu'on publie.
   rclcpp::Clock now_steady_{RCL_STEADY_TIME};
   rclcpp::Time last_gamepad_{0, 0, RCL_STEADY_TIME};
+  rclcpp::Time last_teleop_{0, 0, RCL_STEADY_TIME};
   // -1 = jamais recu : la pastille SANTE reste grise tant que l'agregateur n'a rien dit.
   int health_level_{-1};
   rclcpp::Time last_health_{0, 0, RCL_STEADY_TIME};
