@@ -33,6 +33,9 @@ bamboo_calibration:
     arc_w_cmd: [0.6, 1.5]
     settle_s: 1.0                 # mise en regime, exclue de la mesure
     measure_s: 3.0
+    # Arcs : mesure plus courte, et chaque arc fait en ALLER-RETOUR ((v,+w) puis (-v,-w),
+    # qui refait le chemin en marche arriere) pour rester sur place. Il faut ~1,5 m.
+    arc_measure_s: 2.0
     pause_s: 1.5
 
     # --- table produite (memes bornes que calib.* du fichier canonique) ---

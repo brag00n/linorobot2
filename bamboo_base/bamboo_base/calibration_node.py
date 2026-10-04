@@ -197,9 +197,10 @@ class Bypass(Leaf):
 class Step(Leaf):
     """Un palier a consigne constante : mise en regime, mesure, arret, pause."""
 
-    def __init__(self, name, ctx, v, w):
+    def __init__(self, name, ctx, v, w, measure_s=None):
         super().__init__(name, ctx)
         self.v, self.w = v, w
+        self.measure_s = measure_s     # None = measure_s commun (rotations)
 
     def initialise(self):
         self.t0 = time.monotonic()
@@ -210,7 +211,7 @@ class Step(Leaf):
     def update(self):
         n, p = self.ctx.node, self.ctx.node.p
         t = time.monotonic() - self.t0
-        run = p["settle_s"] + p["measure_s"]
+        run = p["settle_s"] + (self.measure_s if self.measure_s is not None else p["measure_s"])
         if t < run:
             n.drive(self.v, self.w)
             if t >= p["settle_s"]:
@@ -281,6 +282,10 @@ class CalibrationNode(Node):
             "arc_w_cmd": [float(x) for x in d("arc_w_cmd", [0.6, 1.5]).value],
             "settle_s": float(d("settle_s", 1.0).value),
             "measure_s": float(d("measure_s", 3.0).value),
+            # Arcs plus COURTS que les rotations : ils deplacent le robot (0,4 m/s x 3 s =
+            # 1,6 m par palier, trop pour une piece -- essai du 2026-10-04 arrete faute de
+            # place).
+            "arc_measure_s": float(d("arc_measure_s", 2.0).value),
             "pause_s": float(d("pause_s", 1.5).value),
             "max_duration_s": float(d("max_duration_s", 240.0).value),
             "v_bins_mps": [float(x) for x in d("v_bins_mps", [0.0, 0.2, 0.4]).value],
@@ -490,10 +495,16 @@ class CalibrationNode(Node):
                 for sgn in (1.0, -1.0):
                     seq.append(Step("rotation %+.1f" % (sgn * w), ctx, 0.0, sgn * w))
             if g.include_arcs:
+                # ALLER-RETOUR : (v, +w) puis (-v, -w) refait le MEME chemin en marche
+                # arriere et ramene le robot pres de son depart ; puis (v, -w), (-v, +w).
+                # Les quatre signes sont mesures et le robot reste a peu pres sur place
+                # (demande utilisateur 2026-10-04, apres un essai qui manquait de place).
+                am = self.p["arc_measure_s"]
                 for v in self.p["arc_v"]:
                     for w in self.p["arc_w_cmd"]:
-                        for sgn in (1.0, -1.0):
-                            seq.append(Step("arc v%.1f w%+.1f" % (v, sgn * w), ctx, v, sgn * w))
+                        for sv, sw in ((1.0, 1.0), (-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0)):
+                            seq.append(Step("arc v%+.1f w%+.1f" % (sv * v, sw * w), ctx,
+                                            sv * v, sw * w, am))
             seq += [Bypass("bypass off", ctx, False), Compute("calcul", ctx), Write("ecriture", ctx)]
         main = py_trees.composites.Sequence("calibration", memory=True, children=seq)
         root = py_trees.composites.Parallel(
