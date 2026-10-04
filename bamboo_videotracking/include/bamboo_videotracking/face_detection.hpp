@@ -131,6 +131,9 @@ public:
   /// verrou (motif `switch`) : garder un verrou etabli par un autre detecteur melangerait
   /// deux referentiels de score, donc rendrait `score_min` ininterpretable.
   bool reconfigure(const DetectConfig & cfg, std::string & err);
+  /// Lache le verrou courant SANS cause de perte : detection coupee volontairement (mode
+  /// hors TRACKING), rien n'a ete perdu. Le prochain trackStep repart de la detection.
+  void dropLock() {releaseLock("");}
 
   const DetectConfig & config() const { return cfg_; }
 

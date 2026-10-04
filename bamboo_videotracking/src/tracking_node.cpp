@@ -73,6 +73,11 @@ public:
     // loi de commande -- le mot `flip` n'apparait nulle part dans device/motion/ -- et c'est
     // pour cela que le triplet (flip, invert_pan, invert_tilt) se regle ENSEMBLE.
     flip_ = declare_parameter<std::string>("flip", "h");
+    // DETECTION ACTIVE ? Commutable a chaud, et c'est le gestionnaire de modes qui la pilote
+    // (valeur de mode : vraie en TRACKING seulement). Coupee, la trame passe toujours sur le
+    // bus -- image et HUD restent -- mais sans detecteur ni tracker : c'etait 2,6 coeurs sur
+    // 4 en permanence, y compris suivi (TRACK) coupe, qui ne coupe que l'asservissement.
+    detect_enabled_ = declare_parameter<bool>("detect_enabled", true);
     if (flip_ != "none" && flip_ != "v" && flip_ != "h" && flip_ != "180") {
       // Bruyant, pas de repli muet : un miroir ignore en silence met le pan a l'envers, et
       // une camera qui fuit son sujet ne ressemble pas a une faute de configuration.
@@ -211,7 +216,12 @@ private:
     stat.add("perte", lost.empty() ? "-" : lost);
     stat.add("trames_indecodables_periode", d_dec);
     stat.add("seuil_warn_hz", det_warn_hz_);
-    if (span < 0.5 * diag_window_s_) {
+    stat.add("detection", detect_enabled_ ? "active" : "coupee");
+    if (!detect_enabled_ && win_frames > 0) {
+      // Coupee VOLONTAIREMENT (mode hors TRACKING) : etat normal, pas une lenteur.
+      stat.summaryf(diagnostic_msgs::msg::DiagnosticStatus::OK,
+        "detection coupee (hors mode TRACKING), flux %.1f Hz", hz);
+    } else if (span < 0.5 * diag_window_s_) {
       // Fenetre pas encore pleine (demarrage) : on ne SAIT pas, on ne crie pas.
       stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "mesure en cours (demarrage)");
     } else if (win_frames == 0) {
@@ -284,6 +294,17 @@ private:
     // Kalman forment un seul etat coherent, et le relacher entre deux laisserait une
     // reconfiguration s'inserer au milieu d'une trame.
     std::lock_guard<std::mutex> lk(state_mu_);
+    if (!detect_enabled_) {
+      // Detection COUPEE : on lache un verrou eventuel (une fois), et on publie un etat
+      // "off" sans cause de perte -- rien n'a ete perdu, on ne cherche simplement pas.
+      if (diag_locked_) {det_.dropLock();}
+      TrackStateOut off;
+      ++diag_frames_;
+      diag_locked_ = false;
+      diag_lost_.clear();
+      publishState(off, *f.mat, stamp, now_s);
+      return;
+    }
     TrackStateOut st = det_.trackStep(*f.mat, now_s);
     ++diag_frames_;
     diag_locked_ = st.locked;
@@ -527,6 +548,9 @@ private:
         cfg.max_grow = p.as_double(); touch_det = true;
       } else if (n == "max_area_frac") {
         cfg.max_area_frac = p.as_double(); touch_det = true;
+      } else if (n == "detect_enabled") {
+        detect_enabled_ = p.as_bool();
+        RCLCPP_INFO(get_logger(), "detection %s", detect_enabled_ ? "ACTIVE" : "COUPEE");
       } else if (n == "flip") {
         // REJET NOMME plutot qu'un repli muet : un miroir inconnu accepte en silence
         // mettrait le pan a l'envers, et la camera fuirait le sujet sans un mot.
@@ -562,6 +586,7 @@ private:
   // --- etat -------------------------------------------------------------------------
   std::string models_dir_;
   std::string flip_{"h"};
+  std::atomic<bool> detect_enabled_{true};
   std::string predict_mode_;
   double predict_horizon_s_{0.12};
   double coast_max_s_{0.7};

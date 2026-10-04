@@ -405,7 +405,30 @@ public:
       [this](diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr m) {
         std::vector<std::pair<std::string, int>> mods;
         std::vector<HealthItem> bad;
+        // Modules PERIMES (plus de nouvelles : service arrete) : leurs composants gardent leur
+        // DERNIER message ("liaison vivante", "12.11 V"), qui ferait croire a un etat sain.
+        // On les resume donc en UNE ligne rouge et on tait leurs details.
+        std::vector<std::string> stale;
         for (const auto & st : m->status) {
+          if (st.level == 3 && st.name.rfind("/Robot/", 0) == 0 &&
+            st.name.find('/', 7) == std::string::npos)
+          {
+            stale.push_back(st.name + "/");
+            bad.push_back({"Infra > absence " + shortModule(st.name.substr(7)),
+              "plus de nouvelles : service arrete ?", 2});
+          }
+        }
+        for (const auto & st : m->status) {
+          bool under_stale = false;
+          for (const auto & pre : stale) {
+            if (st.name.rfind(pre, 0) == 0 || st.name + "/" == pre) {under_stale = true;}
+          }
+          if (under_stale) {
+            if (st.name.find('/', 7) == std::string::npos) {
+              mods.emplace_back(shortModule(st.name.substr(7)), 2);
+            }
+            continue;
+          }
           // Tout ce qui n'est pas VERT, pour la carte du mode SANTE -- mais les FEUILLES
           // seulement : un groupe de l'agregateur ne dit que "Warning"/"Error"/"Stale",
           // c'est-a-dire le resume de ses enfants, qu'on afficherait alors en double.

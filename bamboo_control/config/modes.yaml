@@ -15,6 +15,10 @@
 #   exit_params    idem a la sortie
 #   exit_cancel    actions dont les buts en cours sont ANNULES a la sortie
 #
+# DETECTION DE VISAGES : `detect_enabled` de tracking_node n'est VRAI qu'en TRACKING. Elle
+# coutait 2,6 coeurs sur 4 en permanence (mesure 2026-10-04), y compris suivi coupe. Un
+# noeud ABSENT (groupe suivi arrete) n'est pas une faute : il n'y a rien a regler.
+#
 # L'ORDRE de `modes` est celui de la croix gauche/droite. Un mode indisponible
 # (prerequis manquant) est SAUTE par la croix et refuse par change_mode, avec
 # sa raison (outil MCP ou `ros2 service call /bamboo/get_available_modes`).
@@ -36,11 +40,13 @@ bamboo_mode_manager:
     # rien en entrant -- le suivi garde l'etat qu'on lui a donne.
     conduite:
       label: "CONDUITE"
+      enter_params: "/tracking_node:detect_enabled=false"
 
     # Commandes du groupe videotracking (suivi, reconnaissance, apprentissage).
     # Rien a l'entree : c'est la carte de touches qui change.
     tracking:
       label: "TRACKING"
+      enter_params: "/tracking_node:detect_enabled=true"
 
     # Calibration du glissement en rotation. Disponible seulement si le noeud
     # tourne (option `calibration_enabled` du fichier canonique). Quitter le
@@ -49,6 +55,7 @@ bamboo_mode_manager:
     calibration:
       label: "CALIB"
       requires: "node:/bamboo_calibration"
+      enter_params: "/tracking_node:detect_enabled=false"
       exit_cancel: "/bamboo_calibration/calibrate"
 
     # Navigation autonome : declaree pour sa place dans la croix, indisponible
@@ -56,9 +63,11 @@ bamboo_mode_manager:
     navigation:
       label: "NAV"
       requires: "node:/bt_navigator"
+      enter_params: "/tracking_node:detect_enabled=false"
 
     # Sante du robot : la carte du HUD (haut droite) liste tout ce qui n'est pas VERT dans
     # l'arbre de diagnostic agrege (modules et composants, avec leur message). Lecture
     # seule : rien a l'entree ni a la sortie.
     sante:
       label: "SANTE"
+      enter_params: "/tracking_node:detect_enabled=false"

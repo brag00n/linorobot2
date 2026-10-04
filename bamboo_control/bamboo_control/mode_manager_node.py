@@ -111,6 +111,11 @@ class ModeManager(Node):
                             self._onAvailable, callback_group=self._cbg)
         self._paramClients = {}
         self._cancelClients = {}
+        # Noeuds ABSENTS lors de l'entree dans le mode courant : leurs reglages sont
+        # REAPPLIQUES des qu'ils apparaissent (le groupe suivi demarre souvent apres nous).
+        self._pending = set()
+        self._pendingTimer = self.create_timer(3.0, self._applyPending,
+                                               callback_group=self._cbg)
 
         self._diag = Updater(self)
         self._diag.setHardwareID("bamboo_control")
@@ -255,16 +260,40 @@ class ModeManager(Node):
                                          callback_group=self._cbg)
                 self._paramClients[node] = cli
             if not cli.service_is_ready():
-                faults.append("%s absent" % node)
+                # Noeud ABSENT : rien a regler, ce n'est pas une faute du mode (le groupe
+                # suivi peut etre arrete en CONDUITE). Seul un REFUS degrade le mode. Le
+                # reglage sera repris a son apparition (_applyPending).
+                self.get_logger().info("mode : %s absent, reglage differe" % node)
+                self._pending.add(node)
                 continue
+            self._pending.discard(node)
             fut = cli.call_async(SetParameters.Request(parameters=params))
             if not self._wait(fut) or fut.result() is None:
                 faults.append("%s sans reponse" % node)
                 continue
+            # Un parametre INCONNU du noeud (version plus ancienne) est un refus : il se voit.
             for p, r in zip(params, fut.result().results):
                 if not r.successful:
                     faults.append("%s:%s refuse (%s)" % (node, p.name, r.reason))
         return faults
+
+    def _applyPending(self):
+        """Reapplique les reglages d'entree du mode COURANT aux noeuds apparus depuis."""
+        if not self._pending or self._mode is None:
+            return
+        with self._lock:
+            nodes = self._nodeNames()
+            ready = [n for n in self._pending if n in nodes]
+            if not ready:
+                return
+            items = [it for it in self._model[self._mode]["enter_params"] if it[0] in ready]
+            faults = self._setParams(items)
+            if faults:
+                self.get_logger().warn("mode %s : reglage differe refuse : %s"
+                                       % (self._mode, "; ".join(faults)))
+            else:
+                self.get_logger().info("mode %s : reglages appliques a %s"
+                                       % (self._mode, ", ".join(ready)))
 
     def _cancelAll(self, action):
         """Annule TOUS les buts d'une action : goal_info nul = tous (action_msgs/CancelGoal)."""
