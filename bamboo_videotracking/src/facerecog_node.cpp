@@ -97,6 +97,10 @@ public:
     // Acquisition : on ne sature ni la carte SD ni le CPU. Le prototype enregistre au
     // fil de l'eau ; on borne explicitement, parce qu'ici personne ne regarde un HUD.
     acq_period_s_ = declare_parameter<double>("acquire_period_s", 0.4);
+    // CAPT sur une PERIODE : au-dela de cette duree depuis l'activation de la capture, plus
+    // rien n'est enregistre (0 = sans limite, seul le plafond par episode joue). Reglable a
+    // chaud par ModeCmd `capture_duration` (secondes), depuis le sous-mode CAPT de la manette.
+    acq_duration_s_ = declare_parameter<double>("acquire_duration_s", 0.0);
     acq_max_ = static_cast<int>(declare_parameter<int>("acquire_max_per_episode", 40));
 
     std::string err;
@@ -187,9 +191,21 @@ private:
       // Les deux modes du prototype sont EXCLUSIFS : acquisition implique recognition
       // (on predit ET on enregistre), off coupe les deux.
       if (msg->value == "off") {mode_ = "off";} else if (msg->target == "acquisition") {
+        // (Re)activation de la capture : la periode repart de zero, au premier enregistrement.
+        if (mode_ != "acquisition") {capt_start_s_ = -1.0;}
         mode_ = "acquisition";
       } else {mode_ = "recognition";}
       RCLCPP_INFO(get_logger(), "mode reconnaissance -> %s", mode_.c_str());
+      return;
+    }
+    if (msg->target == "capture_duration") {
+      try {
+        acq_duration_s_ = std::max(0.0, std::stod(msg->value));
+        capt_start_s_ = -1.0;
+        RCLCPP_INFO(get_logger(), "capture : duree %.0f s (0 = sans limite)", acq_duration_s_);
+      } catch (const std::exception &) {
+        RCLCPP_WARN(get_logger(), "capture_duration refuse : \"%s\"", msg->value.c_str());
+      }
       return;
     }
     if (msg->target == "training" && msg->value == "done") {
@@ -402,6 +418,8 @@ private:
     if (ep_saved_ >= acq_max_) {return;}
     const double t = static_cast<double>(stamp.sec) + 1e-9 * static_cast<double>(stamp.nanosec);
     if (t - ep_last_save_s_ < acq_period_s_) {return;}
+    if (capt_start_s_ < 0.0) {capt_start_s_ = t;}
+    if (acq_duration_s_ > 0.0 && t - capt_start_s_ > acq_duration_s_) {return;}
     ep_last_save_s_ = t;
 
     const std::string dir = join(join(faces_dir_, "unknown"), ep_lot_);
@@ -441,6 +459,8 @@ private:
   double ema_a_{0.4};
   double stable_s_{2.0};
   double acq_period_s_{0.4};
+  double acq_duration_s_{0.0};
+  double capt_start_s_{-1.0};   // instant du premier enregistrement de la capture en cours
   int acq_max_{40};
 
   cv::Ptr<cv::FaceRecognizerSF> rec_;

@@ -66,7 +66,7 @@ using Landmarks = std::vector<cv::Point2f>;
 struct DetectConfig
 {
   std::string detector{"yunet"};   ///< haar | dnn | yunet
-  std::string track_mode{"mil"};   ///< none | mil | vit (vit -> indisponible)
+  std::string track_mode{"mil"};   ///< none | mil | vit (ViT : OpenCV >= 4.9 + modele)
   int det_width{320};              ///< largeur de travail ; la detection ne voit QUE ca
   double det_conf{0.6};            ///< seuil de confiance du detecteur
 

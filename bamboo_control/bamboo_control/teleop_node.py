@@ -104,6 +104,10 @@ from bamboo_control.keymap_model import KEYS, LONG, PREFIX, displayKey, parseKey
 # A garder alignees sur face_detection.cpp (detecteurs et trackers) et sur
 # tracking_node.cpp (prediction).
 _TRACKERS = ("none", "mil", "vit")
+# Algorithmes de TRK-V (suivi video) : "none" n'en est pas un, c'est TRK-V COUPE.
+_TRK_ALGOS = ("mil", "vit")
+# Durees de capture CAPT (s), 0 = sans limite (seul le plafond par episode joue).
+_CAPT_DURATIONS = (0, 10, 20, 30, 60)
 _DETECTORS = ("haar", "dnn", "yunet")
 _PREDICTS = ("off", "anticip", "coast")
 
@@ -228,6 +232,12 @@ class TeleopNode(Node):
         self._tracker = _TRACKERS[1]     # mil : le seul valide avant OpenCV 4.10
         self._detector = _DETECTORS[1]   # dnn : robuste de profil
         self._predict = _PREDICTS[0]
+        # Chaine de TRACKING (cf. joy_bamboo.yaml) : ACQ -> TRK-V -> TRK-P, CAPT, GEN, RECO.
+        self._acqOn = False             # detection (detect_enabled de tracking_node)
+        self._trkvOn = True             # suivi video : tracker != none
+        self._trkvAlgo = _TRK_ALGOS[0]
+        self._captDuration = 0
+        self._genOn = False             # apprentissage en cours (jusqu'au RESULTAT)
         self._seq = 0
 
         # --- etat d'entree ----------------------------------------------------
@@ -759,6 +769,11 @@ class TeleopNode(Node):
             self._recog = "off" if m.value == "off" else m.value
         elif m.target in ("tracker", "track_mode") and m.value in _TRACKERS:
             self._tracker = m.value
+            self._trkvOn = m.value != "none"
+            if self._trkvOn:
+                self._trkvAlgo = m.value
+        elif m.target == "detect" and m.value in ("on", "off"):
+            self._acqOn = m.value == "on"
         elif m.target == "detector" and m.value in _DETECTORS:
             self._detector = m.value
         elif m.target in ("predict", "predict_mode") and m.value in _PREDICTS:
@@ -826,8 +841,26 @@ class TeleopNode(Node):
                 "HORS du container de composables)." % self._trainCli._action_name)
             return
         self.get_logger().info("apprentissage : envoi du goal TrainFaces")
+        self._sendMode("gen", "on")
+        self._genOn = True
         self._trainGoal = self._trainCli.send_goal_async(
             TrainFaces.Goal(), feedback_callback=self._onTrainFeedback)
+        self._trainGoal.add_done_callback(self._onTrainAccepted)
+
+    def _onTrainAccepted(self, future):
+        try:
+            handle = future.result()
+        except Exception:                                           # noqa: BLE001
+            self._sendMode("gen", "off")
+            self._genOn = False
+            return
+        if not handle.accepted:
+            self._sendMode("gen", "off")
+            self._genOn = False
+            return
+        handle.get_result_async().add_done_callback(
+            lambda _f: (setattr(self, "_genOn", False), self._sendMode("gen", "off"),
+                        self._publishState()))
 
     def _onTrainFeedback(self, fb):
         self.get_logger().info(
@@ -865,17 +898,21 @@ class TeleopNode(Node):
         """nom -> (execution, libelle, etat on/off ou None). Le libelle peut etre dynamique."""
         step = self._targetStep
         return {
-            "tracking": (self._actTracking, lambda: "suivi", lambda: self._trackingOn),
+            "tracking": (self._actTracking, lambda: "TRK-P suivi physique",
+                         lambda: self._trackingOn),
             "recenter": (lambda: self._sendMode("recenter", "now"), lambda: "recentrage", None),
-            "recognition": (self._actRecognition, lambda: "reconnaissance",
-                            lambda: self._recog == "recognition"),
-            "acquisition": (self._actAcquisition, lambda: "acquisition",
+            "recognition": (self._actRecognition, lambda: "RECO reconnaissance",
+                            lambda: self._recog in ("recognition", "acquisition")),
+            "acquisition": (self._actAcquisition, lambda: "CAPT capture",
                             lambda: self._recog == "acquisition"),
-            "tracker": (self._actTracker, lambda: "tracker %s" % self._tracker, None),
-            "predict": (self._actPredict, lambda: "prediction %s" % self._predict, None),
-            "detector": (self._actDetector, lambda: "detecteur %s" % self._detector, None),
-            "training": (self._startTraining, lambda: "apprentissage",
-                         lambda: self._trainGoal is not None and not self._trainGoal.done()),
+            "tracker": (lambda: self._actTracker(+1),
+                        lambda: "tracker %s >" % self._trkvAlgo, None),
+            "predict": (lambda: self._actPredict(+1),
+                        lambda: "prediction %s >" % self._predict, None),
+            "detector": (lambda: self._actDetector(+1),
+                         lambda: "detecteur %s >" % self._detector, None),
+            "training": (self._startTraining, lambda: "GEN apprentissage",
+                         lambda: self._genOn),
             "target_grow": (lambda: self._sendMode("deadzone", "%+.3f" % step),
                             lambda: "cible +", None),
             "target_shrink": (lambda: self._sendMode("deadzone", "%+.3f" % -step),
@@ -898,6 +935,20 @@ class TeleopNode(Node):
                             lambda: self._calApplied),
             "calib_revert": (self._calibRevert, lambda: "revenir au fichier", None),
             "calib_pi": (self._calibTogglePi, lambda: "PI de lacet", lambda: self._calPi),
+            # --- chaine de TRACKING : activation des fonctions -------------------------
+            "acq": (self._actAcq, lambda: "ACQ detection", lambda: self._acqOn),
+            "trkv": (self._actTrkv, lambda: "TRK-V suivi video", lambda: self._trkvOn),
+            # --- chaine de TRACKING : algorithme du sous-mode (ZL / ZR) ----------------
+            "detector_prev": (lambda: self._actDetector(-1),
+                              lambda: "< detecteur %s" % self._detector, None),
+            "tracker_prev": (lambda: self._actTracker(-1),
+                             lambda: "< tracker %s" % self._trkvAlgo, None),
+            "predict_prev": (lambda: self._actPredict(-1),
+                             lambda: "< prediction %s" % self._predict, None),
+            "capture_next": (lambda: self._actCapture(+1),
+                             lambda: "duree %s >" % self._captText(), None),
+            "capture_prev": (lambda: self._actCapture(-1),
+                             lambda: "< duree %s" % self._captText(), None),
             "flip_image": (self._actFlip, lambda: "miroir image",
                            lambda: bool(self._flipOn)),
             "nav_unavailable": (lambda: self.get_logger().warn(
@@ -960,6 +1011,10 @@ class TeleopNode(Node):
         """Le mode APPLIQUE, tenu par le gestionnaire : le seul qui fasse foi ici."""
         if m.mode != self._mode:
             self._group = 0
+            # Le gestionnaire vient de poser detect_enabled (vrai en TRACKING seulement) :
+            # on le reflete, et on le dit au HUD (pastille ACQ).
+            self._acqOn = (m.mode == "tracking")
+            self._sendMode("detect", "on" if self._acqOn else "off")
         self._mode, self._modeLabel = m.mode, m.label or m.mode.upper()
         if self._mode not in self._keymap:
             self._warnOnce("keymap_" + self._mode,
@@ -1006,13 +1061,61 @@ class TeleopNode(Node):
             self._recog = "acquisition"
             self._sendMode("acquisition", "acquisition")
 
-    def _actTracker(self):
-        self._tracker = self._next(_TRACKERS, self._tracker)
+    @staticmethod
+    def _step(values, current, step):
+        try:
+            return values[(values.index(current) + step) % len(values)]
+        except ValueError:
+            return values[0]
+
+    def _actTracker(self, step=1):
+        """Algorithme de TRK-V. N'est ENVOYE que si TRK-V est actif (sinon tracker=none)."""
+        self._trkvAlgo = self._step(_TRK_ALGOS, self._trkvAlgo, step)
+        if self._trkvOn:
+            self._tracker = self._trkvAlgo
+            self._sendMode("tracker", self._tracker)
+
+    def _actTrkv(self):
+        """TRK-V on/off : off = tracker `none` (verrou tenu par la detection seule)."""
+        self._trkvOn = not self._trkvOn
+        self._tracker = self._trkvAlgo if self._trkvOn else "none"
         self._sendMode("tracker", self._tracker)
 
-    def _actPredict(self):
-        self._predict = self._next(_PREDICTS, self._predict)
+    def _actPredict(self, step=1):
+        self._predict = self._step(_PREDICTS, self._predict, step)
         self._sendMode("predict", self._predict)
+
+    def _captText(self):
+        return "illimitee" if self._captDuration == 0 else "%d s" % self._captDuration
+
+    def _actCapture(self, step):
+        """Duree de CAPT (facerecog_node, ModeCmd `capture_duration`)."""
+        self._captDuration = self._step(_CAPT_DURATIONS, self._captDuration, step)
+        self._sendMode("capture_duration", str(self._captDuration))
+
+    def _actAcq(self):
+        """ACQ on/off : `detect_enabled` de tracking_node, puis ModeCmd `detect` pour le HUD."""
+        self._setAcq(not self._acqOn)
+
+    def _setAcq(self, on):
+        if not self._flipSet.service_is_ready():
+            self.get_logger().warn("ACQ : %s absent (groupe suivi arrete ?)" % self._trackNode)
+            return
+        v = ParameterValue(type=ParameterType.PARAMETER_BOOL, bool_value=bool(on))
+        req = SetParameters.Request(parameters=[Parameter(name="detect_enabled", value=v)])
+
+        def done(f):
+            try:
+                ok = f.result().results[0].successful
+            except Exception:                                   # noqa: BLE001
+                ok = False
+            if ok:
+                self._acqOn = bool(on)
+                self._sendMode("detect", "on" if on else "off")
+            else:
+                self.get_logger().warn("ACQ : detect_enabled refuse par %s" % self._trackNode)
+            self._publishState()
+        self._flipSet.call_async(req).add_done_callback(done)
 
     def _actFlip(self):
         """Bascule le miroir HORIZONTAL de l'image (`flip` de tracking_node : h <-> none).
@@ -1053,8 +1156,8 @@ class TeleopNode(Node):
             self._flipSet.call_async(req).add_done_callback(done)
         self._flipGet.call_async(GetParameters.Request(names=["flip"])).add_done_callback(got)
 
-    def _actDetector(self):
-        self._detector = self._next(_DETECTORS, self._detector)
+    def _actDetector(self, step=1):
+        self._detector = self._step(_DETECTORS, self._detector, step)
         self._sendMode("detector", self._detector)
 
     # ------------------------------------------------------------- calibration

@@ -19,7 +19,8 @@ ACTIONS = {"tracking", "recenter", "recognition", "acquisition", "tracker", "pre
            "detector", "training", "target_grow", "target_shrink", "speed_max_up",
            "speed_max_down", "speed_min_up", "speed_min_down", "calib_start", "calib_imu",
            "calib_arcs", "calib_variant", "calib_apply", "calib_revert", "calib_pi",
-           "flip_image", "nav_unavailable"}
+           "flip_image", "nav_unavailable", "acq", "trkv", "detector_prev",
+           "tracker_prev", "predict_prev", "capture_next", "capture_prev"}
 
 
 def _flatten(d, prefix=""):
@@ -54,7 +55,7 @@ def test_shipped_files_are_valid_and_consistent():
     # Les anciennes fonctions sont toutes retrouvees dans un mode.
     bound = {a for m in km.values() for g in m["bind"].values() for a in g.values()}
     for old in ("tracking", "recenter", "recognition", "acquisition", "tracker", "predict",
-                "detector", "training", "target_grow", "target_shrink", "speed_max_up",
+                "detector", "training", "speed_max_up",
                 "speed_max_down", "speed_min_up", "speed_min_down"):
         assert old in bound, old
 

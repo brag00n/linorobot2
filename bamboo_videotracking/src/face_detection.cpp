@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 
 namespace bamboo_videotracking
 {
@@ -17,6 +18,8 @@ constexpr const char * kYunetFile = "face_detection_yunet_2023mar.onnx";
 constexpr const char * kRes10Model = "res10_300x300_ssd_iter_140000_fp16.caffemodel";
 constexpr const char * kRes10Proto = "deploy.prototxt";
 constexpr const char * kHaarFile = "haarcascade_frontalface_default.xml";
+// Tracker ViT (OpenCV >= 4.9, zoo opencv) : meme repertoire de modeles que YuNet/SFace.
+constexpr const char * kVitFile = "object_tracking_vittrack_2023sep.onnx";
 /// Repli systeme pour Haar : libopencv-dev installe les cascades ici. On cherche d'abord
 /// dans models_dir pour qu'un banc puisse figer sa propre version.
 constexpr const char * kHaarSystem =
@@ -90,13 +93,20 @@ bool FaceDetection::build(
   cfg_ = cfg;
   err.clear();
 
-  // ViT : refus EXPLICITE, jamais un repli. L'OpenCV 4.5.4 de Humble ne porte pas
-  // cv::TrackerVit (arrive en 4.7) ; accepter le mode en servant du MIL ferait croire au
-  // banc V6.3 qu'il mesure ViT.
-  if (cfg_.track_mode == "vit") {
-    err = "track_mode 'vit' indisponible : cv::TrackerVit absent d'OpenCV " CV_VERSION
-      " (requiert >= 4.7). Modes disponibles : none, mil.";
+  // ViT : DISPONIBLE. Le refus d'origine datait de l'OpenCV 4.5.4 d'apt ; le paquet est
+  // lie a l'OpenCV 4.10 de la couche source (CMakeLists l'impose >= 4.8), qui porte
+  // cv::TrackerVit. On verifie seulement son MODELE : sans lui, refus EXPLICITE plutot
+  // qu'un repli sur MIL, qui ferait croire qu'on mesure ViT.
+  if (cfg_.track_mode != "none" && cfg_.track_mode != "mil" && cfg_.track_mode != "vit") {
+    err = "track_mode inconnu : '" + cfg_.track_mode + "' (attendu none | mil | vit)";
     return false;
+  }
+  if (cfg_.track_mode == "vit") {
+    std::ifstream probe(join(models_dir_, kVitFile));
+    if (!probe.good()) {
+      err = std::string("track_mode 'vit' : modele ") + kVitFile + " absent de " + models_dir_;
+      return false;
+    }
   }
 
   if (cfg_.detector == "yunet") {
@@ -169,7 +179,13 @@ bool FaceDetection::initTracker(const cv::Mat & frame, const cv::Rect & box)
   }
   const cv::Rect safe = box & cv::Rect(0, 0, frame.cols, frame.rows);
   if (degenerate(safe)) { return false; }
-  tracker_ = cv::TrackerMIL::create();
+  if (cfg_.track_mode == "vit") {
+    cv::TrackerVit::Params p;
+    p.net = join(models_dir_, kVitFile);
+    tracker_ = cv::TrackerVit::create(p);
+  } else {
+    tracker_ = cv::TrackerMIL::create();
+  }
   try {
     tracker_->init(frame, safe);
   } catch (const cv::Exception &) {

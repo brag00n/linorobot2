@@ -584,12 +584,22 @@ private:
       } else {
         recog_mode_ = on ? "acquisition" : m->value;
       }
+      if (recog_mode_ == "acquisition") {capt_since_ = now_steady_.now();}
     } else if (m->target == "tracker") {
       if (!m->value.empty()) {track_mode_ = m->value;}
     } else if (m->target == "predict") {
       if (!m->value.empty()) {predict_mode_ = m->value;}
     } else if (m->target == "detector") {
       if (!m->value.empty()) {detector_ = m->value;}
+    } else if (m->target == "detect") {
+      // ACQ (detect_enabled de tracking_node), relaye par bamboo_teleop apres acquittement.
+      detect_on_ = on;
+    } else if (m->target == "gen") {
+      gen_on_ = on;
+    } else if (m->target == "training" && m->value == "done") {
+      last_gen_ = now_steady_.now();
+    } else if (m->target == "capture_duration") {
+      try {capt_duration_s_ = std::stod(m->value);} catch (const std::exception &) {}
     } else if (m->target == "deadzone") {
       // DELTA signe, memes bornes que servocam_node : le reticule doit montrer la zone
       // morte REELLEMENT appliquee, sinon le HUD mentirait des le premier appui.
@@ -1026,6 +1036,112 @@ private:
     }
   }
 
+  /// Ligne "etat" commune aux cartes de la chaine : ON (vert) / off (gris).
+  void stateRow(cv::Mat & im, int x, int y, double u, bool on, const std::string & algo)
+  {
+    cardRow(im, x, y, u, {
+      {10, "etat", kLabel}, {70, on ? "ON" : "off", on ? kOn : kOff},
+      {150, "algo", kLabel}, {200, algo.empty() ? "--" : algo, kVal}});
+  }
+
+  /// Carte d'un SOUS-MODE du TRACKING (la fonction que la croix haut/bas selectionne) :
+  /// son etat, son algorithme et ses mesures. Meme cadre que la carte CAM.
+  void drawTrackingCard(
+    cv::Mat & im, const bamboo_interfaces::msg::TrackState & ts, const std::string & group,
+    int x, int y, double u)
+  {
+    const int step = iu(19, u);
+    const int yc = y + iu(38, u);
+    const int h = iu(38 + 6 * 19 + 4, u);
+    if (group == "acq") {
+      cardFrame(im, x, y, h, "ACQ detection", detect_on_, u);
+      stateRow(im, x, yc, u, detect_on_, detector_);
+      cardRow(im, x, yc + step, u, {{10, "cible", kLabel}, {70, "visage", kVal}});
+      cardRow(im, x, yc + 2 * step, u, {
+        {10, "cadence", kLabel}, {70, fmt(last_detect_fps_, 1) + " Hz", kVal},
+        {150, "visages", kLabel}, {220, std::to_string(ts.n_faces), kVal}});
+      cardRow(im, x, yc + 3 * step, u, {
+        {10, "score", kLabel}, {70, fmt(ts.score, 2), kVal},
+        {150, "source", kLabel}, {220, ts.src.empty() ? "--" : ts.src, kVal}});
+      if (!detect_on_) {
+        cardRow(im, x, yc + 5 * step, u, {{10, "L = activer la detection", kZoneOut}});
+      }
+    } else if (group == "trkv") {
+      const bool on = track_mode_ != "none" && !track_mode_.empty();
+      cardFrame(im, x, y, h, "TRK-V suivi video", on, u);
+      stateRow(im, x, yc, u, on, on ? track_mode_ : "(detection seule)");
+      cardRow(im, x, yc + step, u, {
+        {10, "verrou", kLabel}, {70, ts.locked ? "ON" : "off", ts.locked ? kOn : kOff},
+        {150, "id", kLabel}, {220, ts.locked ? "#" + std::to_string(ts.lock_id) : "--", kVal}});
+      // DUREE DU TRACKING : age du verrou courant, vert au-dela du seuil de stabilite.
+      cardRow(im, x, yc + 2 * step, u, {
+        {10, "duree", kLabel},
+        {70, ts.locked ? fmt(ts.lock_age_s, 1) + " s" : "--",
+          ts.locked && ts.lock_age_s >= kLockStableS ? kOn : kVal},
+        {150, "source", kLabel}, {220, ts.src.empty() ? "--" : ts.src, kVal}});
+      cardRow(im, x, yc + 3 * step, u, {
+        {10, "valid.", kLabel}, {70, "detecteur " + detector_, kVal}});
+      cardRow(im, x, yc + 4 * step, u, {
+        {10, "perte", kLabel},
+        {70, unlock_reason_.empty() ? "--" : unlock_reason_, kVal}});
+    } else if (group == "trkp") {
+      cardFrame(im, x, y, h, "TRK-P suivi physique", tracking_on_, u);
+      stateRow(im, x, yc, u, tracking_on_, "prediction " +
+        (predict_mode_.empty() ? std::string("off") : predict_mode_));
+      cardRow(im, x, yc + step, u, {
+        {10, "phase", kLabel}, {70, ts.pred_phase.empty() ? "--" : ts.pred_phase, kVal},
+        {150, "zone m.", kLabel}, {220, fmt(deadzone_, 2), kVal}});
+      if (servo_seen_) {
+        cardRow(im, x, yc + 2 * step, u, {
+          {10, "pan", kLabel}, {70, fmt(pan_deg_, 0), kVal},
+          {150, "tilt", kLabel}, {220, fmt(tilt_deg_, 0), kVal}});
+      } else {
+        cardRow(im, x, yc + 2 * step, u, {
+          {10, "actionneur", kLabel}, {100, "aucun (camera fixe)", kOff}});
+      }
+    } else if (group == "capt") {
+      const bool on = recog_mode_ == "acquisition";
+      cardFrame(im, x, y, h, "CAPT capture", on, u);
+      stateRow(im, x, yc, u, on, "vignettes 112 px");
+      cardRow(im, x, yc + step, u, {
+        {10, "duree", kLabel},
+        {70, capt_duration_s_ > 0.0 ? fmt(capt_duration_s_, 0) + " s" : "illimitee", kVal},
+        {150, "ecoule", kLabel},
+        {220, on && fresh(capt_since_, 1e9) ?
+          fmt((now_steady_.now() - capt_since_).seconds(), 0) + " s" : "--", kVal}});
+      cardRow(im, x, yc + 2 * step, u, {
+        {10, "lot", kLabel},
+        {70, rec_ && !rec_->id_lot.empty() ? rec_->id_lot : "--", kVal}});
+      cardRow(im, x, yc + 3 * step, u, {{10, "exige RECO + visage verrouille", kLabel}});
+    } else if (group == "gen") {
+      cardFrame(im, x, y, h, "GEN apprentissage", gen_on_, u);
+      stateRow(im, x, yc, u, gen_on_, "SFace (enrolement)");
+      cardRow(im, x, yc + step, u, {
+        {10, "dernier", kLabel},
+        {70, fresh(last_gen_, 1e9) ?
+          "il y a " + fmt((now_steady_.now() - last_gen_).seconds() / 60.0, 0) + " min" :
+          "jamais (cette session)", kVal}});
+      cardRow(im, x, yc + 2 * step, u, {{10, "+ = lancer sur les captures", kLabel}});
+    } else {  // reco
+      const bool on = recog_mode_ == "recognition" || recog_mode_ == "acquisition";
+      cardFrame(im, x, y, h, "RECO reconnaissance", on, u);
+      stateRow(im, x, yc, u, on, "SFace + galerie");
+      if (rec_) {
+        cardRow(im, x, yc + step, u, {
+          {10, "resultat", kLabel},
+          {80, rec_->status == "known" ? rec_->name : rec_->status,
+            rec_->status == "known" ? kOn : kVal}});
+        cardRow(im, x, yc + 2 * step, u, {
+          {10, "score", kLabel}, {70, fmt(rec_->score, 2), kVal},
+          {150, "brut", kLabel}, {220, fmt(rec_->raw_score, 2), kVal}});
+        cardRow(im, x, yc + 3 * step, u, {
+          {10, "stabilite", kLabel}, {90, fmt(100.0 * rec_->stability, 0) + " %", kVal}});
+      } else {
+        cardRow(im, x, yc + step, u, {{10, "resultat", kLabel}, {80, "--", kOff}});
+      }
+    }
+  }
+
   /// Carte de la colonne de droite SELON LE MODE : TRACKING -> CAM, CONDUITE et NAV ->
   /// moteurs, CALIB -> mesures. Sans etat de manette : CAM, l'affichage d'origine.
   void drawContextCard(
@@ -1033,7 +1149,10 @@ private:
   {
     const auto st = teleopFresh();
     const std::string mode = st ? st->mode : "";
-    if (mode == "CONDUITE" || mode == "NAV") {
+    static const std::vector<std::string> kChain{"acq", "trkv", "trkp", "capt", "gen", "reco"};
+    if (mode == "TRACKING" && std::find(kChain.begin(), kChain.end(), st->group) != kChain.end()) {
+      drawTrackingCard(im, ts, st->group, x, y, u);
+    } else if (mode == "CONDUITE" || mode == "NAV") {
       drawDriveCard(im, x, y, u);
     } else if (mode == "CALIB") {
       drawCalibCard(im, x, y, u);
@@ -1104,13 +1223,15 @@ private:
     const int row1 = row2 - row_h;
     const int pill_x0 = iu(8, u);
     int x = pill_x0;
-    x = modePill(im, x, row1, "TRACK", tracking_on_, u);
-    x = modePill(
+    // La CHAINE DE TRACKING, dans son ordre : ACQ (detection) -> TRK-V (tracker video) ->
+    // TRK-P (suivi physique) ; CAPT (capture), GEN (apprentissage), RECO (reconnaissance).
+    x = modePill(im, x, row1, "ACQ", detect_on_, u);
+    x = modePill(im, x, row1, "TRK-V", track_mode_ != "none" && !track_mode_.empty(), u);
+    x = modePill(im, x, row1, "TRK-P", tracking_on_, u);
+    x = modePill(im, x, row1, "CAPT", recog_mode_ == "acquisition", u);
+    x = modePill(im, x, row1, "GEN", gen_on_, u);
+    modePill(
       im, x, row1, "RECO", recog_mode_ == "recognition" || recog_mode_ == "acquisition", u);
-    x = modePill(im, x, row1, "ACQ", recog_mode_ == "acquisition", u);
-    x = modePill(im, x, row1, track_mode_.empty() ? "-" : track_mode_, ts.locked, u);
-    modePill(im, x, row1, predict_mode_.empty() ? "off" : predict_mode_,
-      predict_mode_ != "off" && !predict_mode_.empty(), u);
 
     // MANETTE + SANTE. MANETTE grise si l'etat se tait depuis 4 periodes (2 Hz) ; SANTE
     // grise apres 3 s de silence (agregateur a 1 Hz).
@@ -1379,6 +1500,12 @@ private:
   sensor_msgs::msg::Imu::ConstSharedPtr imu_;
   std_msgs::msg::String::ConstSharedPtr calib_report_;
   float batt_v_{0.0f};
+  // Chaine de tracking, relayee par bamboo_teleop (ModeCmd detect / gen / capture_duration).
+  bool detect_on_{false};
+  bool gen_on_{false};
+  double capt_duration_s_{0.0};
+  rclcpp::Time capt_since_{0, 0, RCL_STEADY_TIME};
+  rclcpp::Time last_gen_{0, 0, RCL_STEADY_TIME};
   // Modules de l'arbre agrege : (nom court, niveau). Remplace d'un bloc a 1 Hz.
   std::vector<std::pair<std::string, int>> modules_;
   // Tout ce qui n'est pas vert (mode SANTE), a toute profondeur.

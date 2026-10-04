@@ -170,26 +170,92 @@ bamboo_teleop:
           ZL: "speed_max_down"
           PLUS: "speed_min_up"
           MINUS: "speed_min_down"
+      # TRACKING = la CHAINE de suivi de cible (demande utilisateur 2026-10-04). Les
+      # touches d'ACTIVATION sont les memes dans tous les sous-modes :
+      #   L  ACQ    detection de la cible (visage pour l'instant)
+      #   R  TRK-V  suivi video (tracker) ; coupe = verrou tenu par la detection seule
+      #   X  TRK-P  suivi physique (servos ; X long = recentrage)
+      #   A  CAPT   capture des images de la cible
+      #   +  GEN    apprentissage (enrolement) depuis les captures
+      #   Y  RECO   reconnaissance
+      # Le SOUS-MODE (croix haut/bas) est la fonction qu'on CONFIGURE : ZL / ZR y changent
+      # l'algorithme (ou la duree, pour CAPT). PAS de plafond de vitesse ici : c'est un
+      # reglage de CONDUITE. ZR long = miroir de l'image, comme partout.
+      # Premier sous-mode `fonctions` : la VUE D'ENSEMBLE -- la boite liste les six
+      # fonctions et leur touche d'activation, la carte de droite resume la camera (CAM).
       tracking:
-        groups: "vision;cible"
-        vision:
-          ZR_long: "flip_image"
+        groups: "fonctions;acq;trkv;trkp;capt;gen;reco"
+        fonctions:
+          L: "acq"
+          R: "trkv"
           X: "tracking"
           X_long: "recenter"
-          Y: "recognition"
           A: "acquisition"
-          L: "tracker"
-          R: "predict"
-          ZR: "speed_max_up"
-          ZL: "speed_max_down"
-        cible:
+          PLUS: "training"
+          Y: "recognition"
           ZR_long: "flip_image"
-          A: "detector"
-          Y: "training"
-          L: "target_shrink"
-          R: "target_grow"
-          ZR: "speed_max_up"
-          ZL: "speed_max_down"
+        acq:
+          L: "acq"
+          R: "trkv"
+          X: "tracking"
+          X_long: "recenter"
+          A: "acquisition"
+          PLUS: "training"
+          Y: "recognition"
+          ZR_long: "flip_image"
+          ZL: "detector_prev"
+          ZR: "detector"
+        trkv:
+          L: "acq"
+          R: "trkv"
+          X: "tracking"
+          X_long: "recenter"
+          A: "acquisition"
+          PLUS: "training"
+          Y: "recognition"
+          ZR_long: "flip_image"
+          ZL: "tracker_prev"
+          ZR: "tracker"
+        trkp:
+          L: "acq"
+          R: "trkv"
+          X: "tracking"
+          X_long: "recenter"
+          A: "acquisition"
+          PLUS: "training"
+          Y: "recognition"
+          ZR_long: "flip_image"
+          ZL: "predict_prev"
+          ZR: "predict"
+        capt:
+          L: "acq"
+          R: "trkv"
+          X: "tracking"
+          X_long: "recenter"
+          A: "acquisition"
+          PLUS: "training"
+          Y: "recognition"
+          ZR_long: "flip_image"
+          ZL: "capture_prev"
+          ZR: "capture_next"
+        gen:
+          L: "acq"
+          R: "trkv"
+          X: "tracking"
+          X_long: "recenter"
+          A: "acquisition"
+          PLUS: "training"
+          Y: "recognition"
+          ZR_long: "flip_image"
+        reco:
+          L: "acq"
+          R: "trkv"
+          X: "tracking"
+          X_long: "recenter"
+          A: "acquisition"
+          PLUS: "training"
+          Y: "recognition"
+          ZR_long: "flip_image"
       calibration:
         groups: "mesure;essai"
         # A long et non A court : lancer fait TOURNER le robot, le geste doit etre
