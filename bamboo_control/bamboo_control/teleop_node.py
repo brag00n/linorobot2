@@ -976,6 +976,13 @@ class TeleopNode(Node):
                                  lambda: "PID roues levees", self._calBusy),
             "calib_pid_ground": (lambda: self._calibStart(False, "pid_sol"),
                                  lambda: "PID au sol (ligne droite)", self._calBusy),
+            # Batterie : PLEIN = 60 s au repos, sans mouvement (chargeur debranche, apres 1 h
+            # de repos) ; DECHARGE = cycles rotation/repos ROUES LEVEES jusqu'a la coupure
+            # (des heures ; continue meme si la manette s'endort -- B l'arrete).
+            "calib_batt_full": (lambda: self._calibStart(True, "batterie_plein"),
+                                lambda: "batterie : plein au repos", self._calBusy),
+            "calib_batt_discharge": (lambda: self._calibStart(False, "batterie_decharge"),
+                                     lambda: "batterie : profil de decharge", self._calBusy),
             "calib_arcs": (self._calibToggleArcs, lambda: "arcs", lambda: self._calArcs),
             "calib_variant": (self._calibNextVariant,
                               lambda: "variante %s" % self._calVariant, None),
@@ -1225,6 +1232,7 @@ class TeleopNode(Node):
                                            "pas (calibration_enabled=false ?)"
                            % self._calCli._action_name)
             return
+        self._calProc = procedure
         goal = Calibrate.Goal(procedure=procedure, variant=self._calVariant,
                               include_arcs=self._calArcs, imu_check_only=bool(imu_only))
         self._calText = "CALIB IMU" if imu_only else (
@@ -1271,6 +1279,11 @@ class TeleopNode(Node):
         self._publishState()
 
     def _calibCancel(self, why):
+        # Une DECHARGE de batterie dure des heures roues levees : la manette qui s'endort ne
+        # l'arrete pas (le gyro du noeud de calibration arrete tout si le robot touche le
+        # sol). Tout autre motif (STOP, stick, changement de mode) l'arrete.
+        if why == "manette perdue" and getattr(self, "_calProc", "") == "batterie_decharge":
+            return
         if self._calHandle is not None:
             self.get_logger().warn("calibration ANNULEE (%s)" % why)
             self._calHandle.cancel_goal_async()

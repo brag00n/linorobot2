@@ -70,6 +70,23 @@ bamboo_calibration:
     pid_set_wait_s: 2.5           # poussee + relecture par la carte
     pid_max_duration_s: 480.0
 
+    # --- batterie (groupe `batterie` du mode calibration) --------------------
+    # PLEIN : tension au repos (traction a l'arret), consommation de fond, pente (en hausse
+    # = chargeur branche). DECHARGE : roues LEVEES (verifie), cycles CHARGE = rotation sur
+    # place a batt_load_w (si le robot touche le sol, le gyro le voit tourner -> arret) /
+    # REPOS, jusqu'a batt_cutoff_cell_v au repos ou batt_load_cutoff_cell_v sous charge.
+    # Jamais de decharge TOTALE : un Li-ion vide s'abime (et la carte coupe sous 9 V).
+    batt_cells: 3
+    batt_rest_s: 60.0
+    batt_charger_slope_v_min: 0.01
+    batt_cycle_load_s: 20.0
+    batt_cycle_rest_s: 10.0
+    batt_load_w: 2.5
+    batt_ground_gz: 0.3
+    batt_cutoff_cell_v: 3.3
+    batt_load_cutoff_cell_v: 3.0
+    batt_max_duration_s: 18000.0  # 5 h
+
     # --- essai en RAM (groupe `essai` du mode calibration) ------------------
     pi_test_kp: 0.5
     pi_test_ki: 0.0

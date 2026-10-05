@@ -30,8 +30,10 @@ Les MESURES : le gyro (/imu/data, angular_velocity.z, signe aux conventions ROS 
 driver) et la vitesse de lacet VUE DES ROUES, brute (/motion_compensation/state.w_wheels).
 Le driver est trouve par le publieur de ce dernier sujet : aucun nom de robot ici.
 """
+import csv
 import math
 import os
+import statistics
 import threading
 import time
 
@@ -84,6 +86,9 @@ class Ctx:
         self.pid = {}          # (kp, ki, kd) -> [metriques par echelon]
         self.best_pid = None
         self.max_s = node.p["max_duration_s"]
+        self.batt_full = None
+        self.batt_cycles = []
+        self.batt_profile = None
         self.lines = []        # rapport LISIBLE (carte MESURES du HUD), une ligne par fait
 
     def note(self, text):
@@ -123,7 +128,9 @@ class Guard(Leaf):
 class Preconditions(Leaf):
     def update(self):
         n = self.ctx.node
-        why = n.preconditions(self.ctx.goal.imu_check_only)
+        # Sans mouvement (controle IMU, plein de batterie) : pas d'exigence d'armement.
+        still = self.ctx.goal.imu_check_only or self.ctx.procedure == "batterie_plein"
+        why = n.preconditions(still)
         if why:
             self.ctx.abort = why
             self.say("REFUS : " + why)
@@ -344,6 +351,136 @@ class PidStep(Leaf):
         return Status.SUCCESS
 
 
+class BattRest(Leaf):
+    """Tension au REPOS du pack (traction a l'arret), consommation de fond, pente."""
+
+    def initialise(self):
+        self.t0 = time.monotonic()
+        self.rows = []
+        self.say("repos %.0f s, robot IMMOBILE, CHARGEUR DEBRANCHE"
+                 % self.ctx.node.p["batt_rest_s"])
+
+    def update(self):
+        n = self.ctx.node
+        t = time.monotonic() - self.t0
+        if n.lastBattery is not None:
+            self.rows.append((t, n.lastBattery, n.lastBattI))
+        if t < n.p["batt_rest_s"]:
+            return Status.RUNNING
+        tail = [r for r in self.rows if r[0] >= 0.5 * n.p["batt_rest_s"]] or self.rows
+        if not tail:
+            self.ctx.abort = "aucune mesure de batterie"
+            return Status.FAILURE
+        v = statistics.median(r[1] for r in tail)
+        cur = [r[2] for r in tail if r[2] is not None]
+        i = statistics.median(cur) if cur else None
+        slope = 60.0 * (self.rows[-1][1] - self.rows[0][1]) / max(1.0, self.rows[-1][0])
+        self.ctx.batt_full = {"v": v, "i": i or 0.0, "pente_v_min": slope}
+        self.ctx.note("repos %.3f V (%.3f V/elt), fond %s A, pente %+.3f V/min" % (
+            v, v / n.p["batt_cells"], "--" if i is None else "%.2f" % i, slope))
+        if slope > n.p["batt_charger_slope_v_min"]:
+            self.ctx.warns.append("tension en HAUSSE (%+.3f V/min) : chargeur branche ?" % slope)
+            self.ctx.note("ATTENTION tension en hausse : chargeur branche ?")
+        return Status.SUCCESS
+
+
+class BattDischarge(Leaf):
+    """Cycles CHARGE (rotation sur place, roues levees) / REPOS jusqu'au seuil de coupure.
+
+    La charge est une ROTATION et non une marche avant : si le robot retombe au sol, le gyro
+    le voit tourner aussitot et la procedure s'arrete (un robot qui avancerait seul pendant
+    des heures, non). Les Ah sont l'integrale du courant mesure (INA219). Chaque cycle est
+    ecrit au fil de l'eau dans le CSV : un arret en cours de route garde ses donnees.
+    """
+
+    def initialise(self):
+        n, p = self.ctx.node, self.ctx.node.p
+        self.t0 = self.tc = time.monotonic()
+        self.lastT = self.t0
+        self.ah = 0.0
+        self.phase = "charge"
+        self.win = []
+        self.cycle = 0
+        self.ctx.batt_cycles = []
+        self.csv = n.openBattCsv(self.ctx)
+        self.vCut = p["batt_cutoff_cell_v"] * p["batt_cells"]
+        self.vLoadCut = p["batt_load_cutoff_cell_v"] * p["batt_cells"]
+        self.say("decharge : cycles %.0f s rotation / %.0f s repos jusqu'a %.2f V au repos"
+                 % (p["batt_cycle_load_s"], p["batt_cycle_rest_s"], self.vCut))
+
+    def update(self):
+        n, p = self.ctx.node, self.ctx.node.p
+        now = time.monotonic()
+        dt, self.lastT = now - self.lastT, now
+        i = n.lastBattI
+        if i is not None and 0.0 < dt < 1.0:
+            self.ah += max(0.0, i) * dt / 3600.0
+        t = now - self.tc
+        if self.phase == "charge":
+            n.drive(0.0, p["batt_load_w"])
+            gz = n.freshGz()
+            if t > 2.0 and gz is not None and abs(gz) > p["batt_ground_gz"]:
+                self.ctx.abort = "le robot TOURNE (gyro %.2f) : il n'a plus les roues levees" % gz
+                n.stop()
+                return Status.FAILURE
+            if t > p["batt_cycle_load_s"] - 3.0 and n.lastBattery is not None:
+                self.win.append((n.lastBattery, i))
+            if n.lastBattery is not None and n.lastBattery < self.vLoadCut and t > 3.0:
+                self.ctx.note("COUPURE sous charge %.2f V" % n.lastBattery)
+                n.stop()
+                return Status.SUCCESS
+            if t >= p["batt_cycle_load_s"]:
+                n.stop()
+                self.load = self.win
+                self.win, self.phase, self.tc = [], "repos", now
+            return Status.RUNNING
+        # repos
+        if t > p["batt_cycle_rest_s"] - 3.0 and n.lastBattery is not None:
+            self.win.append((n.lastBattery, i))
+        if t < p["batt_cycle_rest_s"]:
+            return Status.RUNNING
+        self.cycle += 1
+        med = lambda xs: statistics.median(xs) if xs else float("nan")
+        row = {"cycle": self.cycle, "t_s": round(now - self.t0, 1), "ah": round(self.ah, 4),
+               "v_repos": med([v for v, _i in self.win]),
+               "i_repos": med([x for _v, x in self.win if x is not None]),
+               "v_charge": med([v for v, _i in self.load]),
+               "i_charge": med([x for _v, x in self.load if x is not None])}
+        if self.cycle == 1 and self.ctx.batt_full:
+            row["v_repos_initial"] = self.ctx.batt_full["v"]
+        self.ctx.batt_cycles.append(row)
+        n.writeBattRow(self.csv, row)
+        self.ctx.line = "cycle %d : %.2f Ah, repos %.2f V, charge %.2f V %.2f A" % (
+            self.cycle, self.ah, row["v_repos"], row["v_charge"], row["i_charge"])
+        self.ctx.note(self.ctx.line)
+        if row["v_repos"] <= self.vCut:
+            self.ctx.note("COUPURE au repos %.2f V : fin de la decharge" % row["v_repos"])
+            return Status.SUCCESS
+        self.win, self.phase, self.tc = [], "charge", now
+        return Status.RUNNING
+
+
+class ComputeBatt(Leaf):
+    def update(self):
+        c, n = self.ctx, self.ctx.node
+        prof = cm.battery_profile(c.batt_cycles, n.p["batt_cells"])
+        if prof is None:
+            c.faults = ["trop peu de cycles (%d) pour un profil" % len(c.batt_cycles)]
+            self.say("REJET : " + c.faults[0])
+            return Status.FAILURE
+        c.batt_profile = prof
+        c.note("capacite %.2f Ah, R ref %s ohm" % (
+            prof["capacite_ah"], "--" if prof["r_ref_ohm"] is None else "%.3f" % prof["r_ref_ohm"]))
+        return Status.SUCCESS
+
+
+class WriteBatt(Leaf):
+    def update(self):
+        self.ctx.node.writeBattCandidate(self.ctx)
+        self.say("candidat ecrit : %s" % self.ctx.candidate)
+        return Status.SUCCESS
+
+
 class ComputePid(Leaf):
     def update(self):
         c, n = self.ctx, self.ctx.node
@@ -446,6 +583,17 @@ class CalibrationNode(Node):
             "pid_ground_off_s": float(d("pid_ground_off_s", 0.8).value),
             "pid_set_wait_s": float(d("pid_set_wait_s", 2.5).value),
             "pid_max_duration_s": float(d("pid_max_duration_s", 480.0).value),
+            # --- batterie (procedures batterie_plein / batterie_decharge) ----------------
+            "batt_cells": int(d("batt_cells", 3).value),
+            "batt_rest_s": float(d("batt_rest_s", 60.0).value),
+            "batt_charger_slope_v_min": float(d("batt_charger_slope_v_min", 0.01).value),
+            "batt_cycle_load_s": float(d("batt_cycle_load_s", 20.0).value),
+            "batt_cycle_rest_s": float(d("batt_cycle_rest_s", 10.0).value),
+            "batt_load_w": float(d("batt_load_w", 2.5).value),
+            "batt_ground_gz": float(d("batt_ground_gz", 0.3).value),
+            "batt_cutoff_cell_v": float(d("batt_cutoff_cell_v", 3.3).value),
+            "batt_load_cutoff_cell_v": float(d("batt_load_cutoff_cell_v", 3.0).value),
+            "batt_max_duration_s": float(d("batt_max_duration_s", 18000.0).value),
         }
         self.robot = str(d("robot", "").value)
         # Lus dans le bloc /** du fichier canonique, comme le driver.
@@ -461,6 +609,7 @@ class CalibrationNode(Node):
         self.lastJs = self.lastReq = None
 
         self.lastImu = self.lastYaw = None
+        self.lastBattI = None         # A, POSITIF en decharge (None : non mesure)
         self.lastImuT = 0.0
         self.lastState = None
         self.lastBattery = None
@@ -473,6 +622,7 @@ class CalibrationNode(Node):
         # La variante `essai` est-elle ACTIVE dans le driver (candidat ou PI en RAM) ? Tenu
         # ici : l'etat du driver n'est plus ecoute au repos (cf. _listen).
         self._ramActive = False
+        self._battProc = False        # procedure batterie en cours (preconditions)
 
         # Abonnements RAPIDES (IMU et etat de compensation, 30 Hz) crees PENDANT un but
         # seulement : au repos, le MultiThreadedExecutor de rclpy brulait 26 % d'un coeur
@@ -510,6 +660,8 @@ class CalibrationNode(Node):
 
     def _onBattery(self, m):
         self.lastBattery = m.voltage
+        # sensor_msgs : NEGATIF en decharge ; on garde la convention "+ = consommation".
+        self.lastBattI = None if math.isnan(m.current) else -m.current
 
     def _onTeleop(self, m):
         self.lastTeleop = m
@@ -620,7 +772,8 @@ class CalibrationNode(Node):
             return "traction du driver DESARMEE (enable_cmd_vel=false)"
         if self.p["require_teleop_armed"] and not (self.lastTeleop and self.lastTeleop.armed):
             return "traction non armee a la manette (appui long sur B)"
-        if self.lastBattery is not None and self.lastBattery < self.p["min_battery_v"]:
+        if self.lastBattery is not None and self.lastBattery < self.p["min_battery_v"] \
+                and not self._battProc:
             return "batterie %.2f V < %.2f V : la recharger" % (self.lastBattery,
                                                                self.p["min_battery_v"])
         if self.wheelSep <= 0.0:
@@ -634,10 +787,15 @@ class CalibrationNode(Node):
             return "gyro perdu (plus de %.0f s)" % self.p["guard_gyro_lost_s"]
         if ctx.goal.imu_check_only:
             return ""
-        if self.p["require_teleop_armed"] and self.lastTeleop is not None \
+        batt = ctx.procedure.startswith("batterie")
+        # Decharge : elle dure des HEURES roues levees ; la manette peut s'endormir sans que
+        # cela la concerne (la garde gyro arrete tout si le robot touche le sol). Elle vide
+        # la batterie A DESSEIN : sa coupure est la sienne (batt_*_cutoff_cell_v).
+        if not batt and self.p["require_teleop_armed"] and self.lastTeleop is not None \
                 and not self.lastTeleop.armed:
             return "traction desarmee a la manette"
-        if self.lastBattery is not None and self.lastBattery < self.p["min_battery_v"] - 0.5:
+        if not batt and self.lastBattery is not None and \
+                self.lastBattery < self.p["min_battery_v"] - 0.5:
             return "batterie effondree (%.2f V)" % self.lastBattery
         return ""
 
@@ -671,10 +829,30 @@ class CalibrationNode(Node):
             children=[Guard("garde", ctx), main])
         return root, len(seq)
 
+    def _battTree(self, ctx):
+        """batterie_plein : repos seul. batterie_decharge : roues levees, cycles, profil."""
+        seq = [Preconditions("preconditions", ctx)]
+        if ctx.procedure == "batterie_plein":
+            ctx.max_s = self.p["batt_rest_s"] + 30.0
+            seq.append(BattRest("repos", ctx))
+        else:
+            ctx.max_s = self.p["batt_max_duration_s"]
+            seq += [RaisedCheck("roues levees", ctx), BattRest("repos initial", ctx),
+                    BattDischarge("decharge", ctx), ComputeBatt("profil", ctx),
+                    WriteBatt("ecriture", ctx)]
+        main = py_trees.composites.Sequence("batterie", memory=True, children=seq)
+        root = py_trees.composites.Parallel(
+            "garde", policy=ParallelPolicy.SuccessOnSelected(children=[main]),
+            children=[Guard("garde", ctx), main])
+        return root, len(seq)
+
     def _tree(self, ctx):
         g = ctx.goal
+        self._battProc = ctx.procedure.startswith("batterie")
         if ctx.procedure in ("pid_roues_levees", "pid_sol"):
             return self._pidTree(ctx)
+        if ctx.procedure in ("batterie_plein", "batterie_decharge"):
+            return self._battTree(ctx)
         imu = py_trees.composites.Selector("IMU", memory=True, children=[
             RestImu("IMU repos", ctx, self.p["imu_rest_s"]),
             py_trees.composites.Sequence("IMU recalibree", memory=True, children=[
@@ -820,6 +998,38 @@ class CalibrationNode(Node):
         with open(base + ".yaml", "w", encoding="utf-8") as fh:
             fh.write(cm.pid_candidate_yaml(self.robot, ctx.best_pid, best_score, self.filePid,
                                            ref, ctx.procedure, base + ".json"))
+        ctx.candidate, ctx.report = base + ".yaml", report
+
+    def _outBase(self, kind):
+        out = self.p["output_dir"] or "/tmp"
+        os.makedirs(out, exist_ok=True)
+        return os.path.join(out, "%s_%s" % (kind, time.strftime("%Y%m%d_%H%M%S")))
+
+    def openBattCsv(self, ctx):
+        ctx.batt_base = self._outBase("batt_candidat")
+        fh = open(ctx.batt_base + "_cycles.csv", "w", newline="", encoding="utf-8")
+        w = csv.writer(fh)
+        w.writerow(["cycle", "t_s", "ah", "v_repos", "i_repos", "v_charge", "i_charge"])
+        fh.flush()
+        return (fh, w)
+
+    def writeBattRow(self, csvh, row):
+        fh, w = csvh
+        w.writerow([row[k] for k in ("cycle", "t_s", "ah", "v_repos", "i_repos",
+                                     "v_charge", "i_charge")])
+        fh.flush()
+
+    def writeBattCandidate(self, ctx):
+        base = ctx.batt_base
+        report = cm.report_json(robot=self.robot, procedure=ctx.procedure,
+                                plein=ctx.batt_full, profil=ctx.batt_profile,
+                                cycles=ctx.batt_cycles, avertissements=ctx.warns,
+                                parametres=self.p)
+        with open(base + ".json", "w", encoding="utf-8") as fh:
+            fh.write(report)
+        with open(base + ".yaml", "w", encoding="utf-8") as fh:
+            fh.write(cm.battery_candidate_yaml(self.robot, ctx.batt_profile, ctx.batt_full,
+                                               base + ".json"))
         ctx.candidate, ctx.report = base + ".yaml", report
 
     # ------------------------------------------------------------ essai en RAM

@@ -189,6 +189,9 @@ class Esp32MavlinkDriver(Node):
         self.declare_parameter("batt_r_warn_ohm", 0.0)
         self.declare_parameter("batt_sag_warn_v", 0.0)
         self.declare_parameter("batt_deficit_warn", 0.25)
+        # Profil MESURE (calibration batterie_decharge) ; [0.0] = aucun, courbe generique.
+        self.declare_parameter("batt_profile_v", [0.0])
+        self.declare_parameter("batt_profile_soc", [0.0])
         # L'etat ARME est-il l'etat NORMAL de ce robot ? Lu dans son fichier canonique, a cote
         # d'enable_cmd_vel : c'est la meme decision. Ne sert qu'au diagnostic.
         self.declare_parameter("armed_nominal", False)
@@ -208,6 +211,8 @@ class Esp32MavlinkDriver(Node):
         self.batt_r_warn_ohm = float(g("batt_r_warn_ohm"))
         self.batt_sag_warn_v = float(g("batt_sag_warn_v"))
         self.batt_deficit_warn = float(g("batt_deficit_warn"))
+        self.batt_profile_v = [float(x) for x in g("batt_profile_v")]
+        self.batt_profile_soc = [float(x) for x in g("batt_profile_soc")]
         self.armed_nominal = bool(g("armed_nominal"))
         # Dernier snapshot du lien, GARDE par _tick qui l'appelle deja : le diagnostic ne
         # relit rien sur le port.

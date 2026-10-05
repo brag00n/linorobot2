@@ -82,3 +82,20 @@ def test_step_metrics_and_best_gains():
     best, score, table = cm.best_gains({(0.6, 0.3, 0.5): [slow], (1.5, 0.6, 0.5): [fast]}, 2.0)
     assert best == (1.5, 0.6, 0.5) and len(table) == 2
     assert cm.step_metrics([0, 1, 2, 3, 4], [0.1] * 5, [0.1] * 5) is None   # cible nulle
+
+
+def test_battery_profile():
+    cycles = []
+    for k in range(10):
+        ah = 0.2 * (k + 1)
+        v = 12.4 - 0.25 * k
+        cycles.append({"ah": ah, "v_repos": v, "v_charge": v - 0.36, "i_charge": 2.6,
+                       "i_repos": 0.6})
+    cycles[0]["v_repos_initial"] = 12.55
+    p = cm.battery_profile(cycles, 3)
+    assert math.isclose(p["capacite_ah"], 2.0)
+    assert p["profil_v"][-1] == 12.55 and p["profil_v"][0] < p["profil_v"][-1]
+    assert math.isclose(p["r_ref_ohm"], 0.18, rel_tol=1e-3)
+    txt = cm.battery_candidate_yaml("robot", p, {"v": 12.55, "i": 0.56}, "/tmp/r.json")
+    assert "batt_profile_v:" in txt and "batt_r_warn_ohm: 0.2700" in txt
+    assert cm.battery_profile(cycles[:2], 3) is None

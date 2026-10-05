@@ -252,3 +252,63 @@ def pid_candidate_yaml(robot, gains, score, ref_gains, ref_score, procedure, rep
         "    pid_kd: %g" % kd,
         "",
     ])
+
+
+# ===================================================================== batterie
+# Profil de DECHARGE : une ligne par cycle (charge puis repos), avec les Ah consommes
+# depuis le debut, la tension au repos en fin de repos, la tension et le courant en fin de
+# charge, le courant au repos.
+
+def battery_profile(cycles, cells, n_points=11):
+    """-> {capacite_ah, profil_v, profil_soc, r_ohm (par cycle), r_ref_ohm, chute_v}.
+
+    L'etat de charge d'un cycle vaut 1 - Ah_consommes / Ah_total : la decharge s'arrete au
+    seuil de coupure, que l'on prend pour ~0 % (un pack ne doit pas descendre plus bas).
+    Le profil est reechantillonne sur n_points etats de charge (100, 90, ... 0 %), tension
+    de repos DECROISSANTE avec la charge.
+    """
+    if len(cycles) < 3:
+        return None
+    total = cycles[-1]["ah"]
+    if total <= 0:
+        return None
+    pts = sorted(((1.0 - c["ah"] / total) * 100.0, c["v_repos"]) for c in cycles)
+    # Point du plein : tension au repos AVANT le premier cycle, si mesuree.
+    if cycles[0].get("v_repos_initial"):
+        pts.append((100.0, cycles[0]["v_repos_initial"]))
+        pts.sort()
+    soc_axis = [100.0 * k / (n_points - 1) for k in range(n_points)]
+    prof = [round(_interp(pts, s), 3) for s in soc_axis]
+    r = [round((c["v_repos"] - c["v_charge"]) / (c["i_charge"] - c["i_repos"]), 4)
+         for c in cycles if c["i_charge"] - c["i_repos"] > 0.3]
+    sag = [c["v_repos"] - c["v_charge"] for c in cycles]
+    # R de REFERENCE = mediane sur la moitie haute de la charge (pack sain, charge elevee).
+    upper = [rr for c, rr in zip(cycles, r) if 1.0 - c["ah"] / total >= 0.5] or r
+    return {"capacite_ah": round(total, 3), "profil_soc": soc_axis, "profil_v": prof,
+            "r_ohm": r, "r_ref_ohm": round(statistics.median(upper), 4) if upper else None,
+            "chute_v_moy": round(sum(sag) / len(sag), 3), "elements": cells}
+
+
+def battery_candidate_yaml(robot, prof, full, report_path):
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    r = prof.get("r_ref_ohm")
+    lines = [
+        "# CANDIDAT batterie -- a RECOPIER, apres validation, dans le bloc /** du fichier",
+        "# canonique de %s. Profil de decharge du %s, capacite mesuree %.2f Ah."
+        % (robot, now, prof["capacite_ah"]),
+        "# Rapport complet : %s" % report_path,
+    ]
+    if full:
+        lines.append("# Plein au repos : %.2f V (%.2f V/element), fond %.2f A."
+                     % (full["v"], full["v"] / prof["elements"], full["i"]))
+    lines += [
+        "    batt_profile_soc: [%s]" % ", ".join("%.0f" % s for s in prof["profil_soc"]),
+        "    batt_profile_v: [%s]" % ", ".join("%.3f" % v for v in prof["profil_v"]),
+        "    batt_capacity_ah: %.3f" % prof["capacite_ah"],
+    ]
+    if r:
+        # Seuils de WARN derives : +50 % de resistance, 1,5 x la chute moyenne.
+        lines += ["    batt_r_ref_ohm: %.4f" % r,
+                  "    batt_r_warn_ohm: %.4f" % (1.5 * r),
+                  "    batt_sag_warn_v: %.2f" % (1.5 * prof["chute_v_moy"])]
+    return "\n".join(lines + [""])

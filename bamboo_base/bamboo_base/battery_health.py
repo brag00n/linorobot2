@@ -44,10 +44,14 @@ def soc_from_rest(v_pack, cells):
 
 class BatteryHealth:
 
-    def __init__(self, cells=3, rest_current_a=0.3, rest_settle_s=2.0, window_s=120.0,
+    def __init__(self, cells=3, profile=None, rest_current_a=0.3, rest_settle_s=2.0,
+                 window_s=120.0,
                  min_current_spread_a=0.8, deficit_ratio=0.7, deficit_settle_s=1.0,
                  deficit_min_rpm=20.0):
         self.cells = cells
+        # Profil MESURE du pack (calibration batterie_decharge) : [(tension repos, %)], qui
+        # remplace la courbe Li-ion generique. None = courbe generique.
+        self.profile = sorted(profile) if profile and len(profile) >= 2 else None
         self.rest_current_a = rest_current_a
         self.rest_settle_s = rest_settle_s
         self.window_s = window_s
@@ -118,7 +122,18 @@ class BatteryHealth:
 
     @property
     def soc(self):
-        return soc_from_rest(self.rest_voltage, self.cells)
+        v = self.rest_voltage
+        if v is None or self.profile is None:
+            return soc_from_rest(v, self.cells)
+        p = self.profile
+        if v <= p[0][0]:
+            return float(p[0][1])
+        if v >= p[-1][0]:
+            return float(p[-1][1])
+        for (v0, s0), (v1, s1) in zip(p, p[1:]):
+            if v0 <= v <= v1:
+                return s0 + (s1 - s0) * (v - v0) / (v1 - v0) if v1 > v0 else float(s1)
+        return None
 
     @property
     def resistance(self):

@@ -41,7 +41,10 @@ class DriverDiagnostics:
         self._ok = self._bad = None
         # SANTE de la batterie (charge, resistance interne, chute, decrochage de traction),
         # nourrie par observe() depuis le _tick du driver. Cf. battery_health.py.
-        self.health = BatteryHealth(cells=int(getattr(driver, "batt_cells", 3)))
+        pv = list(getattr(driver, "batt_profile_v", []) or [])
+        ps = list(getattr(driver, "batt_profile_soc", []) or [])
+        prof = list(zip(pv, ps)) if len(pv) == len(ps) and len(pv) >= 2 else None
+        self.health = BatteryHealth(cells=int(getattr(driver, "batt_cells", 3)), profile=prof)
         self._battKey = None
         self.updater = Updater(driver)
         # hardware_id = le SERVICE compose, c'est-a-dire le module de l'arbre de diagnostic.
@@ -135,6 +138,7 @@ class DriverDiagnostics:
         rest, soc, r, sag = h.rest_voltage, h.soc, h.resistance, h.sag
         stat.add("tension_repos_v", "?" if rest is None else "%.2f" % rest)
         stat.add("charge_pct", "?" if soc is None else "%.0f" % soc)
+        stat.add("courbe_charge", "profil mesure" if h.profile else "Li-ion generique")
         stat.add("resistance_interne_ohm",
                  "non mesuree" if r is None else "%.3f" % r)
         stat.add("chute_sous_charge_v", "?" if sag is None else "%.2f" % sag)
