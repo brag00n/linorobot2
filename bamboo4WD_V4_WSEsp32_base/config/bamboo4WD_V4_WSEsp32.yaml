@@ -101,10 +101,16 @@
     # --- PID de vitesse roue --------------------------------------------
     # ATTENTION : sur cette carte les 4 moteurs PARTAGENT un seul triplet
     # (repliement d'index idx % 3 cote ESP32), contrairement au STM32.
-    # K_I eleve pour une integrale non bornee a 10 Hz -> premier suspect en cas
-    # de depassement lors du reglage (lot 4).
+    # REGLE le 2026-10-05 par la procedure automatique (mode CALIB, groupe pid ;
+    # firmware 0.5.1, sans le double calcul du PID) et VALIDE par l'utilisateur a la
+    # manette ("tres bonne reactivite, pilotage facile"). ki 0,3 -> 0,6, kp et kd
+    # inchanges :
+    #   roues levees  montee a 90 % 0,85 s -> 0,42-0,58 s, depassement <= 7 %
+    #   au sol        montee 0,85-0,99 s -> 0,41-0,53 s, depassement <= 6 %, erreur ~0
+    # Zone utile ETROITE : kp >= 1,5 avec ki >= 0,6 depasse et oscille (jusqu'a 193 %).
+    # Rapports : pid_candidat_pid_roues_levees_20261005_205238.json et _pid_sol_..._205451.
     pid_kp: 0.6
-    pid_ki: 0.3
+    pid_ki: 0.6
     pid_kd: 0.5
 
     # --- mapping des voies encodeur -------------------------------------
