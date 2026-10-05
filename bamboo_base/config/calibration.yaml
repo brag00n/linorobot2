@@ -15,7 +15,9 @@ bamboo_calibration:
     min_battery_v: 11.4
     require_teleop_armed: true    # exige l'armement a la manette (appui long B)
     max_duration_s: 240.0
-    gyro_max_age_s: 0.3
+    gyro_max_age_s: 0.3           # fraicheur exigee d'un echantillon de MESURE
+    guard_gyro_lost_s: 2.0        # perte du gyro pour la GARDE (le driver se tait ~0,5 s
+                                  # a chaque poussee de gains PID)
 
     # --- IMU au repos (etape 0) --------------------------------------------
     imu_rest_s: 10.0

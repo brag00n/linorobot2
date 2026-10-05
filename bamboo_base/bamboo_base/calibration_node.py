@@ -410,6 +410,10 @@ class CalibrationNode(Node):
             "imu_max_drift_deg": float(d("imu_max_drift_deg", 0.5).value),
             "recalibrate_settle_s": float(d("recalibrate_settle_s", 4.0).value),
             "gyro_max_age_s": float(d("gyro_max_age_s", 0.3).value),
+            # PERTE du gyro pour la GARDE : bien plus long que la fraicheur des MESURES. Le
+            # driver se tait ~0,5 s a chaque poussee+relecture de gains PID (essai PID du
+            # 2026-10-05 abandonne "gyro perdu" au premier jeu de gains).
+            "guard_gyro_lost_s": float(d("guard_gyro_lost_s", 2.0).value),
             "spin_w_cmd": [float(x) for x in d("spin_w_cmd", [0.6, 1.2, 2.0, 3.0]).value],
             "arc_v": [float(x) for x in d("arc_v", [0.2, 0.4]).value],
             "arc_w_cmd": [float(x) for x in d("arc_w_cmd", [0.6, 1.5]).value],
@@ -626,8 +630,8 @@ class CalibrationNode(Node):
     def guardViolation(self, ctx):
         if time.monotonic() - ctx.t0 > ctx.max_s:
             return "duree maximale %.0f s depassee" % ctx.max_s
-        if self.freshGz() is None:
-            return "gyro perdu"
+        if self.lastImu is None or                 time.monotonic() - self.lastImuT > self.p["guard_gyro_lost_s"]:
+            return "gyro perdu (plus de %.0f s)" % self.p["guard_gyro_lost_s"]
         if ctx.goal.imu_check_only:
             return ""
         if self.p["require_teleop_armed"] and self.lastTeleop is not None \
