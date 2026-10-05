@@ -169,7 +169,7 @@
     #
     # NE PAS ECRIRE ICI SANS VALIDATION (JOURNAL.md) : la calibration produit un
     # fichier CANDIDAT (calib_candidat_<variante>_<date>.yaml) a recopier ci-dessous.
-    hardware_variant: "origine"
+    hardware_variant: "caoutchouc_parquet"
     calib:
       origine:
         description: "aucune compensation (comportement d'origine)"
@@ -182,8 +182,27 @@
         yaw_rate_ki: 0.0
         yaw_rate_i_max: 0.0
         wheel_separation_m: 0.0
+      # Roues d'origine (caoutchouc) sur PARQUET. VALIDEE par l'utilisateur le 2026-10-05
+      # apres essai au sol a la manette ("controle de vitesse plus facile et plus reactif").
+      # s : calibration du 2026-10-05, rotations sur place 0,51-0,58 (deux sens), arcs a
+      # w=1,5 0,45-0,66 ; arcs a w=0,6 trop disperses (0,35-0,71) -> table UNIFORME 0,55.
+      # Essai : rotation reelle/demandee 0,45 -> 0,88 (feed-forward seul). PI kp 0,5 :
+      # corrige le depassement a haute vitesse (s reel ~0,4) ; la latence restante vient du
+      # PID des ROUES (montee ~1,2 s), pas de cette table.
+      caoutchouc_parquet:
+        description: "roues caoutchouc, parquet (calibration 2026-10-05)"
+        v_bins_mps: [0.0, 0.2, 0.4]
+        w_bins_rps: [0.5, 1.0, 1.5]
+        yaw_slip: [0.55, 0.55, 0.55,
+                   0.55, 0.55, 0.55,
+                   0.55, 0.55, 0.55]
+        yaw_rate_kp: 0.5
+        yaw_rate_ki: 0.0
+        yaw_rate_i_max: 0.0
+        wheel_separation_m: 0.0
     # Signe du gyro z par rapport a la convention ROS (+ = anti-horaire vu du
     # dessus). A ETABLIR A L'ESSAI : un signe faux ferait diverger le PI.
+    # ETABLI le 2026-10-05 : gyro et roues tournent dans le meme sens sur tous les paliers.
     imu_gz_sign: 1.0
     # Mode calibration (bamboo_calibration + mode `calibration` de la manette).
     calibration_enabled: true
