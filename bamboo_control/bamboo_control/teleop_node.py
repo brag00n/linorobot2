@@ -969,6 +969,13 @@ class TeleopNode(Node):
             "calib_start": (lambda: self._calibStart(False), lambda: "lancer calibration",
                             self._calBusy),
             "calib_imu": (lambda: self._calibStart(True), lambda: "controle IMU", None),
+            # Reglage AUTOMATIQUE des gains PID des roues : d'abord ROUES LEVEES (grille de
+            # gains x plages de vitesse, roues levees VERIFIEES), puis AU SOL en ligne droite
+            # avant/arriere (gains du fichier contre le meilleur jeu roues levees).
+            "calib_pid_raised": (lambda: self._calibStart(False, "pid_roues_levees"),
+                                 lambda: "PID roues levees", self._calBusy),
+            "calib_pid_ground": (lambda: self._calibStart(False, "pid_sol"),
+                                 lambda: "PID au sol (ligne droite)", self._calBusy),
             "calib_arcs": (self._calibToggleArcs, lambda: "arcs", lambda: self._calArcs),
             "calib_variant": (self._calibNextVariant,
                               lambda: "variante %s" % self._calVariant, None),
@@ -1205,7 +1212,7 @@ class TeleopNode(Node):
     def _calBusy(self):
         return self._calGoal is not None
 
-    def _calibStart(self, imu_only):
+    def _calibStart(self, imu_only, procedure=""):
         if self._calBusy():
             self.get_logger().warn("calibration deja en cours : appui ignore")
             return
@@ -1218,9 +1225,10 @@ class TeleopNode(Node):
                                            "pas (calibration_enabled=false ?)"
                            % self._calCli._action_name)
             return
-        goal = Calibrate.Goal(variant=self._calVariant, include_arcs=self._calArcs,
-                              imu_check_only=bool(imu_only))
-        self._calText = "CALIB IMU" if imu_only else "CALIB 0/?"
+        goal = Calibrate.Goal(procedure=procedure, variant=self._calVariant,
+                              include_arcs=self._calArcs, imu_check_only=bool(imu_only))
+        self._calText = "CALIB IMU" if imu_only else (
+            "PID 0/?" if procedure else "CALIB 0/?")
         self.get_logger().warn("calibration %s lancee (variante %s, arcs %s)"
                                % ("IMU SEULE" if imu_only else "COMPLETE", self._calVariant,
                                   self._calArcs))
@@ -1246,7 +1254,8 @@ class TeleopNode(Node):
 
     def _onCalFeedback(self, fb):
         f = fb.feedback
-        self._calText = "CALIB %d/%d" % (f.step, f.total)
+        self._calText = "%s %d/%d" % ("PID" if self._calText.startswith("PID") else "CALIB",
+                                      f.step, f.total)
         self.get_logger().info("calibration %d/%d : %s" % (f.step, f.total, f.line))
         self._publishState()
 

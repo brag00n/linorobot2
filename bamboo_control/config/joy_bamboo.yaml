@@ -257,7 +257,7 @@ bamboo_teleop:
           Y: "recognition"
           ZR_long: "flip_image"
       calibration:
-        groups: "mesure;essai"
+        groups: "mesure;pid;essai"
         # A long et non A court : lancer fait TOURNER le robot, le geste doit etre
         # tenu. Exige en plus la traction armee (B long).
         mesure:
@@ -266,6 +266,13 @@ bamboo_teleop:
           X: "calib_imu"
           Y: "calib_arcs"
           R: "calib_variant"
+        # Gains PID des roues : A long = ROUES LEVEES (grille de gains, ~4 min), X long =
+        # AU SOL en ligne droite avant/arriere (fichier contre meilleur roues levees, peu de
+        # place). Appuis LONGS : le robot bouge. Resultat = candidat, essai en RAM (essai/A).
+        pid:
+          ZR_long: "flip_image"
+          A_long: "calib_pid_raised"
+          X_long: "calib_pid_ground"
         essai:
           ZR_long: "flip_image"
           A: "calib_apply"

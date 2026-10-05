@@ -49,6 +49,25 @@ bamboo_calibration:
     max_dispersion: 0.10          # ecart-type / moyenne du gyro sur un palier
     max_asymmetry: 0.15           # ecart de s entre les deux sens
 
+    # --- PID des roues (groupe `pid` du mode calibration) --------------------
+    # ROUES LEVEES : chaque jeu (kp x ki, kd du fichier) est essaye sur des ECHELONS de
+    # vitesse lineaire (plages lente / moyenne / rapide + marche arriere) ; on mesure la
+    # montee a 90 %, le depassement, l'erreur statique et l'oscillation de chaque roue
+    # (/req_states contre /joint_states). Le jeu du fichier est toujours mesure aussi.
+    # ~13 jeux x 4 echelons x 3,5 s ~ 4 min. AU SOL : ligne droite avant/arriere (le robot
+    # revient pres de son depart), gains du fichier contre le meilleur jeu roues levees.
+    # Le kd n'est pas balaye : le firmware refuse 0, on garde celui du fichier.
+    pid_kp_grid: [0.6, 1.0, 1.5, 2.0]
+    pid_ki_grid: [0.3, 0.6, 1.0]
+    pid_raised_v: [0.08, 0.2, 0.35, -0.2]
+    pid_ground_v: [0.2, -0.2, 0.35, -0.35]
+    pid_on_s: 2.5
+    pid_off_s: 1.0
+    pid_ground_on_s: 1.5
+    pid_ground_off_s: 0.8
+    pid_set_wait_s: 2.5           # poussee + relecture par la carte
+    pid_max_duration_s: 480.0
+
     # --- essai en RAM (groupe `essai` du mode calibration) ------------------
     pi_test_kp: 0.5
     pi_test_ki: 0.0

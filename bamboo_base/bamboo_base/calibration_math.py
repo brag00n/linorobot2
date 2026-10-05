@@ -189,3 +189,66 @@ def report_json(**kw):
             return [clean(v) for v in x]
         return x
     return json.dumps(clean(kw), indent=2, ensure_ascii=False)
+
+
+# ===================================================================== PID des roues
+# Reponse d'une roue a un ECHELON de consigne. Entree : temps (s, depuis l'echelon),
+# consigne et mesure en RPM telles que le PID de la carte les voit (/req_states,
+# /joint_states). La consigne de regime est la mediane de la seconde moitie.
+
+def step_metrics(t, req, meas, rise_frac=0.9):
+    """Temps de montee a rise_frac, depassement, erreur statique et oscillation (relatifs)."""
+    if len(t) < 5:
+        return None
+    half = len(req) // 2
+    target = statistics.median(req[half:])
+    if abs(target) < 1.0:              # sous 1 RPM la mesure ne dit rien
+        return None
+    y = [m / target for m in meas]     # reponse NORMALISEE, signe absorbe
+    rise = next((ti for ti, yi in zip(t, y) if yi >= rise_frac), None)
+    tail = y[int(len(y) * 0.7):] or y[-1:]
+    over = max(0.0, max(y) - 1.0)
+    sse = abs(_mean(tail) - 1.0)
+    osc = statistics.pstdev(tail) if len(tail) > 1 else 0.0
+    return {"cible_rpm": target, "montee_s": rise, "depassement": over,
+            "erreur_statique": sse, "oscillation": osc}
+
+
+def step_score(m, on_s):
+    """Plus petit = meilleur. Une montee jamais atteinte vaut la duree de l'echelon."""
+    if m is None:
+        return None
+    rise = m["montee_s"] if m["montee_s"] is not None else on_s
+    return rise + 2.0 * m["depassement"] + 3.0 * m["erreur_statique"] + 2.0 * m["oscillation"]
+
+
+def best_gains(results, on_s):
+    """results : {(kp, ki, kd): [metriques par echelon]} -> (gains, score moyen, table)."""
+    table = []
+    for gains, steps in results.items():
+        scores = [step_score(m, on_s) for m in steps]
+        scores = [s for s in scores if s is not None]
+        if not scores:
+            continue
+        table.append((sum(scores) / len(scores), gains, len(scores)))
+    table.sort()
+    if not table:
+        return None, None, []
+    return table[0][1], table[0][0], table
+
+
+def pid_candidate_yaml(robot, gains, score, ref_gains, ref_score, procedure, report_path):
+    kp, ki, kd = gains
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    return "\n".join([
+        "# CANDIDAT PID des roues -- a RECOPIER, apres validation, a la place de pid_kp/ki/kd",
+        "# du fichier canonique de %s (bloc /**)." % robot,
+        "# Procedure %s du %s. Score %.3f (gains du fichier %s : %s)."
+        % (procedure, now, score, "/".join("%g" % g for g in ref_gains),
+           "%.3f" % ref_score if ref_score is not None else "non mesures"),
+        "# Rapport complet : %s" % report_path,
+        "    pid_kp: %g" % kp,
+        "    pid_ki: %g" % ki,
+        "    pid_kd: %g" % kd,
+        "",
+    ])

@@ -66,3 +66,19 @@ def test_candidate_yaml_shape():
     txt = cm.candidate_yaml("essai", "robot", [0.5] * 9, [0.0, 0.2, 0.4], [0.5, 1.0, 1.5],
                             [True, True, False], "/tmp/r.json", 12.3, 0.125)
     assert "      essai:" in txt and "yaw_slip: [" in txt and "RECOPIEE" in txt
+
+
+def _first_order(tau, k=1.0, n=40, dt=0.05, target=50.0):
+    t = [i * dt for i in range(n)]
+    return t, [target] * n, [target * k * (1 - math.exp(-ti / tau)) for ti in t]
+
+
+def test_step_metrics_and_best_gains():
+    fast, slow = cm.step_metrics(*_first_order(0.2)), cm.step_metrics(*_first_order(0.8))
+    assert fast["montee_s"] < slow["montee_s"]
+    assert fast["erreur_statique"] < 0.05
+    off = cm.step_metrics(*_first_order(0.2, k=0.7))         # n'atteint jamais 90 %
+    assert off["montee_s"] is None and off["erreur_statique"] > 0.25
+    best, score, table = cm.best_gains({(0.6, 0.3, 0.5): [slow], (1.5, 0.6, 0.5): [fast]}, 2.0)
+    assert best == (1.5, 0.6, 0.5) and len(table) == 2
+    assert cm.step_metrics([0, 1, 2, 3, 4], [0.1] * 5, [0.1] * 5) is None   # cible nulle

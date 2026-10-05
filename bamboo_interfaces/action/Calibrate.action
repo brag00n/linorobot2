@@ -1,6 +1,10 @@
 # Calibration du glissement en rotation (bamboo_calibration), lancee depuis le mode
 # `calibration` de la manette. Long (1 a 3 min), ANNULABLE, un seul but a la fois.
 # Le robot TOURNE : il doit etre au sol, arme, avec de la place (arcs : ~2 m x 2 m).
+# PROCEDURE : "" ou "glissement" = glissement en rotation (rotations + arcs) ;
+# "pid_roues_levees" = gains PID des roues par echelons de vitesse, ROUES LEVEES (verifie) ;
+# "pid_sol" = memes echelons en ligne droite avant/arriere AU SOL (peu de place).
+string procedure
 string variant          # nom de la variante materielle mesuree (fichier candidat)
 bool include_arcs       # ajoute les arcs (virages en avancant) aux rotations sur place
 bool imu_check_only     # controle de l'IMU au repos seul, SANS mouvement

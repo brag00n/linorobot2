@@ -47,7 +47,7 @@ from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from geometry_msgs.msg import Twist
 from rcl_interfaces.srv import SetParametersAtomically
-from sensor_msgs.msg import BatteryState, Imu
+from sensor_msgs.msg import BatteryState, Imu, JointState
 from std_msgs.msg import String
 from std_srvs.srv import SetBool, Trigger
 
@@ -80,6 +80,10 @@ class Ctx:
         self.faults, self.warns, self.pairs = [], [], []
         self.candidate = ""
         self.report = ""
+        self.procedure = goal.procedure or "glissement"
+        self.pid = {}          # (kp, ki, kd) -> [metriques par echelon]
+        self.best_pid = None
+        self.max_s = node.p["max_duration_s"]
         self.lines = []        # rapport LISIBLE (carte MESURES du HUD), une ligne par fait
 
     def note(self, text):
@@ -236,6 +240,135 @@ class Step(Leaf):
         return Status.SUCCESS
 
 
+class RaisedCheck(Leaf):
+    """ROUES LEVEES ? Une courte rotation : les roues tournent, le gyro ne doit rien voir."""
+
+    def initialise(self):
+        self.t0 = time.monotonic()
+        self.gz, self.ww = [], []
+        self.say("verification roues levees (courte rotation)")
+
+    def update(self):
+        n = self.ctx.node
+        t = time.monotonic() - self.t0
+        if t < 1.5:
+            n.drive(0.0, 1.5)
+            gz, st = n.freshGz(), n.lastState
+            if t > 0.7 and gz is not None and st is not None:
+                self.gz.append(abs(gz))
+                self.ww.append(abs(st.w_wheels))
+            return Status.RUNNING
+        n.stop()
+        if t < 2.5:
+            return Status.RUNNING
+        g = sum(self.gz) / len(self.gz) if self.gz else 0.0
+        w = sum(self.ww) / len(self.ww) if self.ww else 0.0
+        if w < 0.5:
+            self.ctx.abort = "les roues ne tournent pas (traction coupee ?)"
+        elif g > 0.2 * w:
+            self.ctx.abort = "robot AU SOL (le gyro voit %.2f rad/s) : LEVER LES ROUES" % g
+        if self.ctx.abort:
+            self.say("REFUS : " + self.ctx.abort)
+            return Status.FAILURE
+        self.ctx.note("roues levees : OK (gyro %.2f pour roues %.2f)" % (g, w))
+        return Status.SUCCESS
+
+
+class SetPid(Leaf):
+    """Pousse un jeu de gains au driver (RAM, relu par la carte) et laisse le temps."""
+
+    def __init__(self, name, ctx, gains):
+        super().__init__(name, ctx)
+        self.gains = gains
+
+    def initialise(self):
+        kp, ki, kd = self.gains
+        self.fut = self.ctx.node.setDriver([("pid_kp", kp), ("pid_ki", ki), ("pid_kd", kd)])
+        self.t0 = time.monotonic()
+        self.say("gains kp %g ki %g kd %g" % self.gains)
+
+    def update(self):
+        if self.fut is None:
+            return Status.FAILURE
+        if time.monotonic() - self.t0 < self.ctx.node.p["pid_set_wait_s"]:
+            return Status.RUNNING
+        if not self.fut.done() or self.fut.result() is None:
+            return Status.FAILURE
+        return Status.SUCCESS if self.fut.result().result.successful else Status.FAILURE
+
+
+class PidStep(Leaf):
+    """Echelon de vitesse LINEAIRE : reponse de chaque roue (RPM mesure / demande)."""
+
+    def __init__(self, name, ctx, gains, v, on_s, off_s):
+        super().__init__(name, ctx)
+        self.gains, self.v, self.on_s, self.off_s = gains, v, on_s, off_s
+
+    def initialise(self):
+        self.t0 = time.monotonic()
+        self.rows = []
+        self.stopped = False
+        self.lastStamp = None
+
+    def update(self):
+        n = self.ctx.node
+        t = time.monotonic() - self.t0
+        if t < self.on_s:
+            n.drive(self.v, 0.0)
+            js, rq = n.lastJs, n.lastReq
+            if js is not None and rq is not None and len(js.velocity) >= 2 \
+                    and len(rq.velocity) >= 2 and js.header.stamp != self.lastStamp:
+                self.lastStamp = js.header.stamp
+                self.rows.append((t, list(rq.velocity[:2]), list(js.velocity[:2])))
+            return Status.RUNNING
+        if not self.stopped:
+            n.stop()
+            self.stopped = True
+        if t < self.on_s + self.off_s:
+            return Status.RUNNING
+        per = []
+        for i in (0, 1):
+            m = cm.step_metrics([r[0] for r in self.rows], [r[1][i] for r in self.rows],
+                                [r[2][i] for r in self.rows])
+            if m is not None:
+                per.append(m)
+        if per:
+            avg = {k: (None if any(m[k] is None for m in per)
+                       else sum(m[k] for m in per) / len(per)) for k in per[0]}
+            avg["v"] = self.v
+            self.ctx.pid.setdefault(self.gains, []).append(avg)
+            self.ctx.note("kp%g ki%g v%+.2f : montee %s dep %.0f%% err %.0f%%" % (
+                self.gains[0], self.gains[1], self.v,
+                "--" if avg["montee_s"] is None else "%.2fs" % avg["montee_s"],
+                100 * avg["depassement"], 100 * avg["erreur_statique"]))
+        return Status.SUCCESS
+
+
+class ComputePid(Leaf):
+    def update(self):
+        c, n = self.ctx, self.ctx.node
+        on_s = n.p["pid_on_s"] if c.procedure == "pid_roues_levees" else n.p["pid_ground_on_s"]
+        best, score, table = cm.best_gains(c.pid, on_s)
+        if best is None:
+            c.faults = ["aucun echelon exploitable (consigne nulle ou roues immobiles)"]
+            self.say("REJET : " + c.faults[0])
+            return Status.FAILURE
+        c.best_pid, c.pid_table = best, table
+        ref = next((sc for sc, g, _n in table if g == n.filePid), None)
+        c.note("MEILLEUR kp %g ki %g kd %g score %.2f (fichier %s)" % (
+            best[0], best[1], best[2], score, "--" if ref is None else "%.2f" % ref))
+        if c.procedure == "pid_roues_levees":
+            n.lastPid = best           # repris par l'essai AU SOL
+        return Status.SUCCESS
+
+
+class WritePid(Leaf):
+    def update(self):
+        self.ctx.node.writePidCandidate(self.ctx)
+        self.say("candidat ecrit : %s" % self.ctx.candidate)
+        return Status.SUCCESS
+
+
 class Compute(Leaf):
     def update(self):
         c, p = self.ctx, self.ctx.node.p
@@ -298,6 +431,17 @@ class CalibrationNode(Node):
             "pi_test_kp": float(d("pi_test_kp", 0.5).value),
             "pi_test_ki": float(d("pi_test_ki", 0.0).value),
             "output_dir": str(d("output_dir", "").value),
+            # --- PID des roues (procedures pid_roues_levees / pid_sol) -------------------
+            "pid_kp_grid": [float(x) for x in d("pid_kp_grid", [0.6, 1.0, 1.5, 2.0]).value],
+            "pid_ki_grid": [float(x) for x in d("pid_ki_grid", [0.3, 0.6, 1.0]).value],
+            "pid_raised_v": [float(x) for x in d("pid_raised_v", [0.08, 0.2, 0.35, -0.2]).value],
+            "pid_ground_v": [float(x) for x in d("pid_ground_v", [0.2, -0.2, 0.35, -0.35]).value],
+            "pid_on_s": float(d("pid_on_s", 2.5).value),
+            "pid_off_s": float(d("pid_off_s", 1.0).value),
+            "pid_ground_on_s": float(d("pid_ground_on_s", 1.5).value),
+            "pid_ground_off_s": float(d("pid_ground_off_s", 0.8).value),
+            "pid_set_wait_s": float(d("pid_set_wait_s", 2.5).value),
+            "pid_max_duration_s": float(d("pid_max_duration_s", 480.0).value),
         }
         self.robot = str(d("robot", "").value)
         # Lus dans le bloc /** du fichier canonique, comme le driver.
@@ -305,6 +449,12 @@ class CalibrationNode(Node):
         self.fileVariant = str(d("hardware_variant", "origine").value)
         self.fileValues = {k: d("%s.%s.%s" % (PREFIX, self.fileVariant, k), v).value
                            for k, v in VARIANT_KEYS.items()}
+        # Gains PID du FICHIER (bloc /**) : reference des procedures PID, et valeurs remises
+        # dans le driver a la fin de toute procedure PID, quelle qu'en soit l'issue.
+        self.filePid = (float(d("pid_kp", 0.6).value), float(d("pid_ki", 0.3).value),
+                        float(d("pid_kd", 0.5).value))
+        self.lastPid = None           # meilleurs gains ROUES LEVEES, repris au sol
+        self.lastJs = self.lastReq = None
 
         self.lastImu = self.lastYaw = None
         self.lastImuT = 0.0
@@ -367,7 +517,14 @@ class CalibrationNode(Node):
                 self.create_subscription(Imu, "/imu/data", self._onImu,
                                          qos_profile_sensor_data, callback_group=self._cbg),
                 self.create_subscription(MotionCompensationState, STATE_TOPIC, self._onState,
-                                         10, callback_group=self._cbg)]
+                                         10, callback_group=self._cbg),
+                # RPM mesure / demande par moteur, tels que le PID de la carte les voit.
+                self.create_subscription(JointState, "/joint_states",
+                                         lambda m: setattr(self, "lastJs", m), 10,
+                                         callback_group=self._cbg),
+                self.create_subscription(JointState, "/req_states",
+                                         lambda m: setattr(self, "lastReq", m), 10,
+                                         callback_group=self._cbg)]
             t = time.monotonic()
             while (self.freshGz() is None or self.lastState is None) and (
                     time.monotonic() - t < 3.0):
@@ -467,8 +624,8 @@ class CalibrationNode(Node):
         return ""
 
     def guardViolation(self, ctx):
-        if time.monotonic() - ctx.t0 > self.p["max_duration_s"]:
-            return "duree maximale %.0f s depassee" % self.p["max_duration_s"]
+        if time.monotonic() - ctx.t0 > ctx.max_s:
+            return "duree maximale %.0f s depassee" % ctx.max_s
         if self.freshGz() is None:
             return "gyro perdu"
         if ctx.goal.imu_check_only:
@@ -481,8 +638,39 @@ class CalibrationNode(Node):
         return ""
 
     # ------------------------------------------------------------ arbre
+    def _pidTree(self, ctx):
+        """Procedures PID : gains essayes l'un apres l'autre, echelons lineaires."""
+        p = self.p
+        ctx.max_s = p["pid_max_duration_s"]
+        seq = [Preconditions("preconditions", ctx)]
+        if ctx.procedure == "pid_roues_levees":
+            seq.append(RaisedCheck("roues levees", ctx))
+            grid = [(kp, ki, self.filePid[2]) for kp in p["pid_kp_grid"] for ki in p["pid_ki_grid"]]
+            if self.filePid not in grid:
+                grid.insert(0, self.filePid)       # la reference est toujours mesuree
+            speeds, on_s, off_s = p["pid_raised_v"], p["pid_on_s"], p["pid_off_s"]
+        else:
+            # AU SOL : gains du fichier contre le meilleur jeu ROUES LEVEES, en ligne droite
+            # avant/arriere (le robot revient pres de son depart).
+            grid = [self.filePid] + ([self.lastPid] if self.lastPid and
+                                     self.lastPid != self.filePid else [])
+            speeds, on_s, off_s = p["pid_ground_v"], p["pid_ground_on_s"], p["pid_ground_off_s"]
+        for gains in grid:
+            seq.append(SetPid("gains %g/%g" % gains[:2], ctx, gains))
+            for v in speeds:
+                seq.append(PidStep("echelon %+.2f" % v, ctx, gains, v, on_s, off_s))
+        seq += [SetPid("gains du fichier", ctx, self.filePid), ComputePid("calcul", ctx),
+                WritePid("ecriture", ctx)]
+        main = py_trees.composites.Sequence("pid", memory=True, children=seq)
+        root = py_trees.composites.Parallel(
+            "garde", policy=ParallelPolicy.SuccessOnSelected(children=[main]),
+            children=[Guard("garde", ctx), main])
+        return root, len(seq)
+
     def _tree(self, ctx):
         g = ctx.goal
+        if ctx.procedure in ("pid_roues_levees", "pid_sol"):
+            return self._pidTree(ctx)
         imu = py_trees.composites.Selector("IMU", memory=True, children=[
             RestImu("IMU repos", ctx, self.p["imu_rest_s"]),
             py_trees.composites.Sequence("IMU recalibree", memory=True, children=[
@@ -554,7 +742,12 @@ class CalibrationNode(Node):
             # HORS de l'arbre, inconditionnel : un arbre interrompu n'executerait pas ses
             # dernieres feuilles.
             self.stop()
-            if not goal.imu_check_only:
+            if ctx.procedure.startswith("pid"):
+                kp, ki, kd = self.filePid
+                ok, why = self._setDriverSync([("pid_kp", kp), ("pid_ki", ki), ("pid_kd", kd)])
+                if not ok:
+                    self.get_logger().error("gains PID du fichier NON remis : %s" % why)
+            elif not goal.imu_check_only:
                 ok, why = self._setDriverSync([("motion_compensation_bypass", False)])
                 if not ok:
                     self.get_logger().error("bypass NON retabli : %s" % why)
@@ -574,8 +767,11 @@ class CalibrationNode(Node):
             gh.succeed()
         else:
             gh.abort()
-        if success and not goal.imu_check_only:
-            self._last = {"variant": goal.variant or SCRATCH_VARIANT, "table": ctx.table}
+        if success and ctx.procedure.startswith("pid"):
+            self._last = {"kind": "pid", "gains": ctx.best_pid, "variant": ctx.procedure}
+        elif success and not goal.imu_check_only:
+            self._last = {"kind": "glissement", "variant": goal.variant or SCRATCH_VARIANT,
+                          "table": ctx.table}
         res = Calibrate.Result()
         res.success = success
         res.candidate_path = ctx.candidate
@@ -603,6 +799,25 @@ class CalibrationNode(Node):
                                        self.lastBattery or 0.0, self.wheelSep))
         ctx.candidate, ctx.report = base + ".yaml", report
 
+    def writePidCandidate(self, ctx):
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        out = self.p["output_dir"] or "/tmp"
+        os.makedirs(out, exist_ok=True)
+        base = os.path.join(out, "pid_candidat_%s_%s" % (ctx.procedure, stamp))
+        table = [{"gains": list(g), "score": sc, "echelons": nb} for sc, g, nb in ctx.pid_table]
+        ref = next((sc for sc, g, _n in ctx.pid_table if g == self.filePid), None)
+        report = cm.report_json(
+            robot=self.robot, procedure=ctx.procedure, date=stamp, batterie_v=self.lastBattery,
+            gains_fichier=list(self.filePid), meilleurs=list(ctx.best_pid), classement=table,
+            mesures={"%g/%g/%g" % g: m for g, m in ctx.pid.items()}, parametres=self.p)
+        with open(base + ".json", "w", encoding="utf-8") as fh:
+            fh.write(report)
+        best_score = ctx.pid_table[0][0]
+        with open(base + ".yaml", "w", encoding="utf-8") as fh:
+            fh.write(cm.pid_candidate_yaml(self.robot, ctx.best_pid, best_score, self.filePid,
+                                           ref, ctx.procedure, base + ".json"))
+        ctx.candidate, ctx.report = base + ".yaml", report
+
     # ------------------------------------------------------------ essai en RAM
     def _scratch(self, values):
         items = [("%s.%s.%s" % (PREFIX, SCRATCH_VARIANT, k), values[k]) for k in VARIANT_KEYS]
@@ -611,6 +826,13 @@ class CalibrationNode(Node):
     def _onApply(self, _req, resp):
         if self._last is None:
             resp.success, resp.message = False, "aucun candidat en memoire (calibrer d'abord)"
+            return resp
+        if self._last.get("kind") == "pid":
+            kp, ki, kd = self._last["gains"]
+            ok, why = self._setDriverSync([("pid_kp", kp), ("pid_ki", ki), ("pid_kd", kd)])
+            resp.success = ok
+            resp.message = ("gains PID kp %g ki %g kd %g EN RAM (fichier inchange)" % (kp, ki, kd)
+                            if ok else why)
             return resp
         values = dict(self.fileValues)
         values.update(description="candidat %s en RAM" % self._last["variant"],
@@ -625,11 +847,14 @@ class CalibrationNode(Node):
         return resp
 
     def _onRevert(self, _req, resp):
-        ok, why = self._setDriverSync([("hardware_variant", self.fileVariant)])
+        kp, ki, kd = self.filePid
+        ok, why = self._setDriverSync([("hardware_variant", self.fileVariant),
+                                       ("pid_kp", kp), ("pid_ki", ki), ("pid_kd", kd)])
         if ok:
             self._ramActive = False
         resp.success = ok
-        resp.message = ("retour a la variante du fichier : %s" % self.fileVariant) if ok else why
+        resp.message = ("retour au fichier : variante %s, PID %g/%g/%g"
+                        % (self.fileVariant, kp, ki, kd)) if ok else why
         return resp
 
     def _onSetPi(self, req, resp):
