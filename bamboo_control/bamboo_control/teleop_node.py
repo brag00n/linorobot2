@@ -204,6 +204,15 @@ class TeleopNode(Node):
         self._teleLin = float(self.declare_parameter("tele_lin", 0.5).value)
         self._teleAng = float(self.declare_parameter("tele_ang", 1.5).value)
         self._speedMin = int(self.declare_parameter("speed_min_level", 1).value)
+        # Stick CARRE (essai au sol 2026-10-05) : la butee du stick est RONDE, donc a fond en
+        # diagonale avant et rotation ne valent que ~0,7 chacun -- le robot RALENTISSAIT des
+        # qu'on tournait stick a fond. On ramene le cercle au carre : diagonale = (1, 1).
+        self._stickSquare = bool(self.declare_parameter("stick_square", True).value)
+        # PLANCHER sur l'AMPLITUDE du stick, pas axe par axe : applique par axe, un soupcon
+        # d'avant ajoute a une rotation faisait sauter la vitesse lineaire de 0 au plancher
+        # (40 % au niveau 3) -- le "saut brutal" constate en passant de la rotation a plat a
+        # l'arc. "axis" = l'ancienne loi du prototype.
+        self._floorMode = str(self.declare_parameter("speed_floor_mode", "magnitude").value)
         self._speedMax = int(self.declare_parameter("speed_max_level", 3).value)
         self._cmdHz = max(1.0, float(self.declare_parameter("cmd_vel_rate_hz", 10.0).value))
         self._motionOn = bool(self.declare_parameter("motion_enabled", False).value)
@@ -495,12 +504,28 @@ class TeleopNode(Node):
             return self._axesSign * float(msg.axes[idx])
         return -1.0
 
+    def _raw(self, msg, idx):
+        """Valeur BRUTE signee d'un axe (axes_sign applique), 0 si l'axe manque."""
+        return self._axesSign * float(msg.axes[idx]) if 0 <= idx < len(msg.axes) else 0.0
+
     def _axis(self, msg, idx):
         """Loi d'axe du proto (RobotMain._axis), transposee telle quelle.
 
         Lecture TOLERANTE : une manette plus pauvre que la table ne fait pas crasher.
         """
-        v = self._axesSign * float(msg.axes[idx]) if 0 <= idx < len(msg.axes) else 0.0
+        return self._law(self._raw(msg, idx))
+
+    @staticmethod
+    def _square(x, y):
+        """Cercle -> carre : (0,707 ; 0,707) devient (1 ; 1), un axe pur reste inchange."""
+        m = max(abs(x), abs(y))
+        if m <= 1e-6:
+            return 0.0, 0.0
+        k = min(1.0, (x * x + y * y) ** 0.5) / m
+        return max(-1.0, min(1.0, x * k)), max(-1.0, min(1.0, y * k))
+
+    def _law(self, v):
+        """Zone morte renormalisee + expo cubique sur UNE valeur (cf. _axis)."""
         m = abs(v)
         if m <= self._deadzone:
             return 0.0
@@ -651,8 +676,20 @@ class TeleopNode(Node):
         """Portage de RobotMotorDrive.holdVelocityAnalog : memes bornes, memes plafonds."""
         fmin = self._levelFrac(self._speedMin)
         fmax = self._levelFrac(self._speedMax)
-        self._lin = self._scaleAxis(fwd, fmin, fmax) * self._teleLin
-        self._ang = self._scaleAxis(turn, fmin, fmax) * self._teleAng
+        if self._floorMode == "axis":
+            self._lin = self._scaleAxis(fwd, fmin, fmax) * self._teleLin
+            self._ang = self._scaleAxis(turn, fmin, fmax) * self._teleAng
+            return
+        # Plancher sur l'AMPLITUDE : r = la plus grande des deux deviations. Le plancher porte
+        # sur r, et chaque axe en garde sa PART (fwd/r, turn/r) : un axe pur se comporte
+        # exactement comme avant, et un axe secondaire faible reste faible -- plus de saut.
+        r = max(abs(fwd), abs(turn))
+        if r <= 0.0:
+            self._lin = self._ang = 0.0
+            return
+        f = fmin + (fmax - fmin) * min(1.0, r)
+        self._lin = (fwd / r) * f * self._teleLin
+        self._ang = (turn / r) * f * self._teleAng
 
     def _bumpSpeedMin(self, delta):
         self._speedMin = max(0, min(9, self._speedMin + int(delta)))
@@ -694,8 +731,12 @@ class TeleopNode(Node):
         """Portage de RobotMain._drive_from_gamepad, front descendant compris."""
         fwd = turn = 0.0
         if self._motionOn:
-            fwd = -self._axis(msg, self._axDriveY)   # avant = stick vers le HAUT (LY < 0)
-            turn = -self._axis(msg, self._axDriveX)  # gauche = + (angular.z anti-horaire)
+            # avant = stick vers le HAUT (LY < 0) ; gauche = + (angular.z anti-horaire)
+            ry = -self._raw(msg, self._axDriveY)
+            rx = -self._raw(msg, self._axDriveX)
+            if self._stickSquare:
+                rx, ry = self._square(rx, ry)      # AVANT la zone morte : elle reste ronde
+            fwd, turn = self._law(ry), self._law(rx)
         driving = (fwd != 0.0 or turn != 0.0)
         if driving and self._calBusy():
             # La manette REPREND LA MAIN : pousser le stick pendant une calibration l'annule.

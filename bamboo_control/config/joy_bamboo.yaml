@@ -344,6 +344,11 @@ bamboo_teleop:
     # friction des motoreducteurs. Poussee nulle donne quand meme 0, il ne rampe
     # donc pas au repos. Invariant tenu par le noeud : plancher <= plafond.
     speed_min_level: 1
+    # Stick carre : diagonale a fond = avant ET rotation a fond (butee ronde sinon, ~0,7).
+    stick_square: true
+    # Plancher sur l'AMPLITUDE du stick ("magnitude") et non axe par axe ("axis", loi du
+    # prototype) : supprime le saut de vitesse lineaire en passant de la rotation a l'arc.
+    speed_floor_mode: "magnitude"
     speed_max_level: 3
     # Cadence de republication de la consigne tant que le stick est pousse. Au
     # RELACHEMENT le noeud emet un STOP franc (trois zeros) puis SE TAIT : tenir
