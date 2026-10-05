@@ -23,8 +23,12 @@ STM32). Une capacite absente n'apparait pas : la tache de l'ESP32 ne parle pas d
 De meme `_motion` (driver_motion.DriverMotion) ajoute une SIXIEME tache, `compensation`.
 """
 
+import time
+
 from diagnostic_msgs.msg import DiagnosticStatus
 from diagnostic_updater import Updater
+
+from bamboo_base.battery_health import BatteryHealth
 
 _AGES = ("speed_age", "imu_age", "enc_age", "rpm_age", "mag_age")
 
@@ -35,6 +39,10 @@ class DriverDiagnostics:
     def __init__(self, driver, hardware_id):
         self._d = driver
         self._ok = self._bad = None
+        # SANTE de la batterie (charge, resistance interne, chute, decrochage de traction),
+        # nourrie par observe() depuis le _tick du driver. Cf. battery_health.py.
+        self.health = BatteryHealth(cells=int(getattr(driver, "batt_cells", 3)))
+        self._battKey = None
         self.updater = Updater(driver)
         # hardware_id = le SERVICE compose, c'est-a-dire le module de l'arbre de diagnostic.
         self.updater.setHardwareID(hardware_id)
@@ -58,6 +66,20 @@ class DriverDiagnostics:
         ages = [self._d._snap.get(k) for k in _AGES]
         ages = [a for a in ages if a is not None]
         return min(ages) if ages else None
+
+    def observe(self, snap):
+        """A appeler a chaque _tick : un echantillon par NOUVELLE trame batterie."""
+        age = snap.get("battery_age")
+        v = snap.get("battery")
+        if v is None:
+            return
+        now = time.monotonic()
+        key = round(now - age, 2) if age is not None else round(now, 1)
+        if key == self._battKey:
+            return
+        self._battKey = key
+        self.health.observe(now, float(v), snap.get("battery_current"),
+                            snap.get("motor_rpm_req"), snap.get("motor_rpm"))
 
     # ------------------------------------------------------------------ taches
     def _link(self, stat):
@@ -107,14 +129,34 @@ class DriverDiagnostics:
             stat.summary(DiagnosticStatus.STALE, "pas de mesure : liaison avec la carte perdue")
             return stat
         stat.add("tension_v", "%.2f" % v)
+        h = self.health
+        cur = d._snap.get("battery_current")
+        stat.add("courant_a", "non mesure" if cur is None else "%.2f" % cur)
+        rest, soc, r, sag = h.rest_voltage, h.soc, h.resistance, h.sag
+        stat.add("tension_repos_v", "?" if rest is None else "%.2f" % rest)
+        stat.add("charge_pct", "?" if soc is None else "%.0f" % soc)
+        stat.add("resistance_interne_ohm",
+                 "non mesuree" if r is None else "%.3f" % r)
+        stat.add("chute_sous_charge_v", "?" if sag is None else "%.2f" % sag)
+        frac, vbad, total = h.deficit
+        stat.add("decrochage_traction_pct", "?" if frac is None else "%.0f" % (100 * frac))
+        stat.add("conduite_observee_s", "%.0f" % total)
+        why = h.verdict(float(getattr(d, "batt_soc_warn_pct", 20.0)),
+                        float(getattr(d, "batt_r_warn_ohm", 0.0)),
+                        float(getattr(d, "batt_sag_warn_v", 0.0)),
+                        float(getattr(d, "batt_deficit_warn", 0.25)))
         if v >= d.batt_over_v:
             stat.summary(DiagnosticStatus.ERROR, "SURTENSION %.2f V" % v)
         elif v < d.batt_error_v:
             stat.summary(DiagnosticStatus.ERROR, "%.2f V : sous le seuil d'erreur" % v)
         elif v < d.batt_warn_v:
             stat.summary(DiagnosticStatus.WARN, "%.2f V : a surveiller" % v)
+        elif why:
+            # La TENSION va, mais la SANTE ou la TRACTION non : c'est l'avertissement demande.
+            stat.summary(DiagnosticStatus.WARN, "%.2f V mais " % v + " ; ".join(why))
         else:
-            stat.summary(DiagnosticStatus.OK, "%.2f V" % v)
+            extra = (" (~%.0f %%)" % soc) if soc is not None else ""
+            stat.summary(DiagnosticStatus.OK, "%.2f V%s" % (v, extra))
         return stat
 
     def _imu(self, stat):

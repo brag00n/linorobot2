@@ -892,6 +892,8 @@ class Stm32MavlinkDriver(Node):
         now = self.get_clock().now()
         snap = self.link.snapshot()
         self._snap = snap
+        if getattr(self, "_diag", None) is not None:
+            self._diag.observe(snap)
         sp = self.link.encSpeed()
         cpr = self.link.cpr or self.cpr
 

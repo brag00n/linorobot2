@@ -181,6 +181,14 @@ class Esp32MavlinkDriver(Node):
         self.declare_parameter("batt_warn_v", 10.5)
         self.declare_parameter("batt_error_v", 9.0)
         self.declare_parameter("batt_over_v", 13.0)
+        # SANTE batterie (diagnostic) : elements en serie du pack, et seuils de WARN.
+        # batt_r_warn_ohm / batt_sag_warn_v a 0 = desactives tant que la mesure de
+        # REFERENCE (pack plein, sequence fixe) n'a pas fixe la valeur d'un pack sain.
+        self.declare_parameter("batt_cells", 3)
+        self.declare_parameter("batt_soc_warn_pct", 20.0)
+        self.declare_parameter("batt_r_warn_ohm", 0.0)
+        self.declare_parameter("batt_sag_warn_v", 0.0)
+        self.declare_parameter("batt_deficit_warn", 0.25)
         # L'etat ARME est-il l'etat NORMAL de ce robot ? Lu dans son fichier canonique, a cote
         # d'enable_cmd_vel : c'est la meme decision. Ne sert qu'au diagnostic.
         self.declare_parameter("armed_nominal", False)
@@ -195,6 +203,11 @@ class Esp32MavlinkDriver(Node):
         self.batt_warn_v = float(g("batt_warn_v"))
         self.batt_error_v = float(g("batt_error_v"))
         self.batt_over_v = float(g("batt_over_v"))
+        self.batt_cells = int(g("batt_cells"))
+        self.batt_soc_warn_pct = float(g("batt_soc_warn_pct"))
+        self.batt_r_warn_ohm = float(g("batt_r_warn_ohm"))
+        self.batt_sag_warn_v = float(g("batt_sag_warn_v"))
+        self.batt_deficit_warn = float(g("batt_deficit_warn"))
         self.armed_nominal = bool(g("armed_nominal"))
         # Dernier snapshot du lien, GARDE par _tick qui l'appelle deja : le diagnostic ne
         # relit rien sur le port.
@@ -582,6 +595,8 @@ class Esp32MavlinkDriver(Node):
         stamp = now.to_msg()
         snap = self.link.snapshot()
         self._snap = snap
+        if getattr(self, "_diag", None) is not None:
+            self._diag.observe(snap)
         sp = self.link.encSpeed()
         cpr = self.link.cpr or self.cpr
 
@@ -695,6 +710,11 @@ class Esp32MavlinkDriver(Node):
             b.header.stamp = stamp
             b.voltage = float(snap["battery"])
             b.present = True
+            # Courant INA219 (firmware >= 0.5.2) : sensor_msgs le veut NEGATIF en decharge.
+            cur = snap.get("battery_current")
+            b.current = float("nan") if cur is None else -float(cur)
+            soc = self._diag.health.soc if getattr(self, "_diag", None) else None
+            b.percentage = float("nan") if soc is None else soc / 100.0
             self.pub_batt.publish(b)
 
         # magneto (optionnelle) : uT -> Tesla.
