@@ -56,7 +56,7 @@ STEP_NAMES=(
     "1 uart      UART de l'hote au repos (prerequis a toute ecriture ESP32)"
     "2 docker    demon Docker, plugin compose, groupe docker"
     "3 repos     les deux depots cote a cote"
-    "4 udev      ports serie stables (/dev/esp32)"
+    "4 udev      ports serie stables (/dev/esp32, /dev/lidar), Wi-Fi sans mise en veille"
     "5 bluetooth service Bluetooth de l'hote (appairage manette)"
     "6 stacks    desarmer les stacks Docker concurrentes (collision de ports)"
     "7 build     construire les images du profil boot"
@@ -238,13 +238,31 @@ stale="$(ls /etc/udev/rules.d/ 2>/dev/null | grep -E 'ydlidar|teensy' | tr '\n' 
 [ -n "$stale" ] && skip "regles heritees presentes, non modifiees : $stale"
 # Etat des symlinks attendus. ABSENT N EST PAS UNE FAUTE : chaque robot n a que SON materiel
 # branche, et ce script sert les deux. On informe, on n alarme pas.
-for lnk in esp32 stm32 bamboocam; do
+for lnk in esp32 stm32 bamboocam lidar; do
     if [ -e "/dev/$lnk" ]; then
         ok "/dev/$lnk -> $(readlink -f "/dev/$lnk")"
     else
         skip "/dev/$lnk absent (materiel debranche, ou identifiants a relever dans le .rules)"
     fi
 done
+# Mise en veille du Wi-Fi (98-bamboo-wifi-powersave.rules) : la regle ne joue qu'a
+# l'apparition de wlan0, donc au prochain boot. On l'applique aussi TOUT DE SUITE, sans
+# attendre un redemarrage, puis on relit l'etat reel.
+IW=/usr/sbin/iw
+if ! ip link show wlan0 >/dev/null 2>&1; then
+    skip "pas de wlan0 (robot en filaire ?) : mise en veille Wi-Fi sans objet"
+elif [ ! -x "$IW" ]; then
+    warn "$IW introuvable : mise en veille Wi-Fi non verifiable (apt install iw)"
+else
+    ps_state="$("$IW" dev wlan0 get power_save 2>/dev/null | awk '{print $NF}')"
+    if [ "$ps_state" = "off" ]; then
+        ok "Wi-Fi : mise en veille coupee"
+    elif [ "$APPLY" = "1" ]; then
+        "$IW" dev wlan0 set power_save off && act "Wi-Fi : mise en veille coupee (immediat)"
+    else
+        warn "Wi-Fi : mise en veille ${ps_state:-inconnue} -> pertes et latences (HUD, Foxglove)"
+    fi
+fi
 echo ""
 }
 

@@ -1,0 +1,10 @@
+# 98-bamboo-wifi-powersave.rules -- Wi-Fi du RPi SANS mise en veille (les deux robots).
+#
+# Le pilote brcmfmac du RPi4 demarre en power_save ON. Mesure du 2026-10-10 (essai Nb) : lien
+# 5 GHz a -45 dBm et pourtant 30 % de pertes RPi -> box, pointes de latence a 900 ms ; le HUD
+# arrivait en retard (double appui B long a la manette) et Foxglove se reconnectait en boucle,
+# ce qui faisait changer le graphe ROS sans arret et saturait le RPi. power_save OFF : 10 %.
+#
+# Pose par docker/install_bambooWS.sh (pas 4, comme tous les docker/udev/*.rules). Le RUN se
+# joue a l'apparition de wlan0, donc a chaque boot ; chemin ABSOLU, udev n'a pas de PATH.
+ACTION=="add", SUBSYSTEM=="net", KERNEL=="wlan0", RUN+="/usr/sbin/iw dev wlan0 set power_save off"
