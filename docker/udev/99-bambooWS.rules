@@ -21,7 +21,8 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{seria
 # --- Lidar : Waveshare D500 (LDROBOT STL-19P), adaptateur CP2102 -----------------------
 # MEME VID:PID que l'ESP32 (10c4:ea60) : seule le NUMERO DE SERIE les distingue. Proprietaire
 # du port : bamboo_lidar (conteneur driver.lidarD500), qui reference /dev/lidar.
-# Numero a relever lidar branche (essai Na) :
+# Numero releve le 2026-10-10, lidar branche (essai Na) : "0001" -- le numero GENERIQUE
+# des CP2102 bon marche (l'ancien adaptateur YDLidar portait le meme), DIFFERENT de celui de
+# l'ESP32 (CP2102N). Relever a nouveau si l'adaptateur est change :
 #   udevadm info -a -n /dev/ttyUSBx | grep -E 'ATTRS\{(serial|idVendor|idProduct)\}'
-# puis decommenter et remplacer <a_relever> :
-# SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="<a_relever>", MODE:="0666", GROUP:="dialout", SYMLINK+="lidar"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="0001", MODE:="0666", GROUP:="dialout", SYMLINK+="lidar"
