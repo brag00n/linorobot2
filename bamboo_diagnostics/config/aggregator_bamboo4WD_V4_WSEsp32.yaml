@@ -17,6 +17,29 @@ analyzers:
           path: scan_monitor
           startswith: [ 'scan_monitor:' ]
           timeout: 5.0
+    # Navigation (bamboo_navigation, conteneur navigation, a la demande ; sans `expected`,
+    # meme raison que le lidar). Le JUGE est nav_supervisor : il exige les capteurs declares
+    # par le robot, la fraicheur de /odom et les TF du sous-mode courant.
+    navigation:
+      type: diagnostic_aggregator/AnalyzerGroup
+      path: navigation
+      analyzers:
+        superviseur:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: nav_supervisor
+          startswith: [ 'nav_supervisor:' ]
+          timeout: 5.0
+    # ECARTES (sinon ils tombent dans "Other", en ERROR, et peignent tout l'arbre en rouge) :
+    #   - lifecycle_manager_* "Nav2 Health" : ERROR "Nav2 is inactive" des que Nav2 n'est
+    #     pas actif -- c'est l'etat NORMAL du sous-mode idle ;
+    #   - ekf_filter_node "odometry filtered topic status" : ERROR "No events recorded" alors
+    #     que /odom sort a 20 Hz (compteur de robot_localization jamais alimente ; constate
+    #     le 2026-10-11). La fraicheur de /odom est deja exigee par nav_supervisor.
+    navigation_bruit:
+      type: diagnostic_aggregator/DiscardAnalyzer
+      path: navigation_bruit
+      startswith: [ 'lifecycle_manager_navigation:', 'lifecycle_manager_localization:',
+                    'ekf_filter_node:' ]
     # --- Carte ESP32 : la base roulante et ses capteurs -------------------------------
     # MEMES taches que driver.stm32 (module commun bamboo_base.driver_diagnostics).
     driver_esp32:
