@@ -12,3 +12,7 @@ __pycache__/
 # environnement Python des serveurs MCP ROS (tools/) : dependances d hote, pas du robot.
 # Le contenu est reconstructible par tools/requirements.txt -- c est lui qui est versionne.
 tools/.venv/
+
+# sources TIERCES recuperees par docker/fetch_sources.sh (commit fige dans le script) :
+# compilees dans l'espace de travail, jamais versionnees ici.
+third_party/

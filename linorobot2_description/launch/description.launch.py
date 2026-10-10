@@ -133,6 +133,13 @@ def _describe(context, *args, **kwargs):
     if 'wheel_diameter_m' in params and 'wheel_separation_m' in params:
         xacro_args = [' wheel_radius:=', str(float(params['wheel_diameter_m']) / 2.0),
                       ' wheel_pos_y:=', str(float(params['wheel_separation_m']) / 2.0)]
+    # Pose du LIDAR (lot NAV) : bloc `lidar:` du fichier canonique. Absent, le xacro garde
+    # ses valeurs d'attente -- et un xacro qui ne declare pas ces arguments les ignore.
+    lidar = params.get('lidar') or {}
+    for key, arg in (('pose_x', 'laser_x'), ('pose_y', 'laser_y'), ('pose_z', 'laser_z'),
+                     ('pose_yaw', 'laser_yaw')):
+        if key in lidar:
+            xacro_args += [' %s:=' % arg, str(float(lidar[key]))]
 
     # L'argument `urdf` garde le dernier mot ; vide (le defaut), il est deduit de la famille.
     urdf = LaunchConfiguration('urdf').perform(context) or PathJoinSubstitution(

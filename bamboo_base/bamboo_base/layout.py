@@ -65,6 +65,18 @@ FALLBACK = {
 WIRING_ARGS = {
     "driver": {"servo_cmd": "servo_cmd_topic"},
     "videotracking": {"servo_cmd": "servo_cmd_topic"},
+    # Lot NAV (2026-10-10). Le lidar et la navigation vivent dans des conteneurs a part
+    # (bamboo_lidar, bamboo_navigation), lances a la demande : ce ne sont pas des groupes du
+    # bringup (GROUP_FLAGS), mais leurs flux se recablent ici, comme les autres.
+    "lidar": {"scan": "scan_topic"},
+    "navigation": {"scan": "scan_topic", "odom_in": "odom_in_topic", "imu": "imu_topic",
+                   "odom": "odom_topic", "cmd_vel_nav": "cmd_vel_nav_topic",
+                   "map": "map_topic"},
+    # Le multiplexeur de consignes (bamboo_control, cmd_vel_mux) : trois entrees, une sortie
+    # vers le driver.
+    "control": {"cmd_vel_teleop": "cmd_vel_teleop_topic",
+                "cmd_vel_calib": "cmd_vel_calib_topic",
+                "cmd_vel_nav": "cmd_vel_nav_topic", "cmd_vel": "cmd_vel_topic"},
 }
 
 # Repli quand la section manque : les noms LOGIQUES d'aujourd'hui, donc comportement
@@ -74,6 +86,11 @@ WIRING_ARGS = {
 WIRING_FALLBACK = {
     "driver": {"servo_cmd": "/servo/cmd"},
     "videotracking": {"servo_cmd": "/servo/cmd"},
+    "lidar": {"scan": "/scan"},
+    "navigation": {"scan": "/scan", "odom_in": "/odom/unfiltered", "imu": "/imu/data",
+                   "odom": "/odom", "cmd_vel_nav": "/cmd_vel_nav", "map": "/map"},
+    "control": {"cmd_vel_teleop": "/cmd_vel_teleop", "cmd_vel_calib": "/cmd_vel_calib",
+                "cmd_vel_nav": "/cmd_vel_nav", "cmd_vel": "/cmd_vel"},
 }
 
 
@@ -184,6 +201,14 @@ def loadWiring(path):
         notes.append(
             "ATTENTION : le tracking publie sur %s et la carte ecoute %s. Les servos ne "
             "bougeront pas, et aucun noeud ne s'en plaindra." % (pub, sub))
+    # Meme garde sur les deux autres chemins qui ont deux bouts : le scan (lidar ->
+    # navigation) et la consigne de navigation (navigation -> multiplexeur).
+    for flow, prod, cons in (("scan", "lidar", "navigation"),
+                             ("cmd_vel_nav", "navigation", "control")):
+        a, b = out[prod][flow], out[cons][flow]
+        if a != b:
+            notes.append("ATTENTION : %s publie %s sur %s et %s l'attend sur %s."
+                         % (prod, flow, a, cons, b))
     return out, notes
 
 

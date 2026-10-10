@@ -212,3 +212,49 @@
     imu_gz_sign: 1.0
     # Mode calibration (bamboo_calibration + mode `calibration` de la manette).
     calibration_enabled: true
+
+    # --- CAPTEURS presents sur CE robot (lot NAV, 2026-10-10) --------------
+    # Lus par le diagnostic de navigation et par les prerequis des modes : un
+    # capteur absent ici n'est jamais exige, un capteur present ici l'est.
+    sensors:
+      lidar: "d500"        # "" = aucun lidar
+      camera: "usb"
+      imu: "qmi8658"
+      battery: "ina219"    # tension + courant
+
+    # --- LIDAR (bamboo_lidar, conteneur driver.lidarD500) ------------------
+    # Waveshare D500 = LDROBOT STL-19P, famille LD19 : UART 230400 8N1 par un
+    # CP2102 (meme 10c4:ea60 que l'ESP32 -> regle udev par NUMERO DE SERIE,
+    # docker/udev/99-bambooWS.rules, symlink /dev/lidar). 10 Hz, ~500 pts/tour,
+    # 0,03-12 m. Angles CROISSANTS dans le sens HORAIRE vu du dessus : scan_ccw
+    # = true demande au driver de les rendre dans la convention ROS (anti-horaire).
+    lidar:
+      model: "LDLiDAR_LD19"
+      port: "/dev/lidar"
+      baud: 230400
+      frame: "laser"
+      scan_ccw: true
+      # Recadrage d'un secteur masque par la caisse (degres, 0 = devant, sens horaire
+      # du capteur) ; desactive tant que le montage n'a pas ete regarde dans Foxglove.
+      crop: false
+      crop_min_deg: 135.0
+      crop_max_deg: 225.0
+      range_min_m: 0.05
+      range_max_m: 12.0
+      # POSE du capteur dans base_link (m, rad) : A MESURER sur le robot (essai Na).
+      # Valeurs d'attente = celles de l'amont linorobot2.
+      pose_x: -0.0475
+      pose_y: 0.0
+      pose_z: 0.125
+      pose_yaw: 0.0
+
+    # --- NAVIGATION (bamboo_navigation, conteneur navigation) --------------
+    # Les parametres Nav2 detailles vivent dans config/navigation.yaml de ce paquet ;
+    # ici, ce que la supervision et le mode NAV doivent savoir du robot.
+    navigation:
+      params_file: "navigation.yaml"   # dans <robot>_base/config/
+      maps_dir: "maps"                 # dans <robot>_base/ (cartes + points)
+      default_map: ""                  # "" = derniere carte sauvegardee
+      # Bornes PRUDENTES de depart (velocity_smoother) ; a relever apres l'essai Ne.
+      max_vel_x: 0.2
+      max_vel_theta: 1.0

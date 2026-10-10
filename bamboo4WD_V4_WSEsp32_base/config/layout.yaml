@@ -7,6 +7,17 @@
 #
 # Rien ci-dessous n'arme les moteurs : c'est `enable_cmd_vel` du fichier canonique (VRAI
 # depuis le 2026-10-03, attache M1 reparee ; seul verrou = appui long B a la manette).
+# Cablage des flux du lot NAV (2026-10-10) : le lidar, la navigation et le multiplexeur de
+# consignes lisent ICI les noms reels de leurs sujets (bamboo_base/layout.py, loadWiring).
+# Les deux bouts d'un meme flux doivent porter le meme nom : un ecart est signale au
+# lancement.
+wiring:
+  lidar:      {scan: /scan}
+  navigation: {scan: /scan, odom_in: /odom/unfiltered, imu: /imu/data, odom: /odom,
+               cmd_vel_nav: /cmd_vel_nav, map: /map}
+  control:    {cmd_vel_teleop: /cmd_vel_teleop, cmd_vel_calib: /cmd_vel_calib,
+               cmd_vel_nav: /cmd_vel_nav, cmd_vel: /cmd_vel}
+
 groups:
   driver:        {enable: true}    # carte WaveShare ESP32, LECTURE SEULE (cf. enable_cmd_vel)
   description:   {enable: true}    # URDF + TF, aucun effet materiel

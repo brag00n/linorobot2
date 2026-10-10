@@ -35,8 +35,15 @@
        n'est PAS encore choisi (phase navigation suivante) et il n'y a pas de
        camera de profondeur. Ces deux poses sont donc des valeurs d'attente, a
        reprendre au montage du capteur reel. -->
+  <!-- Pose du LIDAR : arguments xacro, POUSSES par description.launch.py depuis le bloc
+       `lidar.pose_*` du fichier canonique du robot (lot NAV). Les defauts sont les valeurs
+       d'attente de l'amont. -->
+  <xacro:arg name="laser_x" default="-0.0475" />
+  <xacro:arg name="laser_y" default="0.0" />
+  <xacro:arg name="laser_z" default="0.125" />
+  <xacro:arg name="laser_yaw" default="0.0" />
   <xacro:property name="laser_pose">
-    <origin xyz="-0.0475 0 0.125" rpy="0 0 0"/>
+    <origin xyz="$(arg laser_x) $(arg laser_y) $(arg laser_z)" rpy="0 0 $(arg laser_yaw)"/>
   </xacro:property>
 
   <xacro:property name="depth_sensor_pose">
