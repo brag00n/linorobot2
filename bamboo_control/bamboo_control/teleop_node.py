@@ -93,7 +93,7 @@ from diagnostic_updater import Updater
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool
 from std_srvs.srv import SetBool, Trigger
-from sensor_msgs.msg import Joy
+from sensor_msgs.msg import Joy, JoyFeedback, JoyFeedbackArray
 
 from bamboo_interfaces.action import Calibrate, TrainFaces
 from bamboo_interfaces.msg import ModeCmd, NavState, RobotMode, TeleopState
@@ -216,6 +216,17 @@ class TeleopNode(Node):
         self._speedMax = int(self.declare_parameter("speed_max_level", 3).value)
         self._cmdHz = max(1.0, float(self.declare_parameter("cmd_vel_rate_hz", 10.0).value))
         self._motionOn = bool(self.declare_parameter("motion_enabled", False).value)
+        # VIBRATION de la manette a l'armement (1 impulsion) et au desarmement (2) : un retour
+        # LOCAL, qui ne depend pas du Wi-Fi. Le HUD arrive par le reseau ; quand il est en
+        # retard, l'operateur croit l'appui rate, rappuie et rebascule (constat du
+        # 2026-10-10). joy_linux_node joue la vibration sur son peripherique `dev_ff`.
+        # SANS EFFET sur la Under Control 2919 en XInput Bluetooth (essai du 2026-10-11) :
+        # elle annonce FF_RUMBLE et le noyau accepte l'effet, mais elle ne vibre pas, meme
+        # pilotee en direct sans ROS. Garde pour une manette qui le fait ; le retour qui
+        # marche ici est l'asterisque de l'OLED (driver ESP32).
+        self._ffPub = self.create_publisher(JoyFeedbackArray, "joy/set_feedback", 1)
+        self._ffSeq = []              # [(instant monotone, intensite)], joue par _ffTick
+        self.create_timer(0.05, self._ffTick)
         self._targetStep = float(self.declare_parameter("target_step", 0.01).value)
         self._joyTimeout = float(self.declare_parameter("joy_timeout_s", 0.5).value)
         # PERTE DE MANETTE (Bluetooth coupe, manette eteinte) : au-dela de ce silence de /joy,
@@ -372,6 +383,23 @@ class TeleopNode(Node):
             % (modeTopic, nudgeSrv, self._maxDegS, self._nudgeHz, trainAction,
                self._velPub.topic_name, self._cmdHz,
                "ARMES" if self._motionOn else "desarmes"))
+
+    def _rumble(self, pulses, on_s=0.2, off_s=0.15):
+        """`pulses` impulsions de vibration ; remplace une sequence en cours."""
+        t = time.monotonic()
+        seq = []
+        for k in range(pulses):
+            seq += [(t + k * (on_s + off_s), 1.0), (t + k * (on_s + off_s) + on_s, 0.0)]
+        self._ffSeq = seq
+
+    def _ffTick(self):
+        now = time.monotonic()
+        while self._ffSeq and self._ffSeq[0][0] <= now:
+            _, v = self._ffSeq.pop(0)
+            # id 0 = moteur fort, id 1 = moteur faible (convention de joy_linux).
+            self._ffPub.publish(JoyFeedbackArray(array=[
+                JoyFeedback(type=JoyFeedback.TYPE_RUMBLE, id=i, intensity=float(v))
+                for i in (0, 1)]))
 
     def _onParamSet(self, params):
         """Prise a chaud des SEULS parametres qu'il est sur de changer en marche.
@@ -622,6 +650,7 @@ class TeleopNode(Node):
                 self._calibCancel("desarmement")
                 self._stopMotion()               # desarmer ARRETE, il ne fige pas
             self._publishState()
+            self._rumble(1 if self._motionOn else 2)
             self.get_logger().warning(
                 "moteurs %s a la manette (le verrou `enable_cmd_vel` du driver reste "
                 "maitre)" % ("ARMES" if self._motionOn else "desarmes"))

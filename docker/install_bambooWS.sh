@@ -230,6 +230,7 @@ done
 if [ "${rules_changed:-0}" = "1" ]; then
     udevadm control --reload-rules && udevadm trigger --subsystem-match=tty \
         && udevadm trigger --subsystem-match=video4linux \
+        && udevadm trigger --subsystem-match=input \
         && act "udev recharge"
 fi
 # Des regles heritees se disputent les symlinks (dette connue, hors perimetre BambooWS) : on
@@ -238,7 +239,7 @@ stale="$(ls /etc/udev/rules.d/ 2>/dev/null | grep -E 'ydlidar|teensy' | tr '\n' 
 [ -n "$stale" ] && skip "regles heritees presentes, non modifiees : $stale"
 # Etat des symlinks attendus. ABSENT N EST PAS UNE FAUTE : chaque robot n a que SON materiel
 # branche, et ce script sert les deux. On informe, on n alarme pas.
-for lnk in esp32 stm32 bamboocam lidar; do
+for lnk in esp32 stm32 bamboocam lidar input/bamboo_pad_ff; do
     if [ -e "/dev/$lnk" ]; then
         ok "/dev/$lnk -> $(readlink -f "/dev/$lnk")"
     else

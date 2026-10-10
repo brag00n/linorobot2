@@ -311,6 +311,7 @@ class Esp32MavlinkDriver(Node):
         self._hmiMode = ""
         self._hmiBusy = ""
         self._hmiNav = ""             # sous-mode NAV (bamboo_navigation), "" hors navigation
+        self._hmiArmed = False        # traction armee a la manette -> "*" apres le mode
         self._hmiSent = None
         if bool(g("hmi_text_enabled")):
             latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
@@ -571,8 +572,9 @@ class Esp32MavlinkDriver(Node):
 
     def _on_teleop_state(self, m):
         busy = m.busy_text if m.busy else ""
-        if busy != self._hmiBusy:
+        if busy != self._hmiBusy or bool(m.armed) != self._hmiArmed:
             self._hmiBusy = busy
+            self._hmiArmed = bool(m.armed)
             self._send_hmi()
 
     # Sous-mode NAV -> suffixe OLED ("Ready NAV-EXPLO"). idle ne dit rien de plus que NAV.
@@ -588,7 +590,9 @@ class Esp32MavlinkDriver(Node):
         mode = self._hmiMode
         if mode == "NAV" and self._hmiNav:
             mode = "NAV-" + self._hmiNav
-        text = self._hmiBusy or mode
+        # "*" = traction ARMEE (appui long sur B) : l'ecran du robot le dit sans passer par
+        # le Wi-Fi, contrairement au HUD.
+        text = (self._hmiBusy or mode) + ("*" if self._hmiArmed else "")
         if not text:
             return
         sender = getattr(self.link, "sendHmiText", None)

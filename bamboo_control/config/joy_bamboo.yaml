@@ -55,6 +55,10 @@
 joy_linux_node:
   ros__parameters:
     dev: "/dev/input/js0"
+    # Peripherique de VIBRATION (retour a l'armement, cf. bamboo_teleop). Nom stable pose par
+    # docker/udev/98-bamboo-gamepad.rules : le defaut de joy_linux, /dev/input/event0, est
+    # la WEBCAM sur ce RPi.
+    dev_ff: "/dev/input/bamboo_pad_ff"
 
     # LE PARAMETRE QUI COMPTE, et son defaut est un piege : autorepeat_rate vaut
     # 0 par defaut, donc joy_linux ne publie QUE sur changement d'etat. Stick

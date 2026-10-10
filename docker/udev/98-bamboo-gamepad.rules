@@ -1,0 +1,13 @@
+# 98-bamboo-gamepad.rules -- nom STABLE du peripherique de VIBRATION de la manette (les deux
+# robots : c'est la manette de l'operateur, pas un materiel de robot).
+#
+# joy_linux_node lit les axes sur /dev/input/js0 mais joue la vibration sur un peripherique
+# `event` distinct (parametre dev_ff), dont le numero depend de l'ordre d'apparition : la
+# webcam prend event0 au boot et la manette, reconnectee en Bluetooth, arrive en event1. Le
+# defaut de joy_linux (/dev/input/event0) visait donc la WEBCAM -- aucune vibration.
+#
+# Manette identifiee par son adresse Bluetooth (ATTRS{uniq}), comme les ports serie par leur
+# numero de serie : Under Control 2919 appairee en mode XInput, nom annonce "GamepadX",
+# capacites ff = FF_RUMBLE. Relevee le 2026-10-11. Une autre manette : relever son adresse
+# avec `cat /sys/class/input/event*/device/uniq`.
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{uniq}=="00:90:e3:af:7f:1e", SYMLINK+="input/bamboo_pad_ff"
