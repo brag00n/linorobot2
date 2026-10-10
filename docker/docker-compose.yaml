@@ -197,7 +197,13 @@ services:
       - /dev:/dev
     ports:
       - "8765:8765"
-    command: ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765
+    # Capacites SANS connectionGraph ni services : le bridge recalculait le graphe complet
+    # (noeuds, et tous les services de parametres de chaque noeud) a chaque changement. Avec
+    # Nav2 lance, il passait de ~10 % a ~70 % d'un coeur du RPi4 (essai Nb, 2026-10-10).
+    # Restent : 3D/TF/scan, publication (clientPublish), parametres, assets (URDF).
+    command: >
+      ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765
+      capabilities:=[clientPublish,parameters,parametersSubscribe,assets]
 
 #--- Publish Robot description
   robotdesc:
@@ -223,8 +229,8 @@ services:
       test -f install/setup.bash || echo 'ESPACE DE TRAVAIL NON CONSTRUIT -- lancer docker/rosbuild.sh dans ce conteneur (voir son en-tete)' >&2 &&
       test -f install/setup.bash &&
       source install/setup.bash &&
-      ros2 launch linorobot2_description description.launch.py robot:=${ROBOT}"
-      rviz:=false publish_joints:=false
+      ros2 launch linorobot2_description description.launch.py robot:=${ROBOT}
+      rviz:=false publish_joints:=false"
 
 #--- Real robot
   bringup.real:
