@@ -149,9 +149,18 @@ services:
       - $HOME/.Xauthority:/root/.Xauthority
       - ../linorobot2_navigation/maps:/root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps:rw
       - /dev:/dev
+      # Types MAISON (bamboo_interfaces : NavState, NavCommand, RobotMode...) : sans eux le
+      # bridge ne sait ni decoder ces messages ni appeler ces services, et les outils MCP
+      # nav_state / waypoints restent muets. Lecture seule : le bridge ne compile rien.
+      - ws_install:/root/linorobot2_ws/install:ro
     ports:
       - "9090:9090"
-    command: ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+    # L'espace de travail est source S'IL EST CONSTRUIT : sinon le bridge demarre quand meme,
+    # avec les seuls types ROS standard.
+    command: >
+      bash -lc "test -f /root/linorobot2_ws/install/setup.bash &&
+      source /root/linorobot2_ws/install/setup.bash;
+      ros2 launch rosbridge_server rosbridge_websocket_launch.xml"
 
 #--- foxglovebridge
   foxglovebridge:
@@ -228,6 +237,18 @@ services:
   bringup.simu:
     extends: base
     command: ros2 launch linorobot2_gazebo gazebo.launch.py
+
+#--- Simulation pour bamboo_navigation (lot NAV) : Gazebo SANS son EKF amont (celui de
+#    bamboo_navigation le remplace), robot decrit par son fichier canonique. A coupler avec
+#    navigation.simu. Sur le PC (Gazebo ne tourne pas sur le RPi).
+  bringup.simu.nav:
+    extends: base
+    volumes:
+      - ws_build:/root/linorobot2_ws/build
+      - ws_install:/root/linorobot2_ws/install
+    command: >
+      bash -lc "cd /root/linorobot2_ws && source install/setup.bash &&
+      ros2 launch linorobot2_gazebo gazebo.launch.py ekf:=false robot:=${ROBOT}"
 
 #--- Teleop
   teleop:
@@ -806,14 +827,17 @@ services:
       map:=/root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps/playground.pgm
       rviz:=false
 
+  # Remplace (lot NAV) la navigation amont : bamboo_navigation en simulation (EKF, Nav2,
+  # slam_toolbox/AMCL, superviseur, multiplexeur), avec bringup.simu.nav. Sous-modes pilotes
+  # par le service /nav_supervisor/command (outil MCP ros2-action call_service).
   navigation.simu:
     extends: base
+    volumes:
+      - ws_build:/root/linorobot2_ws/build
+      - ws_install:/root/linorobot2_ws/install
     command: >
-      ros2 launch linorobot2_navigation navigation.launch.py
-      map:=/root/linorobot2_ws/src/linorobot2/linorobot2_navigation/maps/playground.yaml
-      rviz:=true
-      sim:=true
-      use_sim_time:=true
+      bash -lc "cd /root/linorobot2_ws && source install/setup.bash &&
+      ros2 launch bamboo_navigation navigation.launch.py robot:=${ROBOT} sim:=true"
 
   default.real:
     extends: base

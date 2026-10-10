@@ -18,7 +18,9 @@ backup) publient directement -- les deux sur `cmd_vel_nav` du wiring, entree de 
 priorite du multiplexeur de bamboo_control. La manette garde toujours la main.
 
 SIMULATION : sim:=true use_sim_time:=true avec linorobot2_gazebo (ekf:=false) : memes sujets,
-le scan vient de Gazebo.
+le scan vient de Gazebo. Le multiplexeur de bamboo_control (que le vrai robot lance dans son
+conteneur bamboo_control) est alors lance ICI, sans quoi `cmd_vel_nav` n'atteindrait jamais
+le `cmd_vel` que consomme le plugin Gazebo.
 """
 import os
 import tempfile
@@ -128,6 +130,17 @@ def _setup(context, *args, **kwargs):
     if not required or "lidar" not in required:
         info.append(LogInfo(msg="navigation : ATTENTION, %s n'a pas de lidar declare -- la "
                                 "navigation sera declaree impossible (diagnostic)." % robot))
+    if sim:
+        control = wiring["control"]
+        nodes.append(Node(
+            package="bamboo_control", executable="cmd_vel_mux", name="cmd_vel_mux",
+            output="screen",
+            parameters=[os.path.join(get_package_share_directory("bamboo_control"), "config",
+                                     "cmd_vel_mux.yaml"),
+                        {"use_sim_time": True, "output_topic": control["cmd_vel"],
+                         "topics.teleop.topic": control["cmd_vel_teleop"],
+                         "topics.calibration.topic": control["cmd_vel_calib"],
+                         "topics.navigation.topic": control["cmd_vel_nav"]}]))
     return info + nodes + lifecycle
 
 

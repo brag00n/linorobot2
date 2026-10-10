@@ -103,8 +103,13 @@ SERVICES = {
     "bringup.stm32": "bringup COMPLET de bambooSTM32YB en un conteneur (banc) : EXCLUSIF avec bamboo_video/bamboo_videotracking/driver.stm32",
     "bringup.esp32": "bringup COMPLET de BambooWS en un conteneur (banc) : EXCLUSIF avec bamboo_video/bamboo_videotracking/driver.esp32",
     "robotdesc": "robot_state_publisher (description URDF)",
-    "slam.real": "cartographie SLAM (slam_toolbox)",
-    "navigation.real": "navigation Nav2 sur carte existante",
+    "driver.lidarD500": "lidar D500 (LD19) de BambooWS : ldlidar_stl_ros2 -> /scan + diagnostic "
+                        "lidar (bamboo_lidar), A LA DEMANDE, proprietaire de /dev/lidar",
+    "navigation": "navigation de BambooWS (bamboo_navigation) : EKF + Nav2 (RPP) + slam_toolbox/"
+                  "AMCL, sous-modes par /nav_supervisor/command -- le robot ne bouge que sur un "
+                  "but, la manette reprend la main (multiplexeur). A LA DEMANDE",
+    "slam.real": "REMPLACE par navigation (lot NAV) -- cartographie SLAM amont (slam_toolbox)",
+    "navigation.real": "REMPLACE par navigation (lot NAV) -- navigation Nav2 amont",
 }
 
 # Noms de services surs : lettres, chiffres, point, tiret, underscore. Double barriere avec

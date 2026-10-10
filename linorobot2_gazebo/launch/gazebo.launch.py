@@ -15,7 +15,9 @@
 import os
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
-from launch.substitutions import LaunchConfiguration, Command, PathJoinSubstitution
+from launch.conditions import IfCondition
+from launch.substitutions import (LaunchConfiguration, Command, PathJoinSubstitution,
+                                  EnvironmentVariable)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -47,6 +49,21 @@ def generate_launch_description():
             description='Gazebo world'
         ),
 
+        # Bamboo (lot NAV) : `robot` decrit LE robot simule (pose du lidar, geometrie, depuis
+        # son fichier canonique) ; `ekf:=false` laisse l'EKF a bamboo_navigation, qui fusionne
+        # roues + gyro avec SA configuration -- deux EKF publieraient deux TF odom concurrentes.
+        # Defauts = comportement amont inchange.
+        DeclareLaunchArgument(
+            name='robot',
+            default_value=EnvironmentVariable('BAMBOO_ROBOT', default_value=''),
+            description='Nom du robot simule (vide : defauts du xacro)'
+        ),
+        DeclareLaunchArgument(
+            name='ekf',
+            default_value='true',
+            description='Lancer l EKF amont (false avec bamboo_navigation)'
+        ),
+
         ExecuteProcess(
             cmd=['gazebo', '--verbose', '-s', 'libgazebo_ros_factory.so',  '-s', 'libgazebo_ros_init.so', LaunchConfiguration('world')],
             output='screen'
@@ -71,6 +88,7 @@ def generate_launch_description():
             executable='ekf_node',
             name='ekf_filter_node',
             output='screen',
+            condition=IfCondition(LaunchConfiguration('ekf')),
             parameters=[
                 {'use_sim_time': use_sim_time}, 
                 ekf_config_path
@@ -83,6 +101,7 @@ def generate_launch_description():
             launch_arguments={
                 'use_sim_time': str(use_sim_time),
                 'publish_joints': 'false',
+                'robot': LaunchConfiguration('robot'),
             }.items()
         ),
 

@@ -454,7 +454,8 @@ Le défaut vaut quel que soit le producteur de `cmd_vel` : manette, navigation, 
 | TRACKING | cible | A = détecteur, Y = apprentissage, L/R = taille de la cible, ZL/ZR = plafond |
 | CALIB | mesure | **A long = lancer**, X = contrôle IMU seul, Y = arcs on/off, R = variante suivante |
 | CALIB | essai | A = appliquer le candidat **en RAM**, X = revenir au fichier, Y = PI de lacet on/off |
-| NAV | — | Indisponible tant que le lot NAV n'existe pas (prérequis `node:/bt_navigator`). |
+| NAV | exploration | **A long = cartographier**, X long = sauver la carte, Y long = arrêter, ZR long = miroir |
+| NAV | navigation | **A long = naviguer** (dernière carte), Y long = noter ce point, A = point suivant, X long = retour au départ, Y = annuler le but |
 
 Une carte de touches fausse est **refusée au démarrage** : touche, action ou groupe inconnu, ou B réaffecté. La manette se replie alors sur la conduite seule, et le diagnostic `bamboo_teleop: modes` passe en ERROR avec la raison.
 
@@ -517,3 +518,113 @@ ros2 action send_goal /bamboo_calibration/calibrate bamboo_interfaces/action/Cal
   - `<driver>: imu` (`gz_rad_s`) ;
   - `bamboo_teleop: modes` ;
   - `bamboo_mode_manager: modes du robot`.
+
+## 10. Navigation autonome (lot NAV)
+
+### 10.1 Vue d'ensemble
+
+```
+<robot>_base/config/<robot>.yaml   sensors: / lidar: / navigation:      -> parametres
+<robot>_base/config/layout.yaml    wiring: lidar / navigation / control -> noms de sujets
+<robot>_base/config/navigation.yaml  Nav2 propre au robot (RPP, costmaps, AMCL)
+
+driver.lidarD500 (bamboo_lidar)  ldlidar_stl_ros2 --/scan--> scan_monitor (diag `lidar`)
+navigation (bamboo_navigation)   EKF (roues vx + gyro vyaw) --/odom + TF odom-->
+                                 nav_supervisor : exploration -> slam_toolbox
+                                                  navigation  -> map_server + AMCL + Nav2
+                                 Nav2 (RPP, velocity_smoother) --/cmd_vel_nav-->
+bamboo_control                   cmd_vel_mux : teleop 100 > calib 90 > nav 10 --/cmd_vel--> driver
+```
+
+Les deux conteneurs sont **à la demande** (`restart: "no"`) : rien ne démarre au boot tant que la navigation n'est pas validée.
+
+```
+docker compose --profile lidar up -d driver.lidarD500
+docker compose --profile nav   up -d navigation
+```
+
+### 10.2 Lidar D500 (LDROBOT STL-19P, famille LD19)
+
+- UART 230 400 bauds par un CP2102 — même VID:PID que l'ESP32. La règle udev se fait donc **par numéro de série** (`0001`) → `/dev/lidar` (`docker/udev/99-bambooWS.rules`). Les anciennes règles VID:PID du `Dockerfile`, qui envoyaient tout CP2102 sur `/dev/ydlidar`, sont supprimées.
+- Driver `ldlidar_stl_ros2`, figé sur un commit, cloné par `docker/fetch_sources.sh` dans `third_party/` (non versionné), compilé par `rosbuild.sh`.
+- `bamboo_lidar/launch/lidar.launch.py` lit le bloc `lidar:` du fichier canonique (modèle, port, débit, trame, sens, recadrage, portée) et le groupe `wiring.lidar` (`scan`).
+- **Pose** : `lidar.pose_x/y/z/yaw` est lue par `description.launch.py` et passée au xacro. Mesurée le 2026-10-10 : 4 cm en avant du centre, centré, 17 cm de haut, **tourné de +90°**.
+- Diagnostic `lidar` (`scan_monitor`) : cadence, points valides, portée, sujet muet.
+
+### 10.3 `bamboo_navigation`
+
+`launch/navigation.launch.py` (arguments `robot`, `robot_config`, `sim`, `use_sim_time`, `map`) écrit des yaml **patchés** dans `/tmp` (sujets du wiring, vitesses bornées de `navigation:`, `use_sim_time`), puis lance :
+
+| Nœud | Rôle |
+|---|---|
+| `ekf_filter_node` | Fusion **vx des roues + vyaw du gyro** (le lacet des roues est ignoré : glissement). Publie `/odom` et la TF `odom → base_footprint`. |
+| Nav2 | controller (RPP, `use_rotate_to_heading`) → velocity_smoother → `/cmd_vel_nav` ; planner, smoother, behavior_server (spin/backup directement sur `/cmd_vel_nav`), bt_navigator, waypoint_follower. |
+| map_server + AMCL | Localisation en sous-mode navigation. |
+| `nav_supervisor` | Sous-modes, cartes, points, état, diagnostic. |
+| 2 lifecycle managers | navigation et localisation, `autostart: false` : c'est le superviseur qui les démarre. |
+
+**Sous-modes** (un seul actif) :
+- `exploration` : slam_toolbox en cartographie (sous-processus), on conduit à la manette ;
+- `navigation` : map_server charge la carte, AMCL, Nav2 actif, pose initiale au point `depart` ;
+- `idle` : tout est arrêté.
+
+**Commandes** — service unique `/nav_supervisor/command` (`bamboo_interfaces/srv/NavCommand`) :
+`exploration`, `navigation [carte]`, `idle`, `save_map [nom]`, `save_waypoint [nom]`, `goto next|home|<nom>`, `cancel`, `list`.
+
+**Cartes et points** : `<robot>_base/maps/<carte>.{yaml,pgm}` et `<carte>_waypoints.yaml`.
+
+**État** : `/navigation/state` (`NavState`, latché) — sous-mode, carte, but, distance restante, reprises, covariance AMCL, points, capteurs manquants. Lu par le HUD (carte NAV), la manette et le MCP.
+
+**Diagnostic `navigation`** : il n'exige **que les capteurs déclarés** dans `sensors:` du fichier canonique. Lidar absent ou muet → ERROR « navigation impossible » ; localisation incertaine → WARN.
+
+### 10.4 Arbitrage des consignes
+
+`bamboo_control/cmd_vel_mux` reprend la sémantique et la configuration de twist_mux (image non reconstruite : plusieurs heures, disque à 90 %). Les noms viennent de `wiring.control`, les priorités de `config/cmd_vel_mux.yaml` :
+
+| Entrée | Priorité | Délai |
+|---|---|---|
+| manette `/cmd_vel_teleop` | 100 | 0,5 s |
+| calibration `/cmd_vel_calib` | 90 | 0,5 s |
+| navigation `/cmd_vel_nav` | 10 | 0,5 s |
+
+Pousser le stick reprend **toujours** la main ; la navigation repart 0,5 s après le relâchement. B / B long et le chien de garde du driver (0,25 s) restent en vigueur.
+
+### 10.5 Mode NAV
+
+Prérequis : `node:/nav_supervisor` **et** `param:has_lidar` (poussé par `control.launch.py` depuis `sensors.lidar`). À l'entrée, la détection de visages est coupée ; à la sortie, le but en cours est annulé. Touches : voir §9.3.
+
+### 10.6 Simulateur (`linorobot2_gazebo`)
+
+Le plugin Gazebo publie les mêmes sujets que le vrai robot (`odom/unfiltered`, `/scan` en trame `laser`, `imu/data`) et consomme `cmd_vel`.
+
+```
+docker compose up bringup.simu.nav     # gazebo.launch.py ekf:=false robot:=${ROBOT}
+docker compose up navigation.simu      # navigation.launch.py robot:=${ROBOT} sim:=true
+```
+
+- `gazebo.launch.py` gagne `ekf` (défaut `true`, comportement amont) et `robot` (description du robot simulé).
+- Avec `sim:=true`, le launch de navigation lance aussi `cmd_vel_mux`, que le vrai robot tient dans `bamboo_control`.
+- Gazebo tourne sur le PC, pas sur le RPi.
+
+### 10.7 MCP
+
+| Outil | Serveur | Effet |
+|---|---|---|
+| `map` | ros2-analysis | GetMap (slam_toolbox en exploration, map_server en navigation) → taille, part explorée, pose du robot, **PNG** à lire en image. |
+| `nav_state` | ros2-analysis | Résumé de `/navigation/state`. |
+| `waypoints` | ros2-analysis | Cartes et points (commande `list`). |
+| `call_service /nav_supervisor/command` | ros2-action | Toutes les autres commandes. |
+
+Le rosbridge monte `ws_install` en lecture seule et le source : sans cela, il ne connaît pas les types `bamboo_interfaces`.
+
+### 10.8 Essais
+
+| Essai | Vérification |
+|---|---|
+| Na ✅ | `/dev/esp32` et `/dev/lidar` distincts, `/scan` ≈ 10 Hz, orientation et sens validés à l'obstacle |
+| Nb | TF `odom → base_footprint`, `/odom` suit l'IMU sur 360°, manette à travers le multiplexeur |
+| Nc | carte d'une pièce, sauvée par X long, visible par l'outil `map` |
+| Nd | localisation, deux points, aller à 0,2 m/s, reprise au stick, retour au départ |
+| Ne | obstacle sur le trajet : contournement ou reprise |
+| Nf | lidar débranché : mode NAV indisponible, diagnostic `navigation` en ERROR |
+| Nsim | cartographie et points dans `playground.world` |

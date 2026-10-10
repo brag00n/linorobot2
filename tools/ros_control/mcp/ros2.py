@@ -21,6 +21,8 @@ Outils (tous LECTURE SEULE, mappes sur le protocole rosbridge) :
   tf                           -> subscribe /tf + /tf_static (arbre des reperes)
   odom / scan / imu / battery  -> echo + mise en forme lisible
   ros2_status                  -> synthese : nb noeuds + fraicheur des topics cles
+  map / nav_state / waypoints  -> navigation (bamboo_navigation) : carte GetMap -> PNG,
+                                  etat du superviseur, cartes et points enregistres
 
 CAVEAT QoS : rosbridge souscrit par defaut en *reliable*. `/scan` et `/imu` sont publies
 en *best-effort* (sensor_data) -> un abonne reliable est INCOMPATIBLE et ne recoit rien.
@@ -44,8 +46,11 @@ depot firmware que les serveurs qui lisent la telemetrie de l'app Windows et ouv
 import json
 import math
 import os
+import struct
 import sys
+import tempfile
 import time
+import zlib
 
 from . import _rpc
 
@@ -516,6 +521,170 @@ def t_ros2_status(args):
 
 
 # ---------------------------------------------------------------------------
+# Navigation (bamboo_navigation) : carte, etat du superviseur, points
+# ---------------------------------------------------------------------------
+# Services GetMap a essayer, dans l'ordre : la carte EN COURS (slam_toolbox, exploration)
+# puis la carte CHARGEE (map_server, navigation). Le sous-mode publie decide de l'ordre.
+_MAP_SERVICES = {"exploration": ("/slam_toolbox/dynamic_map", "/map_server/map"),
+                 "navigation": ("/map_server/map", "/slam_toolbox/dynamic_map")}
+_NAV_STATE = "/navigation/state"
+_NAV_COMMAND = "/nav_supervisor/command"
+
+
+def _nav_state(window=2.0):
+    msgs = _bridge().subscribe_collect(_NAV_STATE, window, count=1,
+                                       msg_type="bamboo_interfaces/msg/NavState")
+    return msgs[0] if msgs else None
+
+
+def _compose(a, b):
+    """Transforme 2D a puis b (x, y, yaw) -> resultat dans le repere de a."""
+    c, s = math.cos(a[2]), math.sin(a[2])
+    return (a[0] + c * b[0] - s * b[1], a[1] + s * b[0] + c * b[1], a[2] + b[2])
+
+
+def _tf2d(tr):
+    t, q = tr.get("translation", {}), tr.get("rotation", {})
+    return (float(t.get("x", 0.0)), float(t.get("y", 0.0)),
+            math.radians(_quat_to_rpy(q)[2]))
+
+
+def _robot_pose(frame, window=1.5):
+    """Pose du robot dans `frame` (map) par composition map->odom->base_footprint, lue sur /tf.
+    None si une des deux aretes manque (pas de localisation, EKF arrete...)."""
+    edges = {}
+    for m in _bridge().subscribe_collect("/tf", window):
+        for tr in m.get("transforms", []):
+            edges[((tr.get("header", {}) or {}).get("frame_id", ""),
+                   tr.get("child_frame_id", ""))] = tr.get("transform", {})
+    odom = edges.get(("odom", "base_footprint"))
+    if odom is None:
+        return None
+    if frame == "odom":
+        return _tf2d(odom)
+    m2o = edges.get((frame, "odom"))
+    return _compose(_tf2d(m2o), _tf2d(odom)) if m2o is not None else None
+
+
+def _png(path, w, h, rows):
+    """PNG RGB minimal (zlib seul, sans dependance). `rows` : lignes de HAUT en bas, bytes."""
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+    raw = b"".join(b"\x00" + r for r in rows)
+    with open(path, "wb") as fh:
+        fh.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                 + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+def _render_map(path, w, h, data, res, origin, pose):
+    """Grille d'occupation -> PNG : inconnu gris, libre blanc, occupe noir, robot en rouge
+    (disque + trait de cap). Image de HAUT en bas : la ligne 0 de la grille (y min) en bas."""
+    px = bytearray()
+    for v in data:
+        g = 205 if v < 0 else (254 if v < 25 else (0 if v > 65 else 128))
+        px += bytes((g, g, g))
+    if pose is not None:
+        cx = (pose[0] - origin[0]) / res
+        cy = (pose[1] - origin[1]) / res
+        r = max(2, int(0.12 / res))                    # ~ demi-largeur du robot
+        for dy in range(-r, r + 1):
+            for dx in range(-r, r + 1):
+                x, y = int(cx) + dx, int(cy) + dy
+                if dx * dx + dy * dy <= r * r and 0 <= x < w and 0 <= y < h:
+                    px[(y * w + x) * 3:(y * w + x) * 3 + 3] = b"\xdc\x14\x14"
+        for k in range(2 * r + 1):                     # cap : trait jaune vers l'avant
+            x = int(cx + k * math.cos(pose[2]))
+            y = int(cy + k * math.sin(pose[2]))
+            if 0 <= x < w and 0 <= y < h:
+                px[(y * w + x) * 3:(y * w + x) * 3 + 3] = b"\xf0\xc8\x00"
+    rows = [bytes(px[y * w * 3:(y + 1) * w * 3]) for y in range(h - 1, -1, -1)]
+    _png(path, w, h, rows)
+
+
+def t_map(args):
+    st = _nav_state()
+    sub = (st or {}).get("submode", "")
+    services = [args["service"]] if args.get("service") else \
+        list(_MAP_SERVICES.get(sub, _MAP_SERVICES["exploration"]))
+    br = Bridge(timeout=max(CALL_TIMEOUT, 10.0))       # une grande carte pese en JSON
+    resp, used, errors = None, None, []
+    for srv in services:
+        try:
+            resp = br.call_service(srv, {})
+            used = srv
+            break
+        except BridgeError as e:
+            errors.append("%s : %s" % (srv, e))
+    if resp is None:
+        return ("Aucune carte : sous-mode NAV '%s'. %s\n(Le conteneur navigation tourne-t-il, "
+                "et le sous-mode est-il exploration ou navigation ?)"
+                % (sub or "inconnu", " | ".join(errors)))
+    grid = resp.get("map", {}) or {}
+    info = grid.get("info", {}) or {}
+    w, h = int(info.get("width", 0)), int(info.get("height", 0))
+    res = float(info.get("resolution", 0.05) or 0.05)
+    o = (info.get("origin", {}) or {}).get("position", {}) or {}
+    origin = (float(o.get("x", 0.0)), float(o.get("y", 0.0)))
+    data = grid.get("data", []) or []
+    if not w or not h or len(data) != w * h:
+        return "%s : carte vide ou incoherente (%dx%d, %d cellules)." % (used, w, h, len(data))
+    known = sum(1 for v in data if v >= 0)
+    occ = sum(1 for v in data if v > 65)
+    frame = (grid.get("header", {}) or {}).get("frame_id", "map") or "map"
+    pose = _robot_pose(frame)
+    path = args.get("path") or os.path.join(tempfile.gettempdir(), "bamboo_map.png")
+    _render_map(path, w, h, data, res, origin, pose)
+    lines = [
+        "carte     : %s (sous-mode %s, carte '%s')"
+        % (used, sub or "?", (st or {}).get("map_name", "") or "-"),
+        "taille    : %d x %d cellules a %.3f m = %.1f x %.1f m, origine (%.2f, %.2f)"
+        % (w, h, res, w * res, h * res, origin[0], origin[1]),
+        "exploree  : %.1f %% (libre %.1f m2, obstacles %.1f m2)"
+        % (100.0 * known / len(data), (known - occ) * res * res, occ * res * res),
+        ("robot     : (%.2f, %.2f) m, cap %.0f deg dans %s" % (pose[0], pose[1],
+                                                               math.degrees(pose[2]), frame))
+        if pose else "robot     : pose inconnue (TF %s -> odom -> base_footprint absente)" % frame,
+        "image     : %s (gris inconnu, blanc libre, noir obstacle, rouge robot)" % path,
+    ]
+    return "\n".join(lines)
+
+
+def t_nav_state(args):
+    st = _nav_state(float(args.get("timeout", 3.0)))
+    if st is None:
+        return ("Rien sur %s : superviseur arrete (conteneur navigation) ou type "
+                "bamboo_interfaces absent du rosbridge." % _NAV_STATE)
+
+    def num(v, unit):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return "--"
+        return "--" if math.isnan(f) else "%.2f%s" % (f, unit)
+    return "\n".join([
+        "sous-mode  : %s (%s)" % (st.get("submode", "?"), "pret" if st.get("ready") else "PAS pret"),
+        "carte      : %s" % (st.get("map_name") or "-"),
+        "but        : %s %s, reste %s, reprises %s"
+        % (st.get("goal") or "-", st.get("goal_status") or "", num(st.get("distance_remaining"), " m"),
+           st.get("recoveries", 0)),
+        "localis.   : covariance %s" % num(st.get("localization_cov"), ""),
+        "points     : %s" % (", ".join(st.get("waypoints", [])) or "aucun"),
+        "manquants  : %s" % (", ".join(st.get("missing_sensors", [])) or "aucun"),
+        "detail     : %s" % (st.get("detail") or "-"),
+    ])
+
+
+def t_waypoints(args):
+    # `list` ne modifie rien : c'est la seule commande du superviseur exposee ici.
+    try:
+        v = _bridge().call_service(_NAV_COMMAND, {"command": "list", "arg": ""})
+    except BridgeError as e:
+        return "%s (conteneur navigation arrete ?)" % e
+    return v.get("message", "") or "reponse vide"
+
+
+# ---------------------------------------------------------------------------
 # Declaration MCP
 # ---------------------------------------------------------------------------
 _TOPIC = {"type": "string", "description": "nom du topic ROS2 (ex. /scan)"}
@@ -597,6 +766,26 @@ TOOLS = [
          "node": {"type": "string",
                   "description": "nom complet du noeud (ex. /esp32_driver ; cf. outil nodes)"}},
          "required": ["node"]}},
+    {"name": "map",
+     "description": "CARTE de navigation (bamboo_navigation) : appelle GetMap sur "
+                    "slam_toolbox (exploration, carte en cours) ou map_server (navigation, "
+                    "carte chargee), rend taille/resolution/part exploree/pose du robot et "
+                    "ECRIT UN PNG (gris inconnu, blanc libre, noir obstacle, robot rouge) a "
+                    "lire avec l'outil de lecture d'image du client.",
+     "inputSchema": {"type": "object", "properties": {
+         "service": {"type": "string",
+                     "description": "service GetMap explicite (defaut : selon le sous-mode)"},
+         "path": {"type": "string", "description": "chemin du PNG (defaut : temp/bamboo_map.png)"}}}},
+    {"name": "nav_state",
+     "description": "Etat du superviseur de navigation (/navigation/state) : sous-mode, "
+                    "carte, but et distance restante, reprises, covariance de localisation, "
+                    "points, capteurs requis manquants.",
+     "inputSchema": {"type": "object", "properties": {
+         "timeout": {"type": "number", "description": "fenetre d'ecoute en s (defaut 3)"}}}},
+    {"name": "waypoints",
+     "description": "Cartes enregistrees et points de la carte courante (commande `list` "
+                    "du superviseur, sans effet).",
+     "inputSchema": {"type": "object", "properties": {}}},
     {"name": "ros2_status",
      "description": "Synthese du graphe : nombre de noeuds/topics et presence des topics "
                     "cles du robot (scan, odom, imu, battery, cmd_vel, tf, camera).",
@@ -617,6 +806,9 @@ HANDLERS = {
     "diagnostics": t_diagnostics,
     "node_info": t_node_info,
     "ros2_status": t_ros2_status,
+    "map": t_map,
+    "nav_state": t_nav_state,
+    "waypoints": t_waypoints,
 }
 
 
