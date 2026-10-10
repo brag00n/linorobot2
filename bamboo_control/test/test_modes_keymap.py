@@ -22,7 +22,8 @@ ACTIONS = {"tracking", "recenter", "recognition", "acquisition", "tracker", "pre
            "flip_image", "nav_unavailable", "acq", "trkv", "detector_prev",
            "tracker_prev", "predict_prev", "capture_next", "capture_prev",
            "calib_pid_raised", "calib_pid_ground", "calib_batt_full",
-           "calib_batt_discharge"}
+           "calib_batt_discharge", "nav_explore", "nav_save_map", "nav_idle",
+           "nav_navigate", "nav_save_wp", "nav_goto_next", "nav_goto_home", "nav_cancel"}
 
 
 def _flatten(d, prefix=""):

@@ -28,6 +28,8 @@ setup(
             "teleop_node = bamboo_control.teleop_node:main",
             # Modes du robot (conventions system_modes, cf. l'en-tete du module).
             "mode_manager_node = bamboo_control.mode_manager_node:main",
+            # Arbitrage des consignes (semantique et configuration twist_mux).
+            "cmd_vel_mux = bamboo_control.cmd_vel_mux_node:main",
         ],
     },
 )

@@ -44,6 +44,7 @@
 
 #include "bamboo_interfaces/msg/mode_cmd.hpp"
 #include "bamboo_interfaces/msg/motion_compensation_state.hpp"
+#include "bamboo_interfaces/msg/nav_state.hpp"
 #include "bamboo_interfaces/msg/wheel_rpm.hpp"
 #include "bamboo_interfaces/msg/recognition_result.hpp"
 #include "bamboo_interfaces/msg/track_state.hpp"
@@ -447,6 +448,17 @@ public:
         health_items_ = bad;
         last_agg_ = now_steady_.now();
       });
+    // Etat de la NAVIGATION (bamboo_navigation/nav_supervisor), LATCHE : meme raison que
+    // /teleop/state pour couper l'intra-process.
+    rclcpp::SubscriptionOptions nav_opts;
+    nav_opts.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
+    nav_sub_ = create_subscription<bamboo_interfaces::msg::NavState>(
+      declare_parameter<std::string>("nav_state_topic", "/navigation/state"),
+      rclcpp::QoS(1).reliable().transient_local(),
+      [this](bamboo_interfaces::msg::NavState::ConstSharedPtr m) {
+        nav_ = m;
+        last_nav_ = now_steady_.now();
+      }, nav_opts);
     // --- carte CONTEXTUELLE (CONDUITE / CALIB) : telemetrie du driver -------------------
     // Messages minuscules a 10-30 Hz : on garde le dernier, horodate, et la carte dit
     // "--" si la source se tait (une valeur perimee doit se VOIR perimee).
@@ -1142,6 +1154,45 @@ private:
     }
   }
 
+  /// Carte NAV : sous-mode, carte, but et distance, reprises, localisation, capteurs requis
+  /// manquants (bamboo_navigation/nav_supervisor, /navigation/state).
+  void drawNavCard(cv::Mat & im, int x, int y, double u)
+  {
+    const auto n = fresh(last_nav_, 3.0) ? nav_ : nullptr;
+    const int step = iu(19, u);
+    const int yc = y + iu(38, u);
+    const size_t nm = n ? n->missing_sensors.size() : 0;
+    const int h = iu(38 + 5 * 19 + 4, u) + static_cast<int>(nm) * iu(15, u);
+    cardFrame(im, x, y, h, "NAVIGATION", n && n->ready, u);
+    if (!n) {
+      cardRow(im, x, yc, u, {{10, "superviseur muet (conteneur navigation ?)", kOff}});
+      return;
+    }
+    cardRow(im, x, yc, u, {
+      {10, "sous-mode", kLabel}, {100, n->submode, n->submode == "idle" ? kOff : kOn}});
+    cardRow(im, x, yc + step, u, {
+      {10, "carte", kLabel}, {100, n->map_name.empty() ? "--" : n->map_name, kVal}});
+    const bool active = n->goal_status == "active";
+    cardRow(im, x, yc + 2 * step, u, {
+      {10, "but", kLabel},
+      {100, n->goal.empty() ? "--" : n->goal + " " + n->goal_status,
+        active ? kZoneOut : (n->goal_status == "succeeded" ? kOn : kVal)}});
+    cardRow(im, x, yc + 3 * step, u, {
+      {10, "reste", kLabel},
+      {100, std::isnan(n->distance_remaining) ? "--" : fmt(n->distance_remaining, 2) + " m",
+        kVal},
+      {180, "reprises", kLabel}, {255, std::to_string(n->recoveries), kVal}});
+    cardRow(im, x, yc + 4 * step, u, {
+      {10, "points", kLabel}, {100, std::to_string(n->waypoints.size()), kVal},
+      {180, "loc.", kLabel},
+      {225, std::isnan(n->localization_cov) ? "--" : fmt(n->localization_cov, 2), kVal}});
+    int yy = yc + 5 * step;
+    for (const auto & ms : n->missing_sensors) {
+      put(im, "manque : " + ms, x + iu(10, u), yy, kBad, 0.38 * u);
+      yy += iu(15, u);
+    }
+  }
+
   /// Carte de la colonne de droite SELON LE MODE : TRACKING -> CAM, CONDUITE et NAV ->
   /// moteurs, CALIB -> mesures. Sans etat de manette : CAM, l'affichage d'origine.
   void drawContextCard(
@@ -1152,12 +1203,14 @@ private:
     static const std::vector<std::string> kChain{"acq", "trkv", "trkp", "capt", "gen", "reco"};
     if (mode == "TRACKING" && std::find(kChain.begin(), kChain.end(), st->group) != kChain.end()) {
       drawTrackingCard(im, ts, st->group, x, y, u);
-    } else if (mode == "CONDUITE" || mode == "NAV") {
+    } else if (mode == "CONDUITE") {
       drawDriveCard(im, x, y, u);
     } else if (mode == "CALIB") {
       drawCalibCard(im, x, y, u);
     } else if (mode == "SANTE") {
       drawHealthCard(im, x, y, u);
+    } else if (mode == "NAV") {
+      drawNavCard(im, x, y, u);
     } else {
       drawCard(im, ts, x, y, u);
     }
@@ -1482,6 +1535,9 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr batt_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr calib_sub_;
+  rclcpp::Subscription<bamboo_interfaces::msg::NavState>::SharedPtr nav_sub_;
+  bamboo_interfaces::msg::NavState::ConstSharedPtr nav_;
+  rclcpp::Time last_nav_{0, 0, RCL_STEADY_TIME};
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr agg_sub_;
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticStatus>::SharedPtr health_sub_;
   rclcpp::Client<bamboo_interfaces::srv::RegisterOverlay>::SharedPtr mux_cli_;

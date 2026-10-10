@@ -83,7 +83,8 @@ class ModeManager(Node):
         # apparaitre, sinon les reglages d'entree partiraient dans le vide.
         startDelay = float(self.declare_parameter("start_delay_s", 3.0).value)
         # Prerequis `param:` : booleens declares ICI, pousses par le launch (has_gimbal...).
-        self._flags = {"has_gimbal": bool(self.declare_parameter("has_gimbal", False).value)}
+        self._flags = {"has_gimbal": bool(self.declare_parameter("has_gimbal", False).value),
+                       "has_lidar": bool(self.declare_parameter("has_lidar", False).value)}
         raw = {n: {f: self.declare_parameter("%s.%s" % (n, f), "").value for f in _FIELDS}
                for n in names}
         self._model = parseModel(names, raw)

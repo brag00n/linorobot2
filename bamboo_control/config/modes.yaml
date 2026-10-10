@@ -60,10 +60,15 @@ bamboo_mode_manager:
 
     # Navigation autonome : declaree pour sa place dans la croix, indisponible
     # tant que le lot NAV n'a pas de bt_navigator (Nav2).
+    # Navigation autonome (bamboo_navigation, conteneur `navigation`, a la demande). Exige
+    # le superviseur ET un lidar declare par le robot (sensors.lidar -> has_lidar, pousse par
+    # control.launch.py). Deux sous-modes, choisis par la croix haut/bas : exploration
+    # (carte) et navigation (points). Quitter le mode ANNULE le but en cours.
     navigation:
       label: "NAV"
-      requires: "node:/bt_navigator"
+      requires: "node:/nav_supervisor;param:has_lidar"
       enter_params: "/tracking_node:detect_enabled=false"
+      exit_cancel: "/navigate_to_pose"
 
     # Sante du robot : la carte du HUD (haut droite) liste tout ce qui n'est pas VERT dans
     # l'arbre de diagnostic agrege (modules et composants, avec leur message). Lecture

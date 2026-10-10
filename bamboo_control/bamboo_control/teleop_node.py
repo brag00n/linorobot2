@@ -96,8 +96,8 @@ from std_srvs.srv import SetBool, Trigger
 from sensor_msgs.msg import Joy
 
 from bamboo_interfaces.action import Calibrate, TrainFaces
-from bamboo_interfaces.msg import ModeCmd, RobotMode, TeleopState
-from bamboo_interfaces.srv import ChangeMode, Nudge
+from bamboo_interfaces.msg import ModeCmd, NavState, RobotMode, TeleopState
+from bamboo_interfaces.srv import ChangeMode, NavCommand, Nudge
 from bamboo_control.keymap_model import KEYS, LONG, PREFIX, displayKey, parseKeymap
 
 # Enumerations RESOLUES ICI (cf. docstring : le consommateur refuse une valeur vide).
@@ -314,6 +314,14 @@ class TeleopNode(Node):
         self._calApplied = False
         self._calPi = False
         self._flipOn = None           # inconnu tant que tracking_node n'a pas ete interroge
+        # --- navigation (bamboo_navigation) : une seule porte, ~/command du superviseur ---
+        self._navCli = self.create_client(NavCommand, str(self.declare_parameter(
+            "nav_command_service", "/nav_supervisor/command").value))
+        self._navState = None
+        self.create_subscription(NavState, "/navigation/state",
+                                 lambda m: setattr(self, "_navState", m),
+                                 QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                                            durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self._flipGet = self.create_client(GetParameters, self._trackNode + "/get_parameters")
         self._flipSet = self.create_client(SetParameters, self._trackNode + "/set_parameters")
 
@@ -1006,6 +1014,21 @@ class TeleopNode(Node):
                              lambda: "< duree %s" % self._captText(), None),
             "flip_image": (self._actFlip, lambda: "miroir image",
                            lambda: bool(self._flipOn)),
+            # --- mode NAV : sous-modes, cartes, points (nav_supervisor) ----------------
+            "nav_explore": (lambda: self._nav("exploration"), lambda: "explorer (carte)",
+                            lambda: self._navSub() == "exploration"),
+            "nav_save_map": (lambda: self._nav("save_map"), lambda: "sauver la carte", None),
+            "nav_idle": (lambda: self._nav("idle"), lambda: "arreter", None),
+            "nav_navigate": (lambda: self._nav("navigation"),
+                             lambda: "naviguer (derniere carte)",
+                             lambda: self._navSub() == "navigation"),
+            "nav_save_wp": (lambda: self._nav("save_waypoint"), lambda: "noter ce point", None),
+            "nav_goto_next": (lambda: self._nav("goto", "next"), lambda: "aller au point suivant",
+                              lambda: bool(self._navState and
+                                           self._navState.goal_status == "active")),
+            "nav_goto_home": (lambda: self._nav("goto", "home"), lambda: "retour au depart",
+                              None),
+            "nav_cancel": (lambda: self._nav("cancel"), lambda: "annuler le but", None),
             "nav_unavailable": (lambda: self.get_logger().warn(
                 "navigation : pas encore de lot NAV"), lambda: "(lot NAV a venir)", None),
         }
@@ -1171,6 +1194,27 @@ class TeleopNode(Node):
                 self.get_logger().warn("ACQ : detect_enabled refuse par %s" % self._trackNode)
             self._publishState()
         self._flipSet.call_async(req).add_done_callback(done)
+
+    def _navSub(self):
+        return self._navState.submode if self._navState is not None else ""
+
+    def _nav(self, command, arg=""):
+        """Commande au superviseur de navigation ; reponse au journal (et donc au HUD)."""
+        if not self._navCli.service_is_ready():
+            self.get_logger().warn("navigation : %s absent (conteneur navigation arrete ?)"
+                                   % self._navCli.srv_name)
+            return
+
+        def done(f):
+            try:
+                r = f.result()
+                (self.get_logger().info if r.success else self.get_logger().warn)(
+                    "navigation %s : %s" % (command, r.message))
+            except Exception as exc:                                # noqa: BLE001
+                self.get_logger().warn("navigation %s echouee : %s" % (command, exc))
+            self._publishState()
+        self._navCli.call_async(NavCommand.Request(command=command, arg=arg)) \
+            .add_done_callback(done)
 
     def _actFlip(self):
         """Bascule le miroir HORIZONTAL de l'image (`flip` de tracking_node : h <-> none).

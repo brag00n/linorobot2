@@ -1,0 +1,17 @@
+# ============================================================================
+# cmd_vel_mux -- priorites des producteurs de consignes (format twist_mux)
+# ============================================================================
+# Les NOMS des sujets ne sont PAS ici : control.launch.py les pousse depuis le wiring
+# `control` du robot (layout.yaml). Ici : qui a la main sur qui, et combien de temps une
+# source muette garde la main.
+#   manette 100 > calibration 90 > navigation 10 : pousser le stick reprend TOUJOURS la main.
+#   timeout 0,5 s : la navigation repart 0,5 s apres le relachement du stick (la manette se
+#   tait alors -- trois zeros puis silence). Le chien de garde du driver (0,25 s) arrete le
+#   robot si plus personne ne parle.
+cmd_vel_mux:
+  ros__parameters:
+    output_topic: /cmd_vel
+    topics:
+      teleop:      {topic: /cmd_vel_teleop, timeout: 0.5, priority: 100}
+      calibration: {topic: /cmd_vel_calib,  timeout: 0.5, priority: 90}
+      navigation:  {topic: /cmd_vel_nav,    timeout: 0.5, priority: 10}

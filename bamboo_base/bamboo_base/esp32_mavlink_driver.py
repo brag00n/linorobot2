@@ -58,7 +58,7 @@ from sensor_msgs.msg import Imu, BatteryState, MagneticField, JointState
 from geometry_msgs.msg import Twist, TransformStamped
 from tf2_ros import TransformBroadcaster
 
-from bamboo_interfaces.msg import WheelRpm, Esp32Status, RobotMode, TeleopState
+from bamboo_interfaces.msg import WheelRpm, Esp32Status, NavState, RobotMode, TeleopState
 from bamboo_base.driver_diagnostics import DriverDiagnostics
 from bamboo_base.driver_motion import DriverMotion
 
@@ -310,12 +310,15 @@ class Esp32MavlinkDriver(Node):
         # pas un mode perime a l'ecran.
         self._hmiMode = ""
         self._hmiBusy = ""
+        self._hmiNav = ""             # sous-mode NAV (bamboo_navigation), "" hors navigation
         self._hmiSent = None
         if bool(g("hmi_text_enabled")):
             latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                  durability=DurabilityPolicy.TRANSIENT_LOCAL)
             self.create_subscription(RobotMode, "/bamboo/mode", self._on_robot_mode, latched)
             self.create_subscription(TeleopState, "/teleop/state", self._on_teleop_state,
+                                     latched)
+            self.create_subscription(NavState, "/navigation/state", self._on_nav_state,
                                      latched)
             self.hmi_timer = self.create_timer(1.0, self._send_hmi)
 
@@ -572,8 +575,20 @@ class Esp32MavlinkDriver(Node):
             self._hmiBusy = busy
             self._send_hmi()
 
+    # Sous-mode NAV -> suffixe OLED ("Ready NAV-EXPLO"). idle ne dit rien de plus que NAV.
+    _NAV_HMI = {"exploration": "EXPLO", "navigation": "AUTO"}
+
+    def _on_nav_state(self, m):
+        nav = self._NAV_HMI.get(m.submode, "")
+        if nav != self._hmiNav:
+            self._hmiNav = nav
+            self._send_hmi()
+
     def _send_hmi(self):
-        text = self._hmiBusy or self._hmiMode
+        mode = self._hmiMode
+        if mode == "NAV" and self._hmiNav:
+            mode = "NAV-" + self._hmiNav
+        text = self._hmiBusy or mode
         if not text:
             return
         sender = getattr(self.link, "sendHmiText", None)

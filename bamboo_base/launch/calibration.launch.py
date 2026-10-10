@@ -32,13 +32,18 @@ def _setup(context, *args, **kwargs):
         return [LogInfo(msg="calibration : desactivee pour %s (calibration_enabled=false)"
                             % robot)]
     out = os.path.dirname(os.path.realpath(canonical))
+    # Consigne vers le MULTIPLEXEUR (cmd_vel_calib du wiring `control`), sauf argument explicite.
+    from bamboo_base.layout import loadWiring
+    wiring, _notes = loadWiring(os.path.join(out, "layout.yaml"))
+    cmd_topic = LaunchConfiguration("cmd_vel_topic").perform(context) or \
+        wiring["control"]["cmd_vel_calib"]
     procedure = os.path.join(get_package_share_directory("bamboo_base"), "config",
                              "calibration.yaml")
     return [
         LogInfo(msg="calibration : %s, candidats dans %s" % (robot, out)),
         Node(package="bamboo_base", executable="calibration_node", name="bamboo_calibration",
              parameters=[canonical, procedure, {"robot": robot, "output_dir": out}],
-             remappings=[("cmd_vel", LaunchConfiguration("cmd_vel_topic"))],
+             remappings=[("cmd_vel", cmd_topic)],
              output="screen"),
     ]
 
@@ -48,7 +53,8 @@ def generate_launch_description():
         DeclareLaunchArgument("robot", description="Nom du robot, OBLIGATOIRE."),
         DeclareLaunchArgument("robot_config", default_value="",
                               description="Chemin du fichier canonique (vide : convention)."),
-        DeclareLaunchArgument("cmd_vel_topic", default_value="/cmd_vel",
-                              description="Consigne publiee pendant les paliers."),
+        DeclareLaunchArgument("cmd_vel_topic", default_value="",
+                              description="Consigne publiee pendant les paliers (vide : "
+                                          "cmd_vel_calib du wiring, vers le multiplexeur)."),
         OpaqueFunction(function=_setup),
     ])

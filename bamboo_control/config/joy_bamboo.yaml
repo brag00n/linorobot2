@@ -291,11 +291,24 @@ bamboo_teleop:
           ZR_long: "flip_image"
           ZR: "speed_max_up"
           ZL: "speed_max_down"
+      # NAV (lot NAV) : deux sous-modes = deux groupes de la croix haut/bas. Tout passe par
+      # le service /nav_supervisor/command (bamboo_navigation). On CONDUIT au stick dans les
+      # deux ; en navigation, pousser le stick reprend la main sur Nav2 (multiplexeur).
+      # Appuis LONGS pour ce qui demarre une pile ou enregistre quelque chose.
       navigation:
-        groups: "nav"
-        nav:
+        groups: "exploration;navigation"
+        exploration:
           ZR_long: "flip_image"
-          A: "nav_unavailable"
+          A_long: "nav_explore"
+          X_long: "nav_save_map"
+          Y_long: "nav_idle"
+        navigation:
+          ZR_long: "flip_image"
+          A_long: "nav_navigate"
+          Y_long: "nav_save_wp"
+          A: "nav_goto_next"
+          X_long: "nav_goto_home"
+          Y: "nav_cancel"
 
     # Calibration : variantes proposees par R (groupe mesure), separees par ';'.
     # Le nom devient celui du fichier candidat ET de l'entree calib.<nom> a

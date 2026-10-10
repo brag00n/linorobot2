@@ -51,7 +51,29 @@ def _readParams(path, node_key):
     return ((doc.get(node_key) or {}).get("ros__parameters", {}) or {})
 
 
-def _teleop(config, has_gimbal):
+def _wiring(canonical):
+    """Noms REELS des flux du groupe `control` (layout.yaml du robot, a cote du canonique)."""
+    from bamboo_base.layout import loadWiring
+    layout = os.path.join(os.path.dirname(os.path.realpath(canonical)), "layout.yaml")
+    wiring, notes = loadWiring(layout)
+    return wiring["control"], notes
+
+
+def _mux(control):
+    """Le multiplexeur de consignes : manette > calibration > navigation -> driver."""
+    return Node(
+        package="bamboo_control", executable="cmd_vel_mux", name="cmd_vel_mux",
+        parameters=[os.path.join(get_package_share_directory("bamboo_control"), "config",
+                                 "cmd_vel_mux.yaml"),
+                    {"output_topic": control["cmd_vel"],
+                     "topics.teleop.topic": control["cmd_vel_teleop"],
+                     "topics.calibration.topic": control["cmd_vel_calib"],
+                     "topics.navigation.topic": control["cmd_vel_nav"]}],
+        output="screen",
+    )
+
+
+def _teleop(config, has_gimbal, cmd_topic=None):
     """Le noeud bamboo_teleop, cree ICI et non dans la LaunchDescription.
 
     `has_gimbal` doit lui arriver en BOOLEEN. Passe par une LaunchConfiguration, il serait
@@ -62,18 +84,21 @@ def _teleop(config, has_gimbal):
     return Node(
         package="bamboo_control", executable="teleop_node", name="bamboo_teleop",
         parameters=[config, {"has_gimbal": has_gimbal}],
-        remappings=[("cmd_vel", LaunchConfiguration("cmd_vel_out_topic"))],
+        # La manette publie vers le MULTIPLEXEUR (cmd_vel_teleop du wiring), plus jamais vers
+        # le driver en direct : c'est ce qui lui laisse la main sur la navigation.
+        remappings=[("cmd_vel", cmd_topic or LaunchConfiguration("cmd_vel_out_topic"))],
         output="screen",
     )
 
 
-def _modeManager(has_gimbal):
+def _modeManager(has_gimbal, has_lidar=False):
     """Le gestionnaire des MODES du robot (config/modes.yaml), meme raison que _teleop :
     `has_gimbal` (prerequis `param:has_gimbal` des modes) doit arriver en BOOLEEN."""
     return Node(
         package="bamboo_control", executable="mode_manager_node", name="bamboo_mode_manager",
         parameters=[os.path.join(get_package_share_directory("bamboo_control"), "config",
-                                 "modes.yaml"), {"has_gimbal": has_gimbal}],
+                                 "modes.yaml"),
+                    {"has_gimbal": has_gimbal, "has_lidar": bool(has_lidar)}],
         output="screen",
     )
 
@@ -100,12 +125,17 @@ def _checkAxes(context, *args, **kwargs):
     # Chemin POUSSE par le bringup du robot (E2) ; vide, resolveRobotConfig cherche les
     # emplacements connus et echoue en nommant ce qu'il a essaye.
     canonical = resolveRobotConfig(robot, robot_config)
+    control, wnotes = _wiring(canonical)
+    out = LaunchConfiguration("cmd_vel_out_topic").perform(context) or control["cmd_vel_teleop"]
+    infra = [LogInfo(msg=n) for n in wnotes] + [_mux(control)]
     with open(canonical, "r", encoding="utf-8") as fh:
         doc = yaml.safe_load(fh) or {}
     params = {}
     for node_key in doc:
         params.update((doc[node_key] or {}).get("ros__parameters", {}) or {})
     axes = params.get("servo_axes")
+    # Prerequis `param:has_lidar` du mode NAV : le robot declare-t-il un lidar ?
+    has_lidar = bool((params.get("sensors") or {}).get("lidar"))
 
     if not axes:
         # ROBOT SANS NACELLE (BambooWS) : une verite materielle, pas une faute. Le noeud le
@@ -114,7 +144,7 @@ def _checkAxes(context, *args, **kwargs):
         # WARN "serveur absent" permanent qui apprendrait a ignorer le diagnostic.
         return [LogInfo(msg="manette : %s n'a pas de `servo_axes` -- robot SANS NACELLE, le "
                             "stick droit est inactif (traction et modes seuls)." % robot),
-                _teleop(_configPath(), False), _modeManager(False)]
+                _teleop(_configPath(), False, out), _modeManager(False, has_lidar)] + infra
     missing = [name for name in wanted if name not in axes]
     if missing:
         raise RuntimeError(
@@ -125,7 +155,7 @@ def _checkAxes(context, *args, **kwargs):
             % (", ".join(missing), robot, ", ".join(sorted(axes))))
     return [LogInfo(msg="manette : axes %s resolus dans servo_axes de %s"
                         % (" et ".join(wanted), robot)),
-            _teleop(_configPath(), True), _modeManager(True)]
+            _teleop(_configPath(), True, out), _modeManager(True, has_lidar)] + infra
 
 
 def generate_launch_description():
@@ -152,7 +182,7 @@ def generate_launch_description():
                         "conteneur par `privileged` + /dev:/dev. Le numero depend de "
                         "l'ordre d'appairage -- a relever a T9 de bambooSTM32YB."),
         DeclareLaunchArgument(
-            "cmd_vel_out_topic", default_value="/cmd_vel",
+            "cmd_vel_out_topic", default_value="",
             description="Topic de consigne de deplacement publie par la manette. Expose "
                         "en argument parce qu'un remappage dont la clef ne correspond a "
                         "aucun nom declare est ignore EN SILENCE : le nom logique du "
