@@ -42,7 +42,10 @@ echo "=== colcon build : $PAQUETS"
 # se MULTIPLIE avec MAKEFLAGS -- brider make seul ne bride rien. Un paquet a la fois, 3 coeurs
 # pour lui : c est ce qui evite de reproduire le 2026-09-29, ou la saturation des 4 coeurs a
 # empeche sshd de repondre a la poignee de main (machine injoignable, ping toujours a 25 ms).
-MAKEFLAGS=-j3 colcon build --packages-select $PAQUETS --symlink-install --parallel-workers 1
+# Surchargeable (BAMBOO_MAKEFLAGS=-j1) : le 2026-10-10, -j3 sur bamboo_videotracking (OpenCV +
+# composants rclcpp, plus de 1 Go par unite) a epuise la RAM pendant que la camera tournait --
+# 45 min sans sshd, redemarrage electrique.
+MAKEFLAGS=${BAMBOO_MAKEFLAGS:--j3} colcon build --packages-select $PAQUETS --symlink-install --parallel-workers 1
 
 echo "=== construit. Pour CHARGER le nouveau code, relancer le service :"
 echo "===   docker compose stop <service> && docker compose start <service>"
