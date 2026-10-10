@@ -27,7 +27,7 @@ set -eo pipefail
 # definies dereferencees), le sourcing echouerait avant la moindre compilation.
 
 WS=/root/linorobot2_ws
-PAQUETS_DEFAUT="bamboo_interfaces bamboo_base bamboo_video bamboo_videotracking bamboo_control bamboo_diagnostics bamboo_controler_YBStm32v3 bamboo4WD_V4_YBStm32_base bamboo_controler_WSEsp32 bamboo4WD_V4_WSEsp32_base bamboo_lidar bamboo_navigation"
+PAQUETS_DEFAUT="bamboo_interfaces bamboo_base bamboo_video bamboo_videotracking bamboo_control bamboo_diagnostics bamboo_controler_YBStm32v3 bamboo4WD_V4_YBStm32_base bamboo_controler_WSEsp32 bamboo4WD_V4_WSEsp32_base bamboo_lidar bamboo_navigation linorobot2_description"
 # Sources TIERCES (docker/fetch_sources.sh, third_party/) : compilees a la demande, par leur
 # nom, une fois recuperees -- ldlidar_stl_ros2 (lidar D500).
 PAQUETS="${*:-$PAQUETS_DEFAUT}"

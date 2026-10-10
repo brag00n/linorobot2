@@ -241,12 +241,15 @@
       crop_max_deg: 225.0
       range_min_m: 0.05
       range_max_m: 12.0
-      # POSE du capteur dans base_link (m, rad) : A MESURER sur le robot (essai Na).
-      # Valeurs d'attente = celles de l'amont linorobot2.
+      # POSE du capteur dans base_link (m, rad).
+      # LACET mesure le 2026-10-10 (essai Na) : obstacle DEVANT le robot vu a 270 deg par
+      # le lidar, obstacle a GAUCHE vu a 0 deg -> le 0 deg du capteur regarde la GAUCHE du
+      # robot, et le sens de balayage (scan_ccw) est bon : pose_yaw = +90 deg.
+      # x, y, z : valeurs d'attente de l'amont, A MESURER sur le robot.
       pose_x: -0.0475
       pose_y: 0.0
       pose_z: 0.125
-      pose_yaw: 0.0
+      pose_yaw: 1.5708
 
     # --- NAVIGATION (bamboo_navigation, conteneur navigation) --------------
     # Les parametres Nav2 detailles vivent dans config/navigation.yaml de ce paquet ;

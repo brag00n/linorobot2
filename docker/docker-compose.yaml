@@ -202,7 +202,19 @@ services:
     # geometrie de roue ECRITE EN DUR de l autre robot (rayon 0.04 / demi-voie 0.0625
     # au lieu de 0.03425 / 0.0825 pour le STM32). C etait le SEUL des lanceurs de ce
     # fichier a ne pas nommer son robot.
-    command: ros2 launch linorobot2_description description.launch.py robot:=${ROBOT}
+    # Espace de travail PARTAGE (lot NAV, 2026-10-10) : l'install/ de l'IMAGE porte une
+    # description figee au build de l'image -- sans les arguments xacro de pose du lidar, ni
+    # la geometrie du fichier canonique. Compiler linorobot2_description par
+    # docker/rosbuild.sh, comme les autres paquets du depot.
+    volumes:
+      - ws_build:/root/linorobot2_ws/build
+      - ws_install:/root/linorobot2_ws/install
+    command: >
+      bash -lc "cd /root/linorobot2_ws &&
+      test -f install/setup.bash || echo 'ESPACE DE TRAVAIL NON CONSTRUIT -- lancer docker/rosbuild.sh dans ce conteneur (voir son en-tete)' >&2 &&
+      test -f install/setup.bash &&
+      source install/setup.bash &&
+      ros2 launch linorobot2_description description.launch.py robot:=${ROBOT}"
       rviz:=false publish_joints:=false
 
 #--- Real robot
