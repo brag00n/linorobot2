@@ -22,6 +22,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   # --- modes du robot et manette ---
   "msg/RobotMode.msg"
   "msg/TeleopState.msg"
+  # --- navigation (lot NAV) ---
+  "msg/NavState.msg"
   # --- services ---
   "srv/Nudge.srv"
   "srv/RegisterOverlay.srv"
@@ -30,6 +32,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ChangeMode.srv"
   "srv/GetMode.srv"
   "srv/GetAvailableModes.srv"
+  "srv/NavCommand.srv"
   # --- action (apprentissage : long et annulable) ---
   "action/TrainFaces.action"
   # --- action (calibration du glissement : longue, annulable, le robot tourne) ---

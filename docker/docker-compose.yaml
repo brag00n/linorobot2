@@ -703,6 +703,27 @@ services:
       source install/setup.bash &&
       ros2 launch bamboo_lidar lidar.launch.py robot:=${ROBOT}"
 
+#--- Navigation de BambooWS (paquet bamboo_navigation, lot NAV) : EKF + Nav2 (RPP) + SLAM /
+#    AMCL pilotes par nav_supervisor (sous-modes exploration / navigation). Image `hardware`
+#    (Nav2, slam_toolbox et robot_localization y sont deja). Parametres, capteurs exiges et
+#    noms de sujets lus dans le paquet du robot. Cartes et points ecrits dans
+#    <robot>_base/maps (depot monte en ecriture). Remplace slam.real / navigation.real.
+#    A LA DEMANDE :
+#      docker compose --profile nav up -d navigation
+  navigation:
+    extends: base
+    profiles: ["esp32", "nav"]
+    restart: "no"
+    volumes:
+      - ws_build:/root/linorobot2_ws/build
+      - ws_install:/root/linorobot2_ws/install
+    command: >
+      bash -lc "cd /root/linorobot2_ws &&
+      test -f install/setup.bash || echo 'ESPACE DE TRAVAIL NON CONSTRUIT -- lancer docker/rosbuild.sh dans ce conteneur (voir son en-tete)' >&2 &&
+      test -f install/setup.bash &&
+      source install/setup.bash &&
+      ros2 launch bamboo_navigation navigation.launch.py robot:=${ROBOT}"
+
 #--- Bringup COMPLET de BambooWS en UN SEUL conteneur (paquet bamboo4WD_V4_WSEsp32_base) :
 #    JUMEAU de bringup.stm32, memes regles. ⚠️ EXCLUSIF avec bamboo_video,
 #    bamboo_videotracking et driver.esp32 (memes noeuds deux fois). Profil `bench`.

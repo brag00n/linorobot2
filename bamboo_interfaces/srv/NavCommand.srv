@@ -1,0 +1,15 @@
+# Commande de la navigation (bamboo_navigation/nav_supervisor, ~/command). Une seule porte
+# d'entree, pour la manette comme pour le MCP (ros2-action call_service) :
+#   exploration            demarrer la cartographie (slam_toolbox)
+#   navigation [carte]     naviguer sur une carte (map_server + AMCL) ; vide = carte par defaut
+#   idle                   arreter cartographie / localisation (Nav2 reste pret)
+#   save_map [nom]         sauvegarder la carte en cours (nom vide = horodate)
+#   save_waypoint [nom]    enregistrer la pose courante comme point de la carte courante
+#   goto <nom>|next|home   aller a un point ; home = le point "depart"
+#   cancel                 annuler le but en cours
+#   list                   cartes et points disponibles (dans message)
+string command
+string arg
+---
+bool success
+string message

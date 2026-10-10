@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>bamboo_navigation</name>
+  <version>0.0.0</version>
+  <description>Navigation du robot bamboo4WD_V4 (lot NAV) : EKF (odometrie roues vx + gyro), Nav2 (Regulated Pure Pursuit), cartographie slam_toolbox et localisation AMCL, pilotes par nav_supervisor (sous-modes exploration / navigation, cartes et points de navigation, diagnostic dependant des capteurs du robot). Parametres et noms de sujets lus dans le paquet du robot. Conteneur navigation, lance a la demande ; compatible linorobot2_gazebo (sim:=true).</description>
+  <maintainer email="titi28011976@users.noreply.github.com">Titi28011976</maintainer>
+  <license>Apache 2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
+  <exec_depend>diagnostic_updater</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>navigation2</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>robot_localization</exec_depend>
+  <exec_depend>bamboo_interfaces</exec_depend>
+  <exec_depend>bamboo_base</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
