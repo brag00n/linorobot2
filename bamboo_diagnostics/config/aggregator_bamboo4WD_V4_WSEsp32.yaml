@@ -5,6 +5,18 @@
 # PAS de servocam_node : ce robot n'a aucune nacelle (suivi en CAMERA FIXE).
 analyzers:
   ros__parameters:
+    # Lidar D500 (bamboo_lidar, conteneur driver.lidarD500, a la demande). Sans `expected` :
+    # le lidar n'est pas toujours lance, et un module ATTENDU absent passerait PERIME en
+    # permanence. Le diagnostic de NAVIGATION, lui, exige le scan quand il en a besoin.
+    lidar:
+      type: diagnostic_aggregator/AnalyzerGroup
+      path: lidar (D500)
+      analyzers:
+        scan:
+          type: diagnostic_aggregator/GenericAnalyzer
+          path: scan_monitor
+          startswith: [ 'scan_monitor:' ]
+          timeout: 5.0
     # --- Carte ESP32 : la base roulante et ses capteurs -------------------------------
     # MEMES taches que driver.stm32 (module commun bamboo_base.driver_diagnostics).
     driver_esp32:

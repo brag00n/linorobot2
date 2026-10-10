@@ -95,9 +95,11 @@ RUN source /opt/ros/$ROS_DISTRO/setup.bash && \
     source /root/linorobot2_ws/install/setup.bash && \
     colcon build --packages-select linorobot2_description
 RUN apt-get -y install udev
-RUN echo  'KERNEL=="ttyUSB*", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", MODE:="0666", GROUP:="dialout",  SYMLINK+="ydlidar"' >/etc/udev/rules.d/ydlidar.rules
-RUN echo  'KERNEL=="ttyACM*", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", MODE:="0666", GROUP:="dialout",  SYMLINK+="ydlidar"' >/etc/udev/rules.d/ydlidar-V2.rules
-RUN echo  'KERNEL=="ttyUSB*", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", MODE:="0666", GROUP:="dialout",  SYMLINK+="ydlidar"' >/etc/udev/rules.d/ydlidar-2303.rules
+# PLUS de regles /dev/ydlidar par VID:PID ici (lot NAV, 2026-10-10). Elles nommaient
+# `ydlidar` TOUT CP2102 -- donc aussi la carte ESP32 -- et, dans un conteneur sans udevd, elles
+# ne s'appliquaient de toute facon pas : les symlinks viennent de l'udev de l'HOTE
+# (docker/udev/99-bambooWS.rules, regles par NUMERO DE SERIE, installees par
+# install_bambooWS.sh).
 
 # Camera USB (webcam UVC 05a3:9331, MJPG/YUYV/H264) : v4l2_camera publie /image_raw,
 # web_video_server diffuse en HTTP (:8080), image_transport_plugins fournit le transport

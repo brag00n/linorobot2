@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>bamboo_lidar</name>
+  <version>0.0.0</version>
+  <description>Lidar du robot bamboo4WD_V4 (lot NAV) : lance le driver du lidar declare par le fichier canonique du robot (D500 = LDROBOT STL-19P, famille LD19, driver ldlidar_stl_ros2) avec SES parametres et SES noms de sujets (layout.yaml, wiring), et surveille le scan (diagnostic lidar). Proprietaire unique du port du lidar ; conteneur driver.lidarD500, lance a la demande.</description>
+  <maintainer email="titi28011976@users.noreply.github.com">Titi28011976</maintainer>
+  <license>Apache 2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
+  <exec_depend>diagnostic_updater</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <!-- resolveRobotConfig + loadWiring : la configuration du robot. -->
+  <exec_depend>bamboo_base</exec_depend>
+  <!-- Source TIERCE (docker/fetch_sources.sh), pas de paquet apt pour Humble. -->
+  <exec_depend>ldlidar_stl_ros2</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

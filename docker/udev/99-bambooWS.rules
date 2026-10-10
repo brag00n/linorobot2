@@ -18,8 +18,10 @@
 # de flash `flash.esp32`. Les deux referencent /dev/esp32, jamais /dev/ttyUSB*.
 SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="d6607067ef3fed11996190b80a86e0b4", MODE:="0666", GROUP:="dialout", SYMLINK+="esp32"
 
-# --- Lidar : AUCUNE regle, volontairement ----------------------------------------------
-# Le capteur n'est pas encore choisi (phase navigation). Quand il le sera, ajouter ici une
-# ligne sur SON numero de serie -- surtout s'il embarque un CP2102, sinon la collision
-# decrite plus haut revient. Gabarit a completer, laisse inactif :
+# --- Lidar : Waveshare D500 (LDROBOT STL-19P), adaptateur CP2102 -----------------------
+# MEME VID:PID que l'ESP32 (10c4:ea60) : seule le NUMERO DE SERIE les distingue. Proprietaire
+# du port : bamboo_lidar (conteneur driver.lidarD500), qui reference /dev/lidar.
+# Numero a relever lidar branche (essai Na) :
+#   udevadm info -a -n /dev/ttyUSBx | grep -E 'ATTRS\{(serial|idVendor|idProduct)\}'
+# puis decommenter et remplacer <a_relever> :
 # SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="<a_relever>", MODE:="0666", GROUP:="dialout", SYMLINK+="lidar"

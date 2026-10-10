@@ -670,6 +670,27 @@ services:
       export PYTHONPATH=/root/linorobot2_ws/src/linorobot2_hardware/tools:$$PYTHONPATH &&
       ros2 launch bamboo_controler_WSEsp32 driver.launch.py robot:=bamboo4WD_V4_WSEsp32 enable_cmd_vel:=true"
 
+#--- Lidar D500 de BambooWS (paquet bamboo_lidar, lot NAV) : LDROBOT STL-19P (famille LD19),
+#    driver ldlidar_stl_ros2 (source tierce, docker/fetch_sources.sh). Proprietaire UNIQUE de
+#    /dev/lidar (regle udev par numero de serie, docker/udev/99-bambooWS.rules). Parametres et
+#    nom du sujet lus dans le paquet du robot (canonique `lidar:`, layout.yaml `wiring/lidar`).
+#    A LA DEMANDE (pas de profil boot, pas de redemarrage automatique) :
+#      docker compose --profile lidar up -d driver.lidarD500
+  driver.lidarD500:
+    extends: base
+    profiles: ["esp32", "lidar"]
+    restart: "no"
+    volumes:
+      - /dev:/dev
+      - ws_build:/root/linorobot2_ws/build
+      - ws_install:/root/linorobot2_ws/install
+    command: >
+      bash -lc "cd /root/linorobot2_ws &&
+      test -f install/setup.bash || echo 'ESPACE DE TRAVAIL NON CONSTRUIT -- lancer docker/rosbuild.sh dans ce conteneur (voir son en-tete)' >&2 &&
+      test -f install/setup.bash &&
+      source install/setup.bash &&
+      ros2 launch bamboo_lidar lidar.launch.py robot:=${ROBOT}"
+
 #--- Bringup COMPLET de BambooWS en UN SEUL conteneur (paquet bamboo4WD_V4_WSEsp32_base) :
 #    JUMEAU de bringup.stm32, memes regles. ⚠️ EXCLUSIF avec bamboo_video,
 #    bamboo_videotracking et driver.esp32 (memes noeuds deux fois). Profil `bench`.
