@@ -9,7 +9,9 @@
     # --- lien serie (propre a la machine : /dev/esp32 sur le RPi, COMx sous Windows) ---
     port: /dev/esp32
     baud: 921600
-    publish_rate_hz: 30.0
+    # 20 Hz et non 30 (essai Nb, 2026-10-10) : avec la navigation, le RPi4 saturait ; l'EKF
+    # tourne a 20 Hz et Nav2 a 10 Hz, 30 Hz n'apportait rien. Chien de garde 0,25 s inchange.
+    publish_rate_hz: 20.0
 
     # --- frames ---
     odom_frame: odom

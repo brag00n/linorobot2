@@ -33,7 +33,8 @@ from bamboo_navigation import nav_params
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
+from launch_ros.actions import ComposableNodeContainer, Node
+from launch_ros.descriptions import ComposableNode
 
 _NAV_NODES = ["controller_server", "smoother_server", "planner_server", "behavior_server",
               "bt_navigator", "waypoint_follower", "velocity_smoother"]
@@ -77,44 +78,50 @@ def _setup(context, *args, **kwargs):
     default_map = LaunchConfiguration("map").perform(context) or str(nav.get("default_map", ""))
     smoothed = "/navigation/cmd_vel_raw"          # controleur -> smoother (interne)
 
-    lifecycle = [
-        Node(package="nav2_lifecycle_manager", executable="lifecycle_manager",
-             name="lifecycle_manager_navigation", output="screen",
-             parameters=[{"use_sim_time": use_sim_time, "autostart": False,
-                          "node_names": _NAV_NODES, "bond_timeout": 0.0}]),
-        Node(package="nav2_lifecycle_manager", executable="lifecycle_manager",
-             name="lifecycle_manager_localization", output="screen",
-             parameters=[{"use_sim_time": use_sim_time, "autostart": False,
-                          "node_names": _LOC_NODES, "bond_timeout": 0.0}]),
-    ]
     remap_tf = [("/tf", "tf"), ("/tf_static", "tf_static")]
+
+    def comp(pkg, plugin, name, params, remaps=()):
+        return ComposableNode(package=pkg, plugin=plugin, name=name, parameters=params,
+                              remappings=remap_tf + list(remaps))
+    # Nav2 en COMPOSITION : un seul processus, donc un seul participant DDS. En onze
+    # processus separes (essai Nb du 2026-10-10), la decouverte et les echanges inter-
+    # processus portaient la charge du RPi4 a 30 sur 4 coeurs, et l'EKF ratait sa cadence.
+    # Plugins = ceux de nav2_bringup (use_composition) en Humble.
+    nav2_container = ComposableNodeContainer(
+        name="nav2_container", namespace="", package="rclcpp_components",
+        executable="component_container_isolated", output="screen",
+        composable_node_descriptions=[
+            comp("nav2_controller", "nav2_controller::ControllerServer", "controller_server",
+                 [nav2], [("cmd_vel", smoothed)]),
+            comp("nav2_smoother", "nav2_smoother::SmootherServer", "smoother_server", [nav2]),
+            comp("nav2_planner", "nav2_planner::PlannerServer", "planner_server", [nav2]),
+            comp("nav2_behaviors", "behavior_server::BehaviorServer", "behavior_server",
+                 [nav2], [("cmd_vel", w["cmd_vel_nav"])]),
+            comp("nav2_bt_navigator", "nav2_bt_navigator::BtNavigator", "bt_navigator",
+                 [nav2]),
+            comp("nav2_waypoint_follower", "nav2_waypoint_follower::WaypointFollower",
+                 "waypoint_follower", [nav2]),
+            comp("nav2_velocity_smoother", "nav2_velocity_smoother::VelocitySmoother",
+                 "velocity_smoother", [nav2],
+                 [("cmd_vel", smoothed), ("cmd_vel_smoothed", w["cmd_vel_nav"])]),
+            comp("nav2_map_server", "nav2_map_server::MapServer", "map_server", [nav2],
+                 [("map", w["map"])]),
+            comp("nav2_amcl", "nav2_amcl::AmclNode", "amcl", [nav2], [("map", w["map"])]),
+            comp("nav2_lifecycle_manager", "nav2_lifecycle_manager::LifecycleManager",
+                 "lifecycle_manager_navigation",
+                 [{"use_sim_time": use_sim_time, "autostart": False,
+                   "node_names": _NAV_NODES, "bond_timeout": 0.0}]),
+            comp("nav2_lifecycle_manager", "nav2_lifecycle_manager::LifecycleManager",
+                 "lifecycle_manager_localization",
+                 [{"use_sim_time": use_sim_time, "autostart": False,
+                   "node_names": _LOC_NODES, "bond_timeout": 0.0}]),
+        ])
+    lifecycle = []
     nodes = [
         Node(package="robot_localization", executable="ekf_node", name="ekf_filter_node",
              output="screen", parameters=[ekf],
              remappings=[("odometry/filtered", w["odom"])]),
-        Node(package="nav2_controller", executable="controller_server", output="screen",
-             parameters=[nav2], remappings=remap_tf + [("cmd_vel", smoothed)]),
-        Node(package="nav2_smoother", executable="smoother_server", name="smoother_server",
-             output="screen", parameters=[nav2], remappings=remap_tf),
-        Node(package="nav2_planner", executable="planner_server", name="planner_server",
-             output="screen", parameters=[nav2], remappings=remap_tf),
-        Node(package="nav2_behaviors", executable="behavior_server", name="behavior_server",
-             output="screen", parameters=[nav2],
-             remappings=remap_tf + [("cmd_vel", w["cmd_vel_nav"])]),
-        Node(package="nav2_bt_navigator", executable="bt_navigator", name="bt_navigator",
-             output="screen", parameters=[nav2], remappings=remap_tf),
-        Node(package="nav2_waypoint_follower", executable="waypoint_follower",
-             name="waypoint_follower", output="screen", parameters=[nav2],
-             remappings=remap_tf),
-        Node(package="nav2_velocity_smoother", executable="velocity_smoother",
-             name="velocity_smoother", output="screen", parameters=[nav2],
-             remappings=remap_tf + [("cmd_vel", smoothed),
-                                    ("cmd_vel_smoothed", w["cmd_vel_nav"])]),
-        Node(package="nav2_map_server", executable="map_server", name="map_server",
-             output="screen", parameters=[nav2],
-             remappings=remap_tf + [("map", w["map"])]),
-        Node(package="nav2_amcl", executable="amcl", name="amcl", output="screen",
-             parameters=[nav2], remappings=remap_tf + [("map", w["map"])]),
+        nav2_container,
         Node(package="bamboo_navigation", executable="nav_supervisor", name="nav_supervisor",
              output="screen",
              parameters=[{"use_sim_time": use_sim_time, "maps_dir": maps_dir,

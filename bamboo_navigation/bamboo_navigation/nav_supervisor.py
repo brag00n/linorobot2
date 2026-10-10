@@ -32,7 +32,7 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.time import Time
@@ -86,14 +86,28 @@ class NavSupervisor(Node):
         self._last = {"scan": None, "imu": None, "odom": None}
         self._map = None
 
+        # TF ecoutee SEULEMENT hors idle (cf. _tfListen) : un TransformListener Python sur tout
+        # /tf, sous MultiThreadedExecutor, coutait a lui seul une bonne part des ~30 % d'un
+        # coeur que prenait le superviseur au repos (essai Nb, 2026-10-10).
         self.tf = Buffer()
-        self.tfl = TransformListener(self.tf, self)
-        self.create_subscription(LaserScan, self.scan_topic, lambda _m: self._seen("scan"),
-                                 qos_profile_sensor_data, callback_group=self._cbg)
-        self.create_subscription(Imu, self.imu_topic, lambda _m: self._seen("imu"),
-                                 qos_profile_sensor_data, callback_group=self._cbg)
-        self.create_subscription(Odometry, self.odom_topic, lambda _m: self._seen("odom"), 10,
-                                 callback_group=self._cbg)
+        self.tfl = None
+        # Fraicheur seule : abonnements BRUTS (raw=True, sans deserialisation) portes par un
+        # noeud SATELLITE tourne par un executeur MONO-fil dans son propre thread. Sous le
+        # MultiThreadedExecutor du superviseur, chacun des ~50 messages/s reveillait le pool
+        # de fils Python : ~30 % d'un coeur du RPi4 au repos (essai Nb, 2026-10-10).
+        # use_global_arguments=False : sinon le `__node:=nav_supervisor` du launch le renomme
+        # lui aussi, et le graphe montre deux /nav_supervisor (services de parametres en double).
+        self._watch = rclpy.create_node("nav_supervisor_watch", use_global_arguments=False)
+        self._watch.create_subscription(LaserScan, self.scan_topic,
+                                        lambda _m: self._seen("scan"),
+                                        qos_profile_sensor_data, raw=True)
+        self._watch.create_subscription(Imu, self.imu_topic, lambda _m: self._seen("imu"),
+                                        qos_profile_sensor_data, raw=True)
+        self._watch.create_subscription(Odometry, self.odom_topic,
+                                        lambda _m: self._seen("odom"), 1, raw=True)
+        self._watchEx = SingleThreadedExecutor()
+        self._watchEx.add_node(self._watch)
+        threading.Thread(target=self._watchEx.spin, name="nav_watch", daemon=True).start()
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(OccupancyGrid, self.map_topic,
@@ -136,7 +150,17 @@ class NavSupervisor(Node):
         t = self._last.get(k)
         return t is not None and time.monotonic() - t <= self.stale_s
 
+    def _tfListen(self, on):
+        if on and self.tfl is None:
+            self.tfl = TransformListener(self.tf, self)
+        elif not on and self.tfl is not None:
+            self.tfl.unregister()
+            self.tfl = None
+            self.tf.clear()
+
     def _tfOk(self, parent, child):
+        if self.tfl is None:
+            return False
         try:
             return self.tf.can_transform(parent, child, Time(),
                                          timeout=Duration(seconds=0.05))
@@ -152,7 +176,9 @@ class NavSupervisor(Node):
             miss.append("imu (%s muet)" % self.imu_topic)
         if not self._fresh("odom"):
             miss.append("odometrie (%s muette : EKF ?)" % self.odom_topic)
-        if not self._tfOk("odom", "base_footprint"):
+        # Au repos, la TF n'est pas ecoutee : l'EKF publie odom ET la TF, la fraicheur de
+        # odom en tient lieu.
+        if self.tfl is not None and not self._tfOk("odom", "base_footprint"):
             miss.append("TF odom->base_footprint")
         if self.submode in ("exploration", "navigation") and not self._tfOk("map", "odom"):
             miss.append("TF map->odom (%s)" % ("slam_toolbox" if self.submode == "exploration"
@@ -237,6 +263,7 @@ class NavSupervisor(Node):
         if mode == self.submode and mode != "navigation":
             return True, "deja en %s" % mode
         self._cancelGoal()
+        self._tfListen(mode in ("exploration", "navigation"))
         if mode == "exploration":
             self._manage(self.locMgr, RESET)
             ok, why = self._startSlam()
@@ -439,7 +466,9 @@ class NavSupervisor(Node):
 def main(argv=None):
     rclpy.init(args=argv)
     node = NavSupervisor()
-    ex = MultiThreadedExecutor(num_threads=4)
+    # 2 fils : un pour les commandes (qui attendent des services), un pour le reste. Chaque
+    # fil de plus se reveille aussi a chaque message, pour rien.
+    ex = MultiThreadedExecutor(num_threads=2)
     ex.add_node(node)
     try:
         ex.spin()
@@ -447,6 +476,8 @@ def main(argv=None):
         pass
     finally:
         node.shutdown()
+        node._watchEx.shutdown()
+        node._watch.destroy_node()
         node.destroy_node()
         rclpy.try_shutdown()
 
