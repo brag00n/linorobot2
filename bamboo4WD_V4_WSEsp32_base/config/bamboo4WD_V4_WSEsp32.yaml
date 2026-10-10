@@ -245,10 +245,12 @@
       # LACET mesure le 2026-10-10 (essai Na) : obstacle DEVANT le robot vu a 270 deg par
       # le lidar, obstacle a GAUCHE vu a 0 deg -> le 0 deg du capteur regarde la GAUCHE du
       # robot, et le sens de balayage (scan_ccw) est bon : pose_yaw = +90 deg.
-      # x, y, z : valeurs d'attente de l'amont, A MESURER sur le robot.
-      pose_x: -0.0475
+      # x, y, z MESURES le 2026-10-10 : 4 cm EN AVANT du centre de la caisse, centre en
+      # largeur, 17 cm AU-DESSUS DU SOL. base_link est a 0,081 m du sol (base_footprint),
+      # d'ou pose_z = 0,17 - 0,081 = 0,089 m.
+      pose_x: 0.04
       pose_y: 0.0
-      pose_z: 0.125
+      pose_z: 0.089
       pose_yaw: 1.5708
 
     # --- NAVIGATION (bamboo_navigation, conteneur navigation) --------------
