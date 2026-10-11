@@ -228,7 +228,10 @@ class NavSupervisor(Node):
 
     def _tfListen(self, on):
         if on and self.tfl is None:
-            self.tfl = TransformListener(self.tf, self)
+            # Sur le SATELLITE (executeur mono-fil) : sous le MultiThreadedExecutor du
+            # superviseur, les ~40 messages/s de /tf portaient le noeud a 67 % d'un coeur en
+            # exploration (essai E1b, 2026-10-11). Le Buffer est sur entre fils.
+            self.tfl = TransformListener(self.tf, self._watch)
         elif not on and self.tfl is not None:
             self.tfl.unregister()
             self.tfl = None
