@@ -1046,6 +1046,11 @@ class TeleopNode(Node):
             # --- mode NAV : sous-modes, cartes, points (nav_supervisor) ----------------
             "nav_explore": (lambda: self._nav("exploration"), lambda: "explorer (carte)",
                             lambda: self._navSub() == "exploration"),
+            # Exploration AUTOMATIQUE (frontieres, retour au depart) : bascule marche / arret.
+            "nav_auto_explore": (lambda: self._nav("auto_explore"),
+                                 lambda: "explorer seul",
+                                 lambda: bool(self._navState and self._navState.detail
+                                              .startswith("exploration auto :"))),
             "nav_save_map": (lambda: self._nav("save_map"), lambda: "sauver la carte", None),
             "nav_idle": (lambda: self._nav("idle"), lambda: "arreter", None),
             "nav_navigate": (lambda: self._nav("navigation"),

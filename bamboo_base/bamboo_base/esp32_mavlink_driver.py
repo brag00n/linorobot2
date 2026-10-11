@@ -582,6 +582,8 @@ class Esp32MavlinkDriver(Node):
 
     def _on_nav_state(self, m):
         nav = self._NAV_HMI.get(m.submode, "")
+        if m.submode == "exploration" and m.detail.startswith("exploration auto :"):
+            nav = "AUTEX"             # exploration AUTOMATIQUE en cours (robot autonome)
         if nav != self._hmiNav:
             self._hmiNav = nav
             self._send_hmi()

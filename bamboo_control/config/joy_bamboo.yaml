@@ -303,6 +303,7 @@ bamboo_teleop:
         groups: "exploration;navigation"
         exploration:
           ZR_long: "flip_image"
+          A: "nav_auto_explore"
           A_long: "nav_explore"
           X_long: "nav_save_map"
           Y_long: "nav_idle"
