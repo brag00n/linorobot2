@@ -270,7 +270,10 @@ class NavSupervisor(Node):
             if not ok:
                 return False, why
             self.map_name = map_io.stamp_name("exploration")
-            self._manage(self.navMgr, STARTUP)
+            # Nav2 RESTE ARRETE en exploration : on y conduit a la manette, aucun but n'est
+            # donne, et ses costmaps + son controleur coutaient ~50 % d'un coeur du RPi4 pour
+            # rien -- assez pour affamer le lidar (scan juge muet) au demarrage (2026-10-11).
+            self._manage(self.navMgr, RESET)
         elif mode == "navigation":
             maps = map_io.list_maps(self.maps_dir)
             name = arg or self.default_map or (maps[0] if maps else "")
