@@ -59,7 +59,10 @@ bt_navigator:
     global_frame: map
     robot_base_frame: base_footprint
     odom_topic: odom
-    bt_loop_duration: 10
+    # 50 ms (20 Hz) et non 10 ms : a 100 Hz l'arbre ratait sa cadence en permanence (2318
+    # alertes en 4 min, essai E2 du 2026-10-11) et volait du CPU a l'EKF. A 0,2 m/s, 20 Hz
+    # suffisent largement (le controleur tourne a 10 Hz).
+    bt_loop_duration: 50
     default_server_timeout: 20
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node

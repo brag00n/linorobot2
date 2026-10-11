@@ -44,7 +44,7 @@ from diagnostic_updater import Updater
 from geometry_msgs.msg import (Pose, PoseArray, PoseStamped, PoseWithCovarianceStamped,
                                Twist)
 from std_msgs.msg import Bool
-from nav2_msgs.action import NavigateToPose
+from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from nav2_msgs.srv import ManageLifecycleNodes
 from nav_msgs.msg import Odometry
 from nav_msgs.srv import GetMap
@@ -204,6 +204,9 @@ class NavSupervisor(Node):
                                             callback_group=self._cbg)
         self.nav = ActionClient(self, NavigateToPose, "navigate_to_pose",
                                 callback_group=self._cbg)
+        # Pour verifier qu'une frontiere est ATTEIGNABLE avant d'y envoyer le robot.
+        self.planner = ActionClient(self, ComputePathToPose, "compute_path_to_pose",
+                                    callback_group=self._cbg)
         self.create_service(NavCommand, "~/command", self._onCommand, callback_group=self._cbg)
 
         self.diag = Updater(self)
@@ -696,7 +699,7 @@ class NavSupervisor(Node):
         return fut.result().map
 
     def _autoTick(self):
-        if self.auto in ("off", "done"):
+        if self.auto in ("off", "done", "finishing"):
             return
         now = time.monotonic()
         # --- garde-fous, du plus grave au moins grave ---
@@ -782,14 +785,35 @@ class NavSupervisor(Node):
                                      (m.info.origin.position.x, m.info.origin.position.y),
                                      min_size_m=self.auto_min_frontier_m)
         self._autoKnown, _occ = map_io.map_stats(m.info.width, m.info.height, m.data)
-        f = frontier.choose(fs, pose[:2], self._autoAvoid)
         self._autoFronts = len(fs)
         self._publishMarks(fs)
+        # On ne vise qu'une frontiere ATTEIGNABLE : demander d'abord un chemin au planificateur
+        # (< 1 s). Essai E2 (2026-10-11) : 4 frontieres sur 6 etaient sous des meubles (le
+        # lidar, a 17 cm, voit sous un canape ; le robot n'y passe pas) ; Nav2 y perdait ~30 s
+        # chacune en manoeuvres de reprise avant d'abandonner.
+        f = None
+        for _try in range(4):
+            cand = frontier.choose(fs, pose[:2], self._autoAvoid)
+            if cand is None:
+                break
+            ok_plan = self._planOk(cand["x"], cand["y"])
+            if ok_plan is not False:           # chemin trouve, ou verification impossible
+                f = cand
+                break
+            self._autoAvoid.append((cand["x"], cand["y"]))
+            self.get_logger().info("exploration auto : frontiere (%.2f, %.2f) INATTEIGNABLE, "
+                                   "ecartee" % (cand["x"], cand["y"]))
+            if self.auto != "running":
+                return
         if f is None:
+            if frontier.choose(fs, pose[:2], self._autoAvoid) is not None:
+                return                         # d'autres candidates : au tour suivant
             self._autoNoFront += 1
-            self.detail = "exploration auto : plus de frontiere (%d/2)" % self._autoNoFront
+            reason = "carte complete" if not fs else \
+                "plus de frontiere atteignable (%d ecartees)" % len(fs)
+            self.detail = "exploration auto : %s (%d/2)" % (reason, self._autoNoFront)
             if self._autoNoFront >= 2:
-                self._autoHoming("carte complete")
+                self._autoHoming(reason)
             return
         self._autoNoFront = 0
         yaw = math.atan2(f["y"] - pose[1], f["x"] - pose[0])
@@ -807,6 +831,28 @@ class NavSupervisor(Node):
         self.get_logger().info("exploration auto : frontiere %d -> (%.2f, %.2f), %.2f m de "
                                "large, %d en vue" % (self._autoN, f["x"], f["y"],
                                                      f["size_m"], len(fs)))
+
+    def _planOk(self, x, y):
+        """Le planificateur trouve-t-il un chemin jusqu'a (x, y) ? None si on ne sait pas."""
+        if not self.planner.wait_for_server(timeout_sec=1.0):
+            return None
+        g = ComputePathToPose.Goal()
+        g.goal.header.frame_id = "map"
+        g.goal.header.stamp = self.get_clock().now().to_msg()
+        g.goal.pose.position.x, g.goal.pose.position.y = float(x), float(y)
+        g.goal.pose.orientation.w = 1.0
+        g.use_start = False
+        fut = self.planner.send_goal_async(g)
+        if not self._wait(fut, 3.0):
+            return None
+        h = fut.result()
+        if not h.accepted:
+            return None
+        res = h.get_result_async()
+        if not self._wait(res, 5.0):
+            return None
+        r = res.result()
+        return r.status == 4 and len(r.result.path.poses) > 0      # 4 = SUCCEEDED
 
     def _autoHoming(self, why):
         if self.auto == "homing":
@@ -833,6 +879,11 @@ class NavSupervisor(Node):
                 self.detail = "exploration auto : retour impossible, " + why
 
     def _autoFinish(self):
+        # Une seule fois : l'arret de Nav2 qui suit dure ~30 s, et la boucle, qui avait vu le
+        # retour reussi, rappelait cette fin a chaque tour (carte sauvee 3 fois, essai E2).
+        if self.auto != "homing":
+            return
+        self.auto = "finishing"
         ok, msg = self.command("save_map", "")
         if ok and self._autoHome is not None:
             map_io.save_waypoint(self.maps_dir, self.map_name, "depart", *self._autoHome)
