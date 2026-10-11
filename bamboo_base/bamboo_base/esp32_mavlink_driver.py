@@ -126,6 +126,9 @@ class Esp32MavlinkDriver(Node):
         self.declare_parameter("port", "/dev/esp32", _fixed)
         self.declare_parameter("baud", 921600, _fixed)
         self.declare_parameter("publish_rate_hz", 30.0, _fixed)
+        # Periode de /joint_states + /req_states (0 = a chaque cycle). Reglable a chaud : 0
+        # pendant un reglage du PID (courbes RPM mesure / demande), 0,2 s sinon.
+        self.declare_parameter("joint_states_period_s", 0.0)
         # --- parametres PHYSIQUES : declares SANS DEFAUT ---
         # Ils appartiennent a la source unique config/robots/<robot>.yaml. Declarer un type
         # sans valeur rend l'absence detectable : _req() leve alors une erreur nommant le
@@ -284,6 +287,7 @@ class Esp32MavlinkDriver(Node):
         # --- etat odometrie integree ---
         self.x = self.y = self.th = 0.0
         self._last_t = self.get_clock().now()
+        self._last_js = None
 
         # --- diffusion de la configuration vers la SRAM de la carte ---
         # A L'INIT, et non seulement sur changement : la carte peut avoir redemarre seule
@@ -648,7 +652,15 @@ class Esp32MavlinkDriver(Node):
         # vaut un topic absent qu'un topic de zeros qu'on prendrait pour une mesure.
         rpm_meas = snap.get("motor_rpm")
         rpm_req = snap.get("motor_rpm_req")
-        if rpm_meas is not None and rpm_req is not None:
+        # Cadence BRIDEE hors reglage du PID : robot_state_publisher transforme chaque
+        # /joint_states en 4 TF de roue, envoyees a TOUS les auditeurs de /tf (Nav2, EKF,
+        # superviseur, Foxglove). A 20 Hz, c'etait la moitie du trafic TF pour des roues que
+        # seul le modele 3D affiche (essai E1b, 2026-10-11).
+        js_period = float(self.get_parameter("joint_states_period_s").value)
+        js_due = (js_period <= 0.0 or self._last_js is None
+                  or (now - self._last_js).nanoseconds * 1e-9 >= js_period)
+        if rpm_meas is not None and rpm_req is not None and js_due:
+            self._last_js = now
             # position en RADIANS depuis les comptages bruts (convention respectee, c'est
             # ce que lit robot_state_publisher) ; velocity en RPM (ecart assume, cf entete).
             pos = ([c / cpr * 2.0 * math.pi for c in snap["encoders"]]

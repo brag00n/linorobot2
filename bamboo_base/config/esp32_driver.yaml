@@ -12,6 +12,10 @@
     # 20 Hz et non 30 (essai Nb, 2026-10-10) : avec la navigation, le RPi4 saturait ; l'EKF
     # tourne a 20 Hz et Nav2 a 10 Hz, 30 Hz n'apportait rien. Chien de garde 0,25 s inchange.
     publish_rate_hz: 20.0
+    # /joint_states et /req_states a 5 Hz : assez pour les roues du modele 3D, et la moitie
+    # du trafic /tf en moins (essai E1b, 2026-10-11). Mettre 0.0 pendant un REGLAGE DU PID
+    # (courbes RPM mesure / demande dans Foxglove) : pleine cadence, sans redemarrage.
+    joint_states_period_s: 0.2
 
     # --- frames ---
     odom_frame: odom
