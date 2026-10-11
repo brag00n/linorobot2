@@ -40,7 +40,8 @@ from rclpy.qos import (DurabilityPolicy, QoSProfile, ReliabilityPolicy,
                        qos_profile_sensor_data)
 from diagnostic_msgs.msg import DiagnosticStatus
 from diagnostic_updater import Updater
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
+from geometry_msgs.msg import (Pose, PoseArray, PoseStamped, PoseWithCovarianceStamped,
+                               Twist)
 from std_msgs.msg import Bool
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import ManageLifecycleNodes
@@ -181,6 +182,12 @@ class NavSupervisor(Node):
             Bool, str(d("enable_topic", "/navigation/enable").value), latched)
         self._navEnabled = None
         self._setNavEnable(False)
+        # Pour la MINI-CARTE du HUD (overlay_node) : pose du robot dans map (4 Hz, hors idle :
+        # c'est nous qui ecoutons deja la TF), depart et frontieres de l'exploration auto.
+        self.pubPose = self.create_publisher(PoseStamped, "/navigation/robot_pose", 1)
+        self.pubHome = self.create_publisher(PoseStamped, "/navigation/home", latched)
+        self.pubFronts = self.create_publisher(PoseArray, "/navigation/frontiers", latched)
+        self.create_timer(0.25, self._publishPose, callback_group=self._cbg)
 
         self.locMgr = self.create_client(ManageLifecycleNodes,
                                          "/lifecycle_manager_localization/manage_nodes",
@@ -384,6 +391,35 @@ class NavSupervisor(Node):
         q = t.transform.rotation
         return (t.transform.translation.x, t.transform.translation.y,
                 map_io.yaw_of(q.z, q.w, q.x, q.y))
+
+    def _publishPose(self):
+        if self.tfl is None:
+            return
+        try:
+            t = self.tf.lookup_transform("map", "base_footprint", Time())
+        except Exception:                                   # noqa: BLE001
+            return
+        m = PoseStamped()
+        m.header.frame_id, m.header.stamp = "map", t.header.stamp
+        m.pose.position.x = t.transform.translation.x
+        m.pose.position.y = t.transform.translation.y
+        m.pose.orientation = t.transform.rotation
+        self.pubPose.publish(m)
+
+    def _publishMarks(self, fronts=()):
+        """Depart et frontieres pour la mini-carte ; rien = efface (frame_id vide)."""
+        h = PoseStamped()
+        if self.auto != "off" and self._autoHome is not None:
+            h.header.frame_id = "map"
+            h.pose.position.x, h.pose.position.y = self._autoHome[0], self._autoHome[1]
+        self.pubHome.publish(h)
+        a = PoseArray()
+        a.header.frame_id = "map"
+        for f in fronts:
+            p = Pose()
+            p.position.x, p.position.y = f["x"], f["y"]
+            a.poses.append(p)
+        self.pubFronts.publish(a)
 
     def _setNavEnable(self, on):
         if on != self._navEnabled:
@@ -604,6 +640,7 @@ class NavSupervisor(Node):
         # hors verrou) ; elle revoit `auto` sous le verrou avant tout envoi. Essai E1 : sans
         # cela, une frontiere est partie 2 s APRES l'arret.
         self.auto, self._autoTarget = "off", None
+        self._publishMarks()
         self._autoOwnCancel = True
         self._cancelGoal()
         if nav_reset and self.submode == "exploration":
@@ -668,6 +705,7 @@ class NavSupervisor(Node):
             return
         if self._autoHome is None:
             self._autoHome = pose
+            self._publishMarks()
             self.get_logger().info("exploration auto : depart (%.2f, %.2f)" % pose[:2])
         # --- but en cours ---
         if self.goal_status == "active":
@@ -715,6 +753,7 @@ class NavSupervisor(Node):
         self._autoKnown, _occ = map_io.map_stats(m.info.width, m.info.height, m.data)
         f = frontier.choose(fs, pose[:2], self._autoAvoid)
         self._autoFronts = len(fs)
+        self._publishMarks(fs)
         if f is None:
             self._autoNoFront += 1
             self.detail = "exploration auto : plus de frontiere (%d/2)" % self._autoNoFront
@@ -768,6 +807,7 @@ class NavSupervisor(Node):
             map_io.save_waypoint(self.maps_dir, self.map_name, "depart", *self._autoHome)
         self._manage(self.navMgr, RESET)
         self.auto, self._autoTarget = "done", None
+        self._publishMarks()
         self.detail = "exploration auto TERMINEE en %.0f s : %s" % (
             time.monotonic() - self._autoT0, msg)
         self.get_logger().info(self.detail)

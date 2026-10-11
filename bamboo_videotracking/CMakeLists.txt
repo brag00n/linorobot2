@@ -21,6 +21,9 @@ find_package(std_msgs REQUIRED)
 find_package(diagnostic_updater REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(bamboo_interfaces REQUIRED)
+# Mini-carte du HUD (mode NAV) : grille, chemin et poses publies par bamboo_navigation.
+find_package(nav_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 # OpenCV >= 4.10, compile depuis les sources dans /usr/local par docker/Dockerfile, A COTE
 # du 4.5.4 d'apt. Ce n'est pas un confort : le 4.5.4 de Jammy ne sait PAS lire
 # face_detection_yunet_2023mar.onnx (mesure, six tailles d'entree essayees) et n'a pas
@@ -68,7 +71,8 @@ foreach(comp ${BAMBOO_VT_COMPONENTS})
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
   target_link_libraries(${comp} bamboo_vt_core ${OpenCV_LIBS})
   ament_target_dependencies(${comp}
-    rclcpp rclcpp_components std_msgs sensor_msgs bamboo_interfaces diagnostic_updater)
+    rclcpp rclcpp_components std_msgs sensor_msgs bamboo_interfaces diagnostic_updater
+    nav_msgs geometry_msgs)
 endforeach()
 
 rclcpp_components_register_node(tracking_node

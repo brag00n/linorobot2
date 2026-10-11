@@ -29,6 +29,8 @@
   <depend>diagnostic_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>bamboo_interfaces</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
   <!-- OpenCV est pris par find_package(OpenCV) : libopencv-dev, couche apt du lot V1.
        PAS de cv_bridge : ce paquet ne manipule que du CompressedImage, donc
        cv::imdecode / cv::imencode suffisent et la conversion sensor_msgs/Image

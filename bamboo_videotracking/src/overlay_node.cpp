@@ -20,6 +20,7 @@
 //   aurait exige trois topics de service supplementaires pour le meme resultat.
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <iomanip>
@@ -41,6 +42,10 @@
 #include <std_msgs/msg/string.hpp>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
+#include <geometry_msgs/msg/pose_array.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
+#include <nav_msgs/msg/path.hpp>
 
 #include "bamboo_interfaces/msg/mode_cmd.hpp"
 #include "bamboo_interfaces/msg/motion_compensation_state.hpp"
@@ -290,6 +295,10 @@ public:
     // 0 = on annote chaque trame. Au-dela, on saute des trames : c'est le premier levier
     // a tirer si le RPi4 sature, avant de degrader la detection.
     min_period_s_ = declare_parameter<double>("min_period_s", 0.0);
+    // MINI-CARTE du mode NAV (carte en construction ou chargee, robot, chemin, frontieres,
+    // depart), sous la carte NAV. Taille en pixels a la hauteur de reference 480.
+    minimap_enabled_ = declare_parameter<bool>("minimap_enabled", true);
+    minimap_px_ = static_cast<int>(declare_parameter<int>("minimap_size_px", 200));
     stats_period_s_ = declare_parameter<double>("stats_period_s", 1.0);
     draw_stats_ = declare_parameter<bool>("draw_stats", true);
     register_with_mux_ = declare_parameter<bool>("register_with_mux", true);
@@ -459,6 +468,56 @@ public:
         nav_ = m;
         last_nav_ = now_steady_.now();
       }, nav_opts);
+    // --- MINI-CARTE (mode NAV) ------------------------------------------------------------
+    // La grille n'est convertie en image QUE quand /map change (slam_toolbox : toutes les
+    // 2 s ; map_server : une fois) ; chaque trame du HUD ne fait qu'un melange et quelques
+    // points. Pose du robot, depart et frontieres viennent de nav_supervisor, qui ecoute deja
+    // la TF : pas de TransformListener ici, sur tout /tf a 40 Hz.
+    rclcpp::SubscriptionOptions map_opts;
+    map_opts.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
+    const auto latched = rclcpp::QoS(1).reliable().transient_local();
+    map_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
+      declare_parameter<std::string>("map_topic", "/map"), latched,
+      [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr m) {onMap(m);}, map_opts);
+    plan_sub_ = create_subscription<nav_msgs::msg::Path>(
+      declare_parameter<std::string>("plan_topic", "/plan"), rclcpp::QoS(1).reliable(),
+      [this](nav_msgs::msg::Path::ConstSharedPtr m) {
+        std::atomic_store(&plan_, m);
+        last_plan_ = now_steady_.now();
+      });
+    pose_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
+      declare_parameter<std::string>("robot_pose_topic", "/navigation/robot_pose"),
+      rclcpp::QoS(1).reliable(),
+      [this](geometry_msgs::msg::PoseStamped::ConstSharedPtr m) {
+        std::atomic_store(&pose_, m);
+        last_pose_ = now_steady_.now();
+      });
+    home_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
+      declare_parameter<std::string>("home_topic", "/navigation/home"), latched,
+      [this](geometry_msgs::msg::PoseStamped::ConstSharedPtr m) {std::atomic_store(&home_, m);},
+      map_opts);
+    fronts_sub_ = create_subscription<geometry_msgs::msg::PoseArray>(
+      declare_parameter<std::string>("frontiers_topic", "/navigation/frontiers"), latched,
+      [this](geometry_msgs::msg::PoseArray::ConstSharedPtr m) {std::atomic_store(&fronts_, m);},
+      map_opts);
+    // Reglages A CHAUD : la cadence (levier n 1 si le RPi4 sature, cf. min_period_s) et la
+    // mini-carte. Les autres parametres restent figes au demarrage.
+    params_cb_ = add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter> & ps) {
+        rcl_interfaces::msg::SetParametersResult r;
+        r.successful = true;
+        for (const auto & p : ps) {
+          if (p.get_name() == "min_period_s") {
+            min_period_s_ = p.as_double();
+          } else if (p.get_name() == "minimap_enabled") {
+            minimap_enabled_ = p.as_bool();
+          } else if (p.get_name() == "minimap_size_px") {
+            minimap_px_ = static_cast<int>(p.as_int());
+            std::atomic_store(&minimap_, std::shared_ptr<const MiniMap>());
+          }
+        }
+        return r;
+      });
     // --- carte CONTEXTUELLE (CONDUITE / CALIB) : telemetrie du driver -------------------
     // Messages minuscules a 10-30 Hz : on garde le dernier, horodate, et la carte dit
     // "--" si la source se tait (une valeur perimee doit se VOIR perimee).
@@ -1154,19 +1213,20 @@ private:
     }
   }
 
-  /// Carte NAV : sous-mode, carte, but et distance, reprises, localisation, capteurs requis
-  /// manquants (bamboo_navigation/nav_supervisor, /navigation/state).
-  void drawNavCard(cv::Mat & im, int x, int y, double u)
+  /// Carte NAV : sous-mode, carte, but et distance, reprises, localisation, message du
+  /// superviseur, capteurs requis manquants (nav_supervisor, /navigation/state). Rend le
+  /// bas de la carte, pour poser la mini-carte dessous.
+  int drawNavCard(cv::Mat & im, int x, int y, double u)
   {
     const auto n = fresh(last_nav_, 3.0) ? nav_ : nullptr;
     const int step = iu(19, u);
     const int yc = y + iu(38, u);
     const size_t nm = n ? n->missing_sensors.size() : 0;
-    const int h = iu(38 + 5 * 19 + 4, u) + static_cast<int>(nm) * iu(15, u);
+    const int h = iu(38 + 5 * 19 + 4, u) + static_cast<int>(nm + 1) * iu(15, u);
     cardFrame(im, x, y, h, "NAVIGATION", n && n->ready, u);
     if (!n) {
       cardRow(im, x, yc, u, {{10, "superviseur muet (conteneur navigation ?)", kOff}});
-      return;
+      return y + h;
     }
     cardRow(im, x, yc, u, {
       {10, "sous-mode", kLabel}, {100, n->submode, n->submode == "idle" ? kOff : kOn}});
@@ -1187,9 +1247,106 @@ private:
       {180, "loc.", kLabel},
       {225, std::isnan(n->localization_cov) ? "--" : fmt(n->localization_cov, 2), kVal}});
     int yy = yc + 5 * step;
+    // Le MESSAGE du superviseur (exploration auto, gyro recalibre, refus...) : sans lui,
+    // l'operateur ne voyait que les champs, pas ce qui vient de se passer (2026-10-11).
+    std::string det = n->detail;
+    if (det.size() > 46) {det = det.substr(0, 45) + "~";}
+    put(im, det.empty() ? "--" : det, x + iu(10, u), yy, kVal, 0.38 * u);
+    yy += iu(15, u);
     for (const auto & ms : n->missing_sensors) {
       put(im, "manque : " + ms, x + iu(10, u), yy, kBad, 0.38 * u);
       yy += iu(15, u);
+    }
+    return y + h;
+  }
+
+  /// Grille -> image (ligne 0 = y MAX, comme l'ecran), reduite pour tenir dans le carre de
+  /// la mini-carte. Appele a chaque nouvelle carte seulement.
+  void onMap(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr & m)
+  {
+    const int w = static_cast<int>(m->info.width);
+    const int h = static_cast<int>(m->info.height);
+    if (w <= 0 || h <= 0 || m->data.size() != static_cast<size_t>(w) * h) {return;}
+    cv::Mat raw(h, w, CV_8UC3);
+    for (int j = 0; j < h; ++j) {
+      auto * row = raw.ptr<cv::Vec3b>(h - 1 - j);
+      for (int i = 0; i < w; ++i) {
+        const int v = m->data[static_cast<size_t>(j) * w + i];
+        // inconnu sombre, libre gris, obstacle BLANC : lisible sur le fond fonce des cartes.
+        const uchar g = v < 0 ? 45 : (v >= 65 ? 255 : (v <= 25 ? 125 : 85));
+        row[i] = cv::Vec3b(g, g, g);
+      }
+    }
+    auto mm = std::make_shared<MiniMap>();
+    const double side = std::max(40.0, minimap_px_ * last_u_.load());
+    mm->scale = std::min(side / w, side / h);           // pixels par cellule
+    cv::resize(raw, mm->img, cv::Size(), mm->scale, mm->scale,
+      mm->scale < 1.0 ? cv::INTER_AREA : cv::INTER_NEAREST);
+    mm->res = m->info.resolution;
+    mm->ox = m->info.origin.position.x;
+    mm->oy = m->info.origin.position.y;
+    mm->h = h;
+    std::atomic_store(&minimap_, std::shared_ptr<const MiniMap>(mm));
+    last_map_ = now_steady_.now();
+  }
+
+  /// Mini-carte, nord en haut (repere map fixe) : carte, chemin, frontieres, depart, robot.
+  void drawMiniMap(cv::Mat & im, int x, int y, double u)
+  {
+    const auto mm = std::atomic_load(&minimap_);
+    const int box = iu(minimap_px_, u) + iu(30, u);
+    if (y + box > im.rows - iu(8 + 22 + 3 * 26, u)) {return;}     // pas la place : rien
+    cardFrame(im, x, y, box, "CARTE", mm && fresh(last_map_, 5.0), u);
+    if (!mm) {
+      put(im, "aucune carte (/map)", x + iu(10, u), y + iu(42, u), kOff, 0.4 * u);
+      return;
+    }
+    const int x0 = x + (iu(300, u) - mm->img.cols) / 2;
+    const int y0 = y + iu(26, u);
+    const cv::Rect r = cv::Rect(x0, y0, mm->img.cols, mm->img.rows) &
+      cv::Rect(0, 0, im.cols, im.rows);
+    if (r.width <= 0 || r.height <= 0) {return;}
+    cv::Mat roi = im(r);
+    cv::addWeighted(roi, 0.25, mm->img(cv::Rect(r.x - x0, r.y - y0, r.width, r.height)), 0.75,
+      0.0, roi);
+    // monde (m) -> pixel de l'image : x vers la droite, y vers le HAUT (d'ou le retournement)
+    auto px = [&](double wx, double wy) {
+        return cv::Point(
+          x0 + static_cast<int>(std::lround((wx - mm->ox) / mm->res * mm->scale)),
+          y0 + static_cast<int>(std::lround((mm->h - (wy - mm->oy) / mm->res) * mm->scale)));
+      };
+    const auto n = fresh(last_nav_, 3.0) ? nav_ : nullptr;
+    const auto plan = std::atomic_load(&plan_);
+    if (plan && n && n->goal_status == "active" && fresh(last_plan_, 10.0)) {
+      std::vector<cv::Point> pts;
+      for (const auto & p : plan->poses) {pts.push_back(px(p.pose.position.x, p.pose.position.y));}
+      if (pts.size() > 1) {cv::polylines(im, pts, false, kOrange, 1, cv::LINE_AA);}
+    }
+    const auto fr = std::atomic_load(&fronts_);
+    if (fr) {
+      for (const auto & p : fr->poses) {
+        cv::circle(im, px(p.position.x, p.position.y), std::max(2, iu(3, u)),
+          cv::Scalar(255, 255, 0), cv::FILLED);
+      }
+    }
+    const auto home = std::atomic_load(&home_);
+    if (home && home->header.frame_id == "map") {
+      const cv::Point c = px(home->pose.position.x, home->pose.position.y);
+      const int k = std::max(3, iu(5, u));
+      cv::line(im, c - cv::Point(k, k), c + cv::Point(k, k), kOn, 2);
+      cv::line(im, c - cv::Point(k, -k), c + cv::Point(k, -k), kOn, 2);
+    }
+    const auto pose = std::atomic_load(&pose_);
+    if (pose && fresh(last_pose_, 2.0)) {
+      const auto & q = pose->pose.orientation;
+      const double yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
+          1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+      const cv::Point c = px(pose->pose.position.x, pose->pose.position.y);
+      const int len = std::max(6, iu(12, u));
+      const cv::Point tip(c.x + static_cast<int>(std::lround(len * std::cos(yaw))),
+        c.y - static_cast<int>(std::lround(len * std::sin(yaw))));
+      cv::line(im, c, tip, cv::Scalar(0, 220, 255), 2, cv::LINE_AA);
+      cv::circle(im, c, std::max(3, iu(4, u)), kMarker, cv::FILLED);
     }
   }
 
@@ -1210,7 +1367,8 @@ private:
     } else if (mode == "SANTE") {
       drawHealthCard(im, x, y, u);
     } else if (mode == "NAV") {
-      drawNavCard(im, x, y, u);
+      const int yb = drawNavCard(im, x, y, u);
+      if (minimap_enabled_) {drawMiniMap(im, x, yb + iu(6, u), u);}
     } else {
       drawCard(im, ts, x, y, u);
     }
@@ -1224,6 +1382,7 @@ private:
     cv::Mat im = f.mat->clone();
     // FACTEUR D'ECHELLE UNIQUE de tout le HUD. 480 est la hauteur de reference du proto.
     const double u = (im.rows > 0) ? im.rows / 480.0 : 1.0;
+    last_u_ = u;                      // echelle de la mini-carte, reprise a la carte suivante
 
     if (draw_reticle_) {drawReticle(im, ts, u);}
 
@@ -1502,7 +1661,7 @@ private:
   bool enriched_reliable_{true};
   std::string mux_service_;
   int jpeg_quality_{80};
-  double min_period_s_{0.0};
+  std::atomic<double> min_period_s_{0.0};   // reglable a chaud (params_cb_)
   double stats_period_s_{1.0};
   double overlay_timeout_s_{2.0};
   double reg_period_s_{2.0};
@@ -1536,6 +1695,33 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr batt_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr calib_sub_;
   rclcpp::Subscription<bamboo_interfaces::msg::NavState>::SharedPtr nav_sub_;
+  // --- mini-carte (mode NAV) ---
+  struct MiniMap
+  {
+    cv::Mat img;                      // grille deja retournee ET reduite
+    double scale{1.0};                // pixels par cellule
+    double res{0.05};
+    double ox{0.0};
+    double oy{0.0};
+    int h{0};                         // hauteur de la grille, en cellules
+  };
+  std::shared_ptr<const MiniMap> minimap_;            // atomic_load / atomic_store
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr plan_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr home_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr fronts_sub_;
+  nav_msgs::msg::Path::ConstSharedPtr plan_;
+  geometry_msgs::msg::PoseStamped::ConstSharedPtr pose_;
+  geometry_msgs::msg::PoseStamped::ConstSharedPtr home_;
+  geometry_msgs::msg::PoseArray::ConstSharedPtr fronts_;
+  rclcpp::Time last_map_{0, 0, RCL_STEADY_TIME};
+  rclcpp::Time last_plan_{0, 0, RCL_STEADY_TIME};
+  rclcpp::Time last_pose_{0, 0, RCL_STEADY_TIME};
+  std::atomic<bool> minimap_enabled_{true};
+  std::atomic<int> minimap_px_{200};
+  std::atomic<double> last_u_{1.0};
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr params_cb_;
   bamboo_interfaces::msg::NavState::ConstSharedPtr nav_;
   rclcpp::Time last_nav_{0, 0, RCL_STEADY_TIME};
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr agg_sub_;
