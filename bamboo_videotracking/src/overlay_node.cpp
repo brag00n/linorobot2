@@ -512,8 +512,7 @@ public:
           } else if (p.get_name() == "minimap_enabled") {
             minimap_enabled_ = p.as_bool();
           } else if (p.get_name() == "minimap_size_px") {
-            minimap_px_ = static_cast<int>(p.as_int());
-            std::atomic_store(&minimap_, std::shared_ptr<const MiniMap>());
+            minimap_px_ = static_cast<int>(p.as_int());       // cache refait au dessin
           }
         }
         return r;
@@ -998,7 +997,7 @@ private:
 
   /// En-tete commun des cartes CONDUITE et CALIB : cadre, titre, batterie.
   void cardFrame(cv::Mat & im, int x, int y, int h, const std::string & title, bool dot_on,
-    double u)
+    double u, bool show_batt = true)
   {
     cardBg(im, cv::Rect(x, y, iu(300, u), h));
     dashedRect(im, cv::Rect(x, y, iu(300, u), h), kBorder, u);
@@ -1006,6 +1005,7 @@ private:
     cv::circle(im, cv::Point(x + iu(13, u), hy - iu(5, u)), std::max(2, iu(5, u)),
       dot_on ? kZoneOut : kOff, cv::FILLED);
     put(im, title, x + iu(25, u), hy, kVal, 0.5 * u);
+    if (!show_batt) {return;}
     const bool b = fresh(last_batt_, 5.0);
     put(im, b ? fmt(batt_v_, 2) + " V" : "-- V", x + iu(220, u), hy, b ? kVal : kOff, 0.45 * u);
   }
@@ -1260,8 +1260,8 @@ private:
     return y + h;
   }
 
-  /// Grille -> image (ligne 0 = y MAX, comme l'ecran), reduite pour tenir dans le carre de
-  /// la mini-carte. Appele a chaque nouvelle carte seulement.
+  /// Grille -> image (ligne 0 = y MAX, comme l'ecran), a la resolution de la grille. La
+  /// reduction a la place disponible se fait au dessin (drawMiniMap), en cache.
   void onMap(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr & m)
   {
     const int w = static_cast<int>(m->info.width);
@@ -1278,10 +1278,8 @@ private:
       }
     }
     auto mm = std::make_shared<MiniMap>();
-    const double side = std::max(40.0, minimap_px_ * last_u_.load());
-    mm->scale = std::min(side / w, side / h);           // pixels par cellule
-    cv::resize(raw, mm->img, cv::Size(), mm->scale, mm->scale,
-      mm->scale < 1.0 ? cv::INTER_AREA : cv::INTER_NEAREST);
+    mm->img = raw;
+    mm->w = w;
     mm->res = m->info.resolution;
     mm->ox = m->info.origin.position.x;
     mm->oy = m->info.origin.position.y;
@@ -1291,29 +1289,45 @@ private:
   }
 
   /// Mini-carte, nord en haut (repere map fixe) : carte, chemin, frontieres, depart, robot.
+  /// Sa TAILLE s'adapte a la place restant sous la carte NAV : `minimap_size_px` est un
+  /// plafond, pas une exigence. Seule la colonne de droite compte : en bas, elle ne porte que
+  /// les deux lignes latence / fps (les pastilles sont a GAUCHE).
   void drawMiniMap(cv::Mat & im, int x, int y, double u)
   {
     const auto mm = std::atomic_load(&minimap_);
-    const int box = iu(minimap_px_, u) + iu(30, u);
-    if (y + box > im.rows - iu(8 + 22 + 3 * 26, u)) {return;}     // pas la place : rien
-    cardFrame(im, x, y, box, "CARTE", mm && fresh(last_map_, 5.0), u);
+    const int head = iu(30, u);
+    const int bottom = im.rows - iu(8 + 2 * 22, u);
+    const int side = std::min({iu(minimap_px_, u), iu(280, u), bottom - y - head});
+    if (side < iu(60, u)) {return;}                    // vraiment pas la place : rien
+    const int box = side + head;
+    cardFrame(im, x, y, box, "CARTE", mm && fresh(last_map_, 5.0), u, false);
     if (!mm) {
       put(im, "aucune carte (/map)", x + iu(10, u), y + iu(42, u), kOff, 0.4 * u);
       return;
     }
-    const int x0 = x + (iu(300, u) - mm->img.cols) / 2;
-    const int y0 = y + iu(26, u);
-    const cv::Rect r = cv::Rect(x0, y0, mm->img.cols, mm->img.rows) &
+    // Reduction en CACHE : refaite seulement si la carte ou la place changent.
+    if (mm != mm_src_ || side != mm_side_) {
+      mm_scale_ = std::min(static_cast<double>(side) / mm->w,
+          static_cast<double>(side) / mm->h);           // pixels par cellule
+      cv::resize(mm->img, mm_scaled_, cv::Size(), mm_scale_, mm_scale_,
+        mm_scale_ < 1.0 ? cv::INTER_AREA : cv::INTER_NEAREST);
+      mm_src_ = mm;
+      mm_side_ = side;
+    }
+    const int x0 = x + (iu(300, u) - mm_scaled_.cols) / 2;
+    const int y0 = y + iu(26, u) + (side - mm_scaled_.rows) / 2;
+    const cv::Rect r = cv::Rect(x0, y0, mm_scaled_.cols, mm_scaled_.rows) &
       cv::Rect(0, 0, im.cols, im.rows);
     if (r.width <= 0 || r.height <= 0) {return;}
     cv::Mat roi = im(r);
-    cv::addWeighted(roi, 0.25, mm->img(cv::Rect(r.x - x0, r.y - y0, r.width, r.height)), 0.75,
-      0.0, roi);
+    cv::addWeighted(roi, 0.25, mm_scaled_(cv::Rect(r.x - x0, r.y - y0, r.width, r.height)),
+      0.75, 0.0, roi);
+    const double scale = mm_scale_;
     // monde (m) -> pixel de l'image : x vers la droite, y vers le HAUT (d'ou le retournement)
     auto px = [&](double wx, double wy) {
         return cv::Point(
-          x0 + static_cast<int>(std::lround((wx - mm->ox) / mm->res * mm->scale)),
-          y0 + static_cast<int>(std::lround((mm->h - (wy - mm->oy) / mm->res) * mm->scale)));
+          x0 + static_cast<int>(std::lround((wx - mm->ox) / mm->res * scale)),
+          y0 + static_cast<int>(std::lround((mm->h - (wy - mm->oy) / mm->res) * scale)));
       };
     const auto n = fresh(last_nav_, 3.0) ? nav_ : nullptr;
     const auto plan = std::atomic_load(&plan_);
@@ -1382,7 +1396,6 @@ private:
     cv::Mat im = f.mat->clone();
     // FACTEUR D'ECHELLE UNIQUE de tout le HUD. 480 est la hauteur de reference du proto.
     const double u = (im.rows > 0) ? im.rows / 480.0 : 1.0;
-    last_u_ = u;                      // echelle de la mini-carte, reprise a la carte suivante
 
     if (draw_reticle_) {drawReticle(im, ts, u);}
 
@@ -1698,8 +1711,8 @@ private:
   // --- mini-carte (mode NAV) ---
   struct MiniMap
   {
-    cv::Mat img;                      // grille deja retournee ET reduite
-    double scale{1.0};                // pixels par cellule
+    cv::Mat img;                      // grille retournee (ligne 0 = y max), 1 pixel / cellule
+    int w{0};                         // largeur de la grille, en cellules
     double res{0.05};
     double ox{0.0};
     double oy{0.0};
@@ -1720,7 +1733,11 @@ private:
   rclcpp::Time last_pose_{0, 0, RCL_STEADY_TIME};
   std::atomic<bool> minimap_enabled_{true};
   std::atomic<int> minimap_px_{200};
-  std::atomic<double> last_u_{1.0};
+  // Cache de la reduction (fil du dessin seulement) : carte source, cote, echelle.
+  std::shared_ptr<const MiniMap> mm_src_;
+  cv::Mat mm_scaled_;
+  int mm_side_{0};
+  double mm_scale_{1.0};
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr params_cb_;
   bamboo_interfaces::msg::NavState::ConstSharedPtr nav_;
   rclcpp::Time last_nav_{0, 0, RCL_STEADY_TIME};
