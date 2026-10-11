@@ -577,7 +577,7 @@ def _png(path, w, h, rows):
                  + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
 
-def _render_map(path, w, h, data, res, origin, pose):
+def _render_map(path, w, h, data, res, origin, pose, scale=1):
     """Grille d'occupation -> PNG : inconnu gris, libre blanc, occupe noir, robot en rouge
     (disque + trait de cap). Image de HAUT en bas : la ligne 0 de la grille (y min) en bas."""
     px = bytearray()
@@ -598,8 +598,15 @@ def _render_map(path, w, h, data, res, origin, pose):
             y = int(cy + k * math.sin(pose[2]))
             if 0 <= x < w and 0 <= y < h:
                 px[(y * w + x) * 3:(y * w + x) * 3 + 3] = b"\xf0\xc8\x00"
-    rows = [bytes(px[y * w * 3:(y + 1) * w * 3]) for y in range(h - 1, -1, -1)]
-    _png(path, w, h, rows)
+    # Agrandissement entier (pixels dupliques) : a 5 cm la cellule, une piece tient en
+    # 100 pixels, illisible a l'ecran.
+    k = max(1, int(scale))
+    rows = []
+    for y in range(h - 1, -1, -1):
+        line = px[y * w * 3:(y + 1) * w * 3]
+        wide = b"".join(bytes(line[i:i + 3]) * k for i in range(0, len(line), 3))
+        rows += [wide] * k
+    _png(path, w * k, h * k, rows)
 
 
 def t_map(args):
@@ -634,7 +641,7 @@ def t_map(args):
     frame = (grid.get("header", {}) or {}).get("frame_id", "map") or "map"
     pose = _robot_pose(frame)
     path = args.get("path") or os.path.join(tempfile.gettempdir(), "bamboo_map.png")
-    _render_map(path, w, h, data, res, origin, pose)
+    _render_map(path, w, h, data, res, origin, pose, scale=args.get("scale", 4))
     lines = [
         "carte     : %s (sous-mode %s, carte '%s')"
         % (used, sub or "?", (st or {}).get("map_name", "") or "-"),
@@ -775,7 +782,9 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "service": {"type": "string",
                      "description": "service GetMap explicite (defaut : selon le sous-mode)"},
-         "path": {"type": "string", "description": "chemin du PNG (defaut : temp/bamboo_map.png)"}}}},
+         "path": {"type": "string", "description": "chemin du PNG (defaut : temp/bamboo_map.png)"},
+         "scale": {"type": "integer",
+                   "description": "agrandissement entier du PNG (defaut 4 : 1 cellule = 4 px)"}}}},
     {"name": "nav_state",
      "description": "Etat du superviseur de navigation (/navigation/state) : sous-mode, "
                     "carte, but et distance restante, reprises, covariance de localisation, "
