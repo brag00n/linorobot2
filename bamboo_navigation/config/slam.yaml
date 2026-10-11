@@ -35,7 +35,10 @@ slam_toolbox:
 
     debug_logging: false
     throttle_scans: 1
-    transform_publish_period: 0.02 #if 0 never publishes odometry
+    # 0,1 s (10 Hz) et non 0,02 (50 Hz) : map->odom ne change qu'a chaque recalage (tous les
+    # 0,2 m / 0,2 rad), et chaque publication part vers TOUS les auditeurs de /tf (Nav2,
+    # EKF, superviseur, Foxglove). Nav2 tolere 0,3-0,5 s. Essai E1b, 2026-10-11.
+    transform_publish_period: 0.1 #if 0 never publishes odometry
     map_update_interval: 2.0
     resolution: 0.05
     max_laser_range: 12.0 #for rastering images
