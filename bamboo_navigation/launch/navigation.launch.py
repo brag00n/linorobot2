@@ -128,7 +128,9 @@ def _setup(context, *args, **kwargs):
                           "slam_params_file": slam, "default_map": default_map,
                           "required_sensors": required or [""],
                           "scan_topic": w["scan"], "imu_topic": w["imu"],
-                          "odom_topic": w["odom"], "map_topic": w["map"]}]),
+                          "odom_topic": w["odom"], "map_topic": w["map"],
+                          # pause de l'exploration auto quand la manette parle
+                          "teleop_topic": wiring["control"]["cmd_vel_teleop"]}]),
     ]
     info = [LogInfo(msg=n) for n in notes] + [LogInfo(
         msg="navigation : %s%s, capteurs exiges %s, scan %s, odom %s, sortie %s, cartes %s"

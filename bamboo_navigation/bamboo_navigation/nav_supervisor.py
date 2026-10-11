@@ -40,18 +40,18 @@ from rclpy.qos import (DurabilityPolicy, QoSProfile, ReliabilityPolicy,
                        qos_profile_sensor_data)
 from diagnostic_msgs.msg import DiagnosticStatus
 from diagnostic_updater import Updater
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import ManageLifecycleNodes
 from nav_msgs.msg import Odometry
 from nav_msgs.srv import GetMap
 from rcl_interfaces.srv import SetParameters
-from sensor_msgs.msg import Imu, LaserScan
+from sensor_msgs.msg import BatteryState, Imu, LaserScan
 from tf2_ros import Buffer, TransformListener
 
-from bamboo_interfaces.msg import NavState
+from bamboo_interfaces.msg import NavState, RobotMode
 from bamboo_interfaces.srv import NavCommand
-from bamboo_navigation import map_io
+from bamboo_navigation import frontier, map_io
 
 STARTUP, RESET = ManageLifecycleNodes.Request.STARTUP, ManageLifecycleNodes.Request.RESET
 
@@ -73,6 +73,15 @@ class NavSupervisor(Node):
         self.use_sim_time = bool(self.get_parameter("use_sim_time").value)
         self.stale_s = float(d("sensor_stale_s", 2.0).value)
         self.loc_cov_warn = float(d("localization_cov_warn", 0.5).value)
+        # --- exploration AUTOMATIQUE (frontieres) : reglages, cf. _autoTick ---
+        self.auto_min_frontier_m = float(d("auto_min_frontier_m", 0.30).value)
+        self.auto_goal_timeout_s = float(d("auto_goal_timeout_s", 60.0).value)
+        self.auto_max_duration_s = float(d("auto_max_duration_s", 900.0).value)
+        self.auto_resume_s = float(d("auto_resume_s", 3.0).value)
+        self.auto_battery_min_v = float(d("auto_battery_min_v", 10.8).value)
+        teleop_topic = str(d("teleop_topic", "/cmd_vel_teleop").value)
+        battery_topic = str(d("battery_topic", "/battery").value)
+        mode_topic = str(d("mode_topic", "/bamboo/mode").value)
 
         self.submode = "idle"
         self.map_name = ""
@@ -82,9 +91,28 @@ class NavSupervisor(Node):
         self.loc_cov = math.nan
         self.detail = "pret"
         self._goal = None
+        self._goalSeq = 0
+        self._cancelPending = False
         self._next = 0
         self._lock = threading.Lock()
         self._last = {"scan": None, "imu": None, "odom": None}
+        # Etat de l'exploration automatique : off | running | paused | homing | done.
+        self.auto = "off"
+        self._autoResumeTo = "running"   # etat a reprendre apres une pause manette
+        self._autoT0 = 0.0
+        self._autoHome = None            # pose de depart (map), prise au premier tour
+        self._autoTarget = None          # (x, y) du but en cours
+        self._autoGoalT = 0.0
+        self._autoOwnCancel = False      # annulation par NOUS (pause) : pas une liste noire
+        self._autoAvoid = []             # points deja tentes (echecs et buts atteints)
+        self._autoN = 0
+        self._autoNoFront = 0
+        self._autoHomeTries = 0
+        self._autoFronts = 0
+        self._autoKnown = math.nan
+        self._teleopT = 0.0              # dernier ordre NON NUL de la manette
+        self._battV = math.nan
+        self._robotMode = ""
 
         # TF ecoutee SEULEMENT hors idle (cf. _tfListen) : un TransformListener Python sur tout
         # /tf, sous MultiThreadedExecutor, coutait a lui seul une bonne part des ~30 % d'un
@@ -105,6 +133,16 @@ class NavSupervisor(Node):
                                         qos_profile_sensor_data, raw=True)
         self._watch.create_subscription(Odometry, self.odom_topic,
                                         lambda _m: self._seen("odom"), 1, raw=True)
+        # Manette, batterie et mode du robot : pour la PAUSE et les garde-fous de l'exploration
+        # automatique. Sur le satellite aussi : peu de messages, et rien a faire tourner sous
+        # le verrou du superviseur.
+        self._watch.create_subscription(Twist, teleop_topic, self._onTeleop, 5)
+        self._watch.create_subscription(BatteryState, battery_topic,
+                                        lambda m: setattr(self, "_battV", float(m.voltage)), 1)
+        self._watch.create_subscription(
+            RobotMode, mode_topic, lambda m: setattr(self, "_robotMode", m.mode),
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self._watchEx = SingleThreadedExecutor()
         self._watchEx.add_node(self._watch)
         threading.Thread(target=self._watchEx.spin, name="nav_watch", daemon=True).start()
@@ -139,6 +177,7 @@ class NavSupervisor(Node):
         self.diag.setHardwareID("navigation")
         self.diag.add("navigation", self._diagNav)
         self.create_timer(1.0, self._publish, callback_group=self._cbg)
+        self.create_timer(1.0, self._autoTick, callback_group=self._cbg)
         os.makedirs(self.maps_dir, exist_ok=True)
         self.get_logger().info("superviseur de navigation : cartes dans %s, capteurs exiges %s"
                                % (self.maps_dir, self.required or "aucun"))
@@ -146,6 +185,10 @@ class NavSupervisor(Node):
     # ------------------------------------------------------------ capteurs
     def _seen(self, k):
         self._last[k] = time.monotonic()
+
+    def _onTeleop(self, m):
+        if abs(m.linear.x) > 1e-3 or abs(m.angular.z) > 1e-3:
+            self._teleopT = time.monotonic()
 
     def _onAmcl(self, m):
         c = m.pose.covariance
@@ -267,6 +310,8 @@ class NavSupervisor(Node):
     def setSubmode(self, mode, arg=""):
         if mode == self.submode and mode != "navigation":
             return True, "deja en %s" % mode
+        if mode != "exploration" and self.auto != "off":
+            self._autoStop("sous-mode %s" % mode, nav_reset=False)
         self._cancelGoal()
         self._tfListen(mode in ("exploration", "navigation"))
         if mode == "exploration":
@@ -332,25 +377,43 @@ class NavSupervisor(Node):
         goal.pose = p
         self.goal_name, self.goal_status = wp["name"], "active"
         self.distance, self.recoveries = math.nan, 0
-        fut = self.nav.send_goal_async(goal, feedback_callback=self._onFeedback)
-        fut.add_done_callback(self._onAccepted)
+        # Buts NUMEROTES : l'accuse et le resultat d'un but ANNULE peuvent arriver apres
+        # l'envoi du suivant (exploration auto : pause manette, frontiere suivante) ; sans le
+        # numero ils ecraseraient l'etat du but en cours.
+        self._goalSeq += 1
+        seq = self._goalSeq
+        self._cancelPending = False
+        fut = self.nav.send_goal_async(
+            goal, feedback_callback=lambda fb, s=seq: self._onFeedback(fb, s))
+        fut.add_done_callback(lambda f, s=seq: self._onAccepted(f, s))
         return True, "en route vers %s" % wp["name"]
 
-    def _onFeedback(self, fb):
+    def _onFeedback(self, fb, seq):
+        if seq != self._goalSeq:
+            return
         f = fb.feedback
         self.distance = float(f.distance_remaining)
         self.recoveries = int(f.number_of_recoveries)
 
-    def _onAccepted(self, fut):
+    def _onAccepted(self, fut, seq):
         h = fut.result()
+        if seq != self._goalSeq or self._cancelPending:
+            # Perime, ou annule AVANT d'etre accepte : on l'annule des maintenant.
+            if h.accepted:
+                h.cancel_goal_async()
+            if seq == self._goalSeq:
+                self._cancelPending = False
+            return
         if not h.accepted:
             self.goal_status = "aborted"
             self.detail = "but %s refuse par Nav2" % self.goal_name
             return
         self._goal = h
-        h.get_result_async().add_done_callback(self._onResult)
+        h.get_result_async().add_done_callback(lambda f, s=seq: self._onResult(f, s))
 
-    def _onResult(self, fut):
+    def _onResult(self, fut, seq):
+        if seq != self._goalSeq:
+            return
         st = fut.result().status
         self.goal_status = {4: "succeeded", 5: "canceled", 6: "aborted"}.get(st, str(st))
         self.detail = "but %s : %s" % (self.goal_name, self.goal_status)
@@ -361,6 +424,10 @@ class NavSupervisor(Node):
         if self._goal is not None:
             self._goal.cancel_goal_async()
             self._goal = None
+            self.goal_status = "canceled"
+        elif self.goal_status == "active":
+            # Envoye mais pas encore accepte : _onAccepted l'annulera a son arrivee.
+            self._cancelPending = True
             self.goal_status = "canceled"
 
     # ------------------------------------------------------------ commandes
@@ -375,6 +442,10 @@ class NavSupervisor(Node):
     def command(self, cmd, arg):
         if cmd in ("exploration", "navigation", "idle"):
             return self.setSubmode(cmd, arg)
+        if cmd == "auto_explore":
+            if self.auto in ("running", "paused", "homing"):
+                return self._autoStop("demande")
+            return self._autoStart()
         if cmd == "save_map":
             cli = self.mapCli.get(self.submode)
             if cli is None:
@@ -432,6 +503,180 @@ class NavSupervisor(Node):
                 ", ".join(maps) or "aucune", self.map_name or "-", ", ".join(wps) or "aucun")
         return False, "commande inconnue : %s" % cmd
 
+    # ------------------------------------------------------------ exploration automatique
+    # Strategie (choisie le 2026-10-11) : aller de FRONTIERE en frontiere (limite connu /
+    # inconnu, bamboo_navigation.frontier) jusqu'a ce qu'il n'en reste plus, puis REVENIR au
+    # depart, sauver la carte et s'arreter. Le stick met en PAUSE (le multiplexeur lui donne
+    # deja la main) ; l'exploration repart seule `auto_resume_s` apres le relachement.
+    def _autoStart(self):
+        if self.submode != "exploration":
+            ok, why = self.setSubmode("exploration")
+            if not ok:
+                return False, "exploration auto impossible : " + why
+        ok, why = self._manage(self.navMgr, STARTUP)
+        if not ok:
+            return False, "exploration auto impossible : Nav2 " + why
+        self.auto, self._autoResumeTo = "running", "running"
+        self._autoT0 = time.monotonic()
+        self._autoHome, self._autoTarget = None, None
+        self._autoAvoid, self._autoN, self._autoNoFront, self._autoHomeTries = [], 0, 0, 0
+        self.get_logger().info("exploration auto : demarrage")
+        return True, "exploration auto lancee"
+
+    def _autoStop(self, why, nav_reset=True):
+        self._autoOwnCancel = True
+        self._cancelGoal()
+        if nav_reset and self.submode == "exploration":
+            # Exploration MANUELLE ensuite : Nav2 n'y sert a rien (cf. setSubmode).
+            self._manage(self.navMgr, RESET)
+        self.auto, self._autoTarget = "off", None
+        self.detail = "exploration auto arretee (%s)" % why
+        self.get_logger().info(self.detail)
+        return True, self.detail
+
+    def _autoGoto(self, name, x, y, yaw):
+        self._autoTarget, self._autoGoalT, self._autoOwnCancel = (x, y), time.monotonic(), False
+        return self._goto({"name": name, "x": x, "y": y, "yaw": yaw})
+
+    def _autoMap(self):
+        """Carte EN COURS de slam_toolbox, demandee hors du verrou (appel de service)."""
+        cli = self.mapCli["exploration"]
+        if not cli.service_is_ready():
+            return None
+        fut = cli.call_async(GetMap.Request())
+        if not self._wait(fut, 5.0):
+            return None
+        return fut.result().map
+
+    def _autoTick(self):
+        if self.auto in ("off", "done"):
+            return
+        now = time.monotonic()
+        # --- garde-fous, du plus grave au moins grave ---
+        if self._robotMode and self._robotMode != "navigation":
+            with self._lock:
+                self._autoStop("sortie du mode NAV")
+            return
+        if "lidar" in self.required and not self._fresh("scan"):
+            with self._lock:
+                self._autoStop("lidar muet")
+            return
+        if self.auto in ("running", "paused"):
+            low = not math.isnan(self._battV) and 0.0 < self._battV < self.auto_battery_min_v
+            late = now - self._autoT0 > self.auto_max_duration_s
+            if low or late:
+                self._autoHoming("batterie %.2f V" % self._battV if low else "duree maximale")
+        # --- pause manette : le stick a la main, on n'envoie RIEN ---
+        if now - self._teleopT < self.auto_resume_s:
+            if self.auto in ("running", "homing"):
+                with self._lock:
+                    self._autoResumeTo, self.auto = self.auto, "paused"
+                    self._autoOwnCancel = True
+                    self._cancelGoal()
+                    self._autoTarget = None
+                    self.detail = "exploration auto : PAUSE (manette)"
+            return
+        if self.auto == "paused":
+            self.auto = self._autoResumeTo
+        pose = self._robotPose()
+        if pose is None:
+            self.detail = "exploration auto : attente de la pose (map->base_footprint)"
+            return
+        if self._autoHome is None:
+            self._autoHome = pose
+            self.get_logger().info("exploration auto : depart (%.2f, %.2f)" % pose[:2])
+        # --- but en cours ---
+        if self.goal_status == "active":
+            if now - self._autoGoalT > self.auto_goal_timeout_s:
+                with self._lock:
+                    self.get_logger().warn("exploration auto : %s trop long, abandonne"
+                                           % self.goal_name)
+                    self._autoOwnCancel = False
+                    self._cancelGoal()
+            else:
+                return
+        # --- bilan du but termine ---
+        if self._autoTarget is not None:
+            ok = self.goal_status == "succeeded"
+            if self.auto == "homing":
+                if ok:
+                    with self._lock:
+                        self._autoFinish()
+                    return
+                self._autoHomeTries += 1
+                if self._autoHomeTries >= 3:
+                    with self._lock:
+                        self._autoStop("retour au depart impossible")
+                    return
+            elif not self._autoOwnCancel:
+                # Atteint OU echoue : dans les deux cas on ne le revise pas (un but atteint
+                # reste parfois en bord d'inconnu, et le robot y reviendrait en boucle).
+                self._autoAvoid.append(self._autoTarget)
+                if not ok:
+                    self.get_logger().info("exploration auto : %s %s, liste noire"
+                                           % (self.goal_name, self.goal_status))
+            self._autoTarget = None
+        if self.auto == "homing":
+            self._autoGotoHome()
+            return
+        # --- frontiere suivante ---
+        m = self._autoMap()
+        if m is None:
+            self.detail = "exploration auto : carte indisponible (slam_toolbox ?)"
+            return
+        grid = frontier.as_grid(m.data, m.info.width, m.info.height)
+        fs = frontier.find_frontiers(grid, m.info.resolution,
+                                     (m.info.origin.position.x, m.info.origin.position.y),
+                                     min_size_m=self.auto_min_frontier_m)
+        self._autoKnown, _occ = map_io.map_stats(m.info.width, m.info.height, m.data)
+        f = frontier.choose(fs, pose[:2], self._autoAvoid)
+        self._autoFronts = len(fs)
+        if f is None:
+            self._autoNoFront += 1
+            self.detail = "exploration auto : plus de frontiere (%d/2)" % self._autoNoFront
+            if self._autoNoFront >= 2:
+                self._autoHoming("carte complete")
+            return
+        self._autoNoFront = 0
+        self._autoN += 1
+        yaw = math.atan2(f["y"] - pose[1], f["x"] - pose[0])
+        with self._lock:
+            self._autoGoto("frontiere %d" % self._autoN, f["x"], f["y"], yaw)
+        self.detail = "exploration auto : frontiere %d, %d restantes, %.0f %% connue" % (
+            self._autoN, len(fs), 100 * self._autoKnown)
+        self.get_logger().info("exploration auto : frontiere %d -> (%.2f, %.2f), %.2f m de "
+                               "large, %d en vue" % (self._autoN, f["x"], f["y"],
+                                                     f["size_m"], len(fs)))
+
+    def _autoHoming(self, why):
+        if self.auto == "homing":
+            return
+        self.get_logger().info("exploration auto : retour au depart (%s)" % why)
+        with self._lock:
+            self._autoOwnCancel = True
+            self._cancelGoal()
+            self.auto, self._autoResumeTo, self._autoTarget = "homing", "homing", None
+            self.detail = "exploration auto : retour au depart (%s)" % why
+
+    def _autoGotoHome(self):
+        if self._autoHome is None:
+            with self._lock:
+                self._autoStop("depart inconnu")
+            return
+        x, y, yaw = self._autoHome
+        with self._lock:
+            self._autoGoto("retour depart", x, y, yaw)
+
+    def _autoFinish(self):
+        ok, msg = self.command("save_map", "")
+        if ok and self._autoHome is not None:
+            map_io.save_waypoint(self.maps_dir, self.map_name, "depart", *self._autoHome)
+        self._manage(self.navMgr, RESET)
+        self.auto, self._autoTarget = "done", None
+        self.detail = "exploration auto TERMINEE en %.0f s : %s" % (
+            time.monotonic() - self._autoT0, msg)
+        self.get_logger().info(self.detail)
+
     # ------------------------------------------------------------ etat et diagnostic
     def _publish(self):
         m = NavState()
@@ -455,6 +700,13 @@ class NavSupervisor(Node):
         stat.add("capteurs_exiges", ", ".join(self.required) or "aucun")
         stat.add("manquants", ", ".join(miss) or "aucun")
         stat.add("but", "%s %s" % (self.goal_name or "-", self.goal_status))
+        stat.add("auto", self.auto)
+        if self.auto != "off":
+            stat.add("frontieres", str(self._autoFronts))
+            stat.add("connue_pct", "%.0f" % (100 * self._autoKnown)
+                     if not math.isnan(self._autoKnown) else "-")
+            stat.add("restant_s", "%.0f" % max(0.0, self.auto_max_duration_s -
+                                               (time.monotonic() - self._autoT0)))
         lidar_missing = [x for x in miss if x.startswith("lidar")]
         if not self.required or "lidar" not in self.required:
             stat.summary(DiagnosticStatus.ERROR, "navigation impossible : ce robot n'a pas "
@@ -480,9 +732,9 @@ class NavSupervisor(Node):
 def main(argv=None):
     rclpy.init(args=argv)
     node = NavSupervisor()
-    # 2 fils : un pour les commandes (qui attendent des services), un pour le reste. Chaque
-    # fil de plus se reveille aussi a chaque message, pour rien.
-    ex = MultiThreadedExecutor(num_threads=2)
+    # 3 fils : l'exploration auto attend des services (carte, Nav2) dans sa minuterie, et une
+    # commande de la manette doit pouvoir passer pendant ce temps.
+    ex = MultiThreadedExecutor(num_threads=3)
     ex.add_node(node)
     try:
         ex.spin()
