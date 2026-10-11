@@ -448,12 +448,17 @@ services:
 #--- Groupe TRACKING : Tracking / FaceRecog / FaceTrain / ServoCam dans UN process composee
 #    (component_container_mt + intra-process). Il s'ENREGISTRE sur bamboo_video
 #    (/video/register_overlay) pour recuperer le flux et le rendre enrichi.
-#    HORS du profil `boot` DELIBEREMENT, jusqu'a T7 de bambooSTM32YB valide : ce groupe est le
-#    seul a commander les servos, et un robot qui bouge la tete tout seul au demarrage n'est
-#    pas acceptable avant d'avoir mesure les butees.
+#    DEMARRAGE AUTOMATIQUE POUR BambooWS SEULEMENT (profils `boot` + `esp32`, 2026-10-11, a la
+#    demande de l'utilisateur) : sa camera est FIXE, ce groupe n'y commande aucun servo, et le
+#    HUD sert dans tous les modes. Pour bambooSTM32YB, il reste HORS du demarrage jusqu'a T7 :
+#    c'est le seul a commander les servos de sa nacelle, et un robot qui bouge la tete tout
+#    seul au demarrage n'est pas acceptable avant d'avoir mesure les butees. Etiquete `esp32`,
+#    il est aussi ARRETE par `robot.sh use stm32` ; le lancer alors a la main :
 #      docker compose up -d bamboo_videotracking
   bamboo_videotracking:
     extends: base
+    profiles: ["hmi", "boot", "esp32"]
+    restart: unless-stopped
     volumes:
       - /dev:/dev
       # Les .onnx vivent dans l'AUTRE depot. Monte en LECTURE SEULE : ce groupe lit des
@@ -524,6 +529,11 @@ services:
       # et un `exec` exige un conteneur en marche que la garde ci-dessous fait sortir.
       - ws_build:/root/linorobot2_ws/build
       - ws_install:/root/linorobot2_ws/install
+      # Demandes de services A LA DEMANDE (option B) : le gestionnaire de modes y depose
+      # `on`/`off` par groupe (choisir NAV -> lidar + navigation) ; bamboo-ondemand.path, cote
+      # hote, l'execute sur la liste fermee de docker/ondemand/groups.conf. Ce dossier est le
+      # SEUL lien : le conteneur n'a pas acces a Docker.
+      - /run/bamboo-ondemand:/run/bamboo-ondemand
     command: >
       bash -lc "cd /root/linorobot2_ws &&
       test -f install/setup.bash || echo 'ESPACE DE TRAVAIL NON CONSTRUIT -- lancer docker/rosbuild.sh dans ce conteneur (voir son en-tete)' >&2 &&

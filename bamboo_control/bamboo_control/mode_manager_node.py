@@ -32,7 +32,9 @@ LA MANETTE NE TIENT PAS LE MODE : elle DEMANDE (croix gauche/droite -> change_mo
 script ou un futur superviseur NAV passent par les memes services : il n'y a qu'un
 detenteur de l'etat.
 """
+import os
 import threading
+import time
 
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -129,6 +131,14 @@ class ModeManager(Node):
         # Noeuds ABSENTS lors de l'entree dans le mode courant : leurs reglages sont
         # REAPPLIQUES des qu'ils apparaissent (le groupe suivi demarre souvent apres nous).
         self._pending = set()
+        # --- services A LA DEMANDE (option B, 2026-10-11) ---
+        # Le conteneur ne pilote pas Docker : il depose `on`/`off` dans <dir>/<groupe>.want ;
+        # bamboo-ondemand.path (hote) l'execute sur une liste fermee, et repond dans
+        # <groupe>.state. Sortir du mode n'arrete le groupe qu'apres `ondemand_off_delay_s` :
+        # passer par CALIB ou SANTE ne relance pas 30 s de demarrage.
+        self._odDir = str(self.declare_parameter("ondemand_dir", "/run/bamboo-ondemand").value)
+        self._odDelay = float(self.declare_parameter("ondemand_off_delay_s", 120.0).value)
+        self._odOffAt = {}            # groupe -> instant monotone de l'arret demande
         self._pendingTimer = self.create_timer(3.0, self._applyPending,
                                                callback_group=self._cbg)
 
@@ -149,9 +159,11 @@ class ModeManager(Node):
     def _why(self, name, nodes=None):
         """'' si le mode est disponible, sinon le premier prerequis manquant."""
         nodes = self._nodeNames() if nodes is None else nodes
+        ondemand = self._model[name]["ondemand"] and self._odUsable()
         for req in self._model[name]["requires"]:
             if req.startswith("node:"):
-                if req[5:] not in nodes:
+                # Mode a la demande : un noeud absent sera DEMARRE a l'entree.
+                if req[5:] not in nodes and not ondemand:
                     return "noeud %s absent" % req[5:]
             elif not self._flags.get(req[6:], False):
                 return "%s faux sur ce robot" % req[6:]
@@ -211,6 +223,7 @@ class ModeManager(Node):
     def _enterDefault(self):
         self._startTimer.cancel()
         with self._lock:
+            self._odAtStart()
             if self._mode is None:
                 why = self._why(self._default)
                 if why:
@@ -239,6 +252,7 @@ class ModeManager(Node):
             self._sendModeCmds(old["exit_modecmd"])
             faults += self._setParams(old["exit_params"])
         new = self._model[target]
+        self._odOnSwitch(previous, target)
         self._sendModeCmds(new["enter_modecmd"])
         faults += self._setParams(new["enter_params"])
         self._mode, self._degraded = target, bool(faults)
@@ -296,6 +310,7 @@ class ModeManager(Node):
         """Reapplique les reglages d'entree du mode COURANT aux noeuds apparus depuis."""
         if self._mode is None:
             return
+        self._odTick()
         self._checkDrift()
         if not self._pending:
             return
@@ -312,6 +327,62 @@ class ModeManager(Node):
             else:
                 self.get_logger().info("mode %s : reglages appliques a %s"
                                        % (self._mode, ", ".join(ready)))
+
+    # ------------------------------------------------------------ services a la demande
+    def _odUsable(self):
+        return os.path.isdir(self._odDir) and os.access(self._odDir, os.W_OK)
+
+    def _odWant(self, group, on):
+        """Depose la demande (ecriture ATOMIQUE : le .path de l'hote voit un fichier entier)."""
+        if not self._odUsable():
+            self.get_logger().warn("a la demande : %s absent (bamboo-ondemand.path non pose ?) "
+                                   "-- %s non %s" % (self._odDir, group,
+                                                     "demarre" if on else "arrete"))
+            return
+        tmp = os.path.join(self._odDir, ".%s.want.tmp" % group)
+        with open(tmp, "w") as fh:
+            fh.write("on\n" if on else "off\n")
+        os.replace(tmp, os.path.join(self._odDir, "%s.want" % group))
+        self.get_logger().info("a la demande : %s -> %s" % (group, "on" if on else "off"))
+
+    def _odState(self, group):
+        try:
+            with open(os.path.join(self._odDir, "%s.state" % group)) as fh:
+                return fh.read().rsplit(" ", 1)[0].strip()
+        except OSError:
+            return ""
+
+    def _odOnSwitch(self, previous, target):
+        new_g = self._model[target]["ondemand"]
+        if new_g:
+            self._odOffAt.pop(new_g, None)         # on y revient : pas d'arret
+            self._odWant(new_g, True)
+        old_g = self._model[previous]["ondemand"] if previous else ""
+        if old_g and old_g != new_g:
+            self._odOffAt[old_g] = time.monotonic() + self._odDelay
+            self.get_logger().info("a la demande : %s arrete dans %.0f s si on ne revient pas"
+                                   % (old_g, self._odDelay))
+
+    def _odTick(self):
+        now = time.monotonic()
+        cur = self._model[self._mode]["ondemand"] if self._mode else ""
+        for g, t in list(self._odOffAt.items()):
+            if g == cur:
+                self._odOffAt.pop(g, None)
+            elif now >= t:
+                self._odOffAt.pop(g, None)
+                self._odWant(g, False)
+
+    def _odAtStart(self):
+        """Un `on` reste d'une vie precedente (gestionnaire relance en mode NAV) : il sera
+        arrete apres le delai si on n'entre pas dans son mode."""
+        for g in {m["ondemand"] for m in self._model.values() if m["ondemand"]}:
+            try:
+                with open(os.path.join(self._odDir, "%s.want" % g)) as fh:
+                    if fh.read().strip() == "on":
+                        self._odOffAt[g] = time.monotonic() + self._odDelay
+            except OSError:
+                pass
 
     def _checkDrift(self):
         """RELIT les reglages du mode courant et reapplique ceux qui ont derive.
@@ -371,6 +442,11 @@ class ModeManager(Node):
         for n in self._order:
             why = self._why(n, nodes)
             stat.add("dispo_" + n, "oui" if not why else "non (%s)" % why)
+        for g in sorted({m["ondemand"] for m in self._model.values() if m["ondemand"]}):
+            st = self._odState(g) or ("dossier absent" if not self._odUsable() else "aucun")
+            if g in self._odOffAt:
+                st += ", arret dans %.0f s" % max(0.0, self._odOffAt[g] - time.monotonic())
+            stat.add("a_la_demande_" + g, st)
         if self._mode is None:
             stat.summary(DiagnosticStatus.WARN, "aucun mode applique (demarrage)")
         elif self._degraded:

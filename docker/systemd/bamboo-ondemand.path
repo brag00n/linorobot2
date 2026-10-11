@@ -1,0 +1,19 @@
+# bamboo-ondemand.path -- surveille les DEMANDES de services deposees par les conteneurs.
+#
+# A chaque changement de /run/bamboo-ondemand (un conteneur y a ecrit <groupe>.want), lance
+# bamboo-ondemand.service, qui demarre ou arrete le groupe (liste fermee : groups.conf).
+# MakeDirectory : le dossier existe des le boot, avant meme le premier conteneur (/run est un
+# tmpfs, donc vide a chaque demarrage : aucune demande, rien ne part tout seul).
+# Pose par install_bambooWS.sh (pas 8).    systemctl status bamboo-ondemand.path
+
+[Unit]
+Description=Bamboo4WD : demandes de services a la demande (/run/bamboo-ondemand)
+
+[Path]
+PathModified=/run/bamboo-ondemand
+MakeDirectory=yes
+DirectoryMode=0755
+Unit=bamboo-ondemand.service
+
+[Install]
+WantedBy=multi-user.target

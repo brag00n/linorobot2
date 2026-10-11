@@ -1,0 +1,16 @@
+# bamboo-ondemand.service -- execute les demandes de /run/bamboo-ondemand (cf. le .path).
+#
+# GABARIT : install_bambooWS.sh y substitue __COMPOSE_DIR__ avant de le poser dans
+# /etc/systemd/system/. N'est PAS active seul : c'est bamboo-ondemand.path qui le declenche.
+#   journalctl -u bamboo-ondemand
+
+[Unit]
+Description=Bamboo4WD : demarrage / arret des groupes de services demandes par les conteneurs
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=__COMPOSE_DIR__
+ExecStart=/bin/bash __COMPOSE_DIR__/ondemand/bamboo-ondemand.sh
+TimeoutStartSec=300

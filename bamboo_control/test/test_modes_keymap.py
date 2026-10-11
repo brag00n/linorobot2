@@ -50,6 +50,9 @@ def test_shipped_files_are_valid_and_consistent():
     model = parseModel(names, raw)
     assert modes["default_mode"] in model
     assert model["calibration"]["exit_cancel"] == ["/bamboo_calibration/calibrate"]
+    # NAV demarre la navigation A LA DEMANDE (option B) ; les autres modes n'en ont pas.
+    assert model["navigation"]["ondemand"] == "nav"
+    assert model["conduite"]["ondemand"] == ""
 
     joy = _load("joy_bamboo.yaml", "bamboo_teleop")
     km = parseKeymap({k: v for k, v in joy.items() if k.startswith("keymap.")}, ACTIONS,
@@ -86,6 +89,8 @@ def test_model_rejects_bad_entries():
         parseModel(["a"], {"a": {"enter_params": "noeud:p=1"}})
     with pytest.raises(ValueError):
         parseModel(["a", "a"], {})
+    with pytest.raises(ValueError):                       # groupe : pas de chemin ni d'espace
+        parseModel(["a"], {"a": {"ondemand": "../nav"}})
     m = parseModel(["a"], {"a": {"enter_params": "/n:p=1;/n:q=true",
                                  "enter_modecmd": "tracking=off"}})
     assert m["a"]["enter_params"] == [("/n", "p", "1"), ("/n", "q", "true")]

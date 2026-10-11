@@ -58,15 +58,19 @@ bamboo_mode_manager:
       enter_params: "/tracking_node:detect_enabled=false"
       exit_cancel: "/bamboo_calibration/calibrate"
 
-    # Navigation autonome : declaree pour sa place dans la croix, indisponible
-    # tant que le lot NAV n'a pas de bt_navigator (Nav2).
-    # Navigation autonome (bamboo_navigation, conteneur `navigation`, a la demande). Exige
-    # le superviseur ET un lidar declare par le robot (sensors.lidar -> has_lidar, pousse par
-    # control.launch.py). Deux sous-modes, choisis par la croix haut/bas : exploration
-    # (carte) et navigation (points). Quitter le mode ANNULE le but en cours.
+    # Navigation autonome (bamboo_navigation). Exige un lidar declare par le robot
+    # (sensors.lidar -> has_lidar, pousse par control.launch.py). Deux sous-modes, choisis par
+    # la croix haut/bas : exploration (carte) et navigation (points). Quitter le mode ANNULE le
+    # but en cours.
+    # A LA DEMANDE (option B, 2026-10-11) : `ondemand: nav` -- y ENTRER demande le groupe `nav`
+    # (driver.lidarD500 + navigation, docker/ondemand/groups.conf), en SORTIR l'arrete apres
+    # ondemand_off_delay_s (2 min). Le superviseur absent ne rend donc plus le mode
+    # indisponible : c'est lui qu'on demarre (~30 s), et les reglages ci-dessous lui sont
+    # appliques des qu'il apparait.
     navigation:
       label: "NAV"
       requires: "node:/nav_supervisor;param:has_lidar"
+      ondemand: "nav"
       enter_params: "/tracking_node:detect_enabled=false"
       exit_cancel: "/navigate_to_pose"
 

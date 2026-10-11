@@ -5,7 +5,7 @@ DEMARRAGE du gestionnaire, pas decouvert au premier appui sur la croix.
 """
 
 FIELDS = ("label", "requires", "enter_modecmd", "exit_modecmd",
-          "enter_params", "exit_params", "exit_cancel")
+          "enter_params", "exit_params", "exit_cancel", "ondemand")
 NEXT, PREV = "__next__", "__previous__"
 
 
@@ -55,5 +55,12 @@ def parseModel(names, raw):
                 prm, val = rest.split("=", 1)
                 m[f].append((node.strip(), prm.strip(), val.strip()))
         m["exit_cancel"] = _items(r.get("exit_cancel"))
+        # Groupe de services A LA DEMANDE (docker/ondemand/groups.conf) : entrer dans le mode
+        # le demarre, en sortir l'arrete apres un delai. Ses `node:` absents ne rendent alors
+        # plus le mode indisponible -- ils sont justement ce qu'on va demarrer.
+        m["ondemand"] = str(r.get("ondemand") or "").strip()
+        if m["ondemand"] and not all(c.isalnum() or c == "_" for c in m["ondemand"]):
+            raise ValueError("%s.ondemand : '%s' n'est pas un nom de groupe (lettres, chiffres,"
+                             " _)." % (name, m["ondemand"]))
         model[name] = m
     return model

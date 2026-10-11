@@ -60,7 +60,7 @@ STEP_NAMES=(
     "5 bluetooth service Bluetooth de l'hote (appairage manette)"
     "6 stacks    desarmer les stacks Docker concurrentes (collision de ports)"
     "7 build     construire les images du profil boot"
-    "8 systemd   unite de rattrapage bamboo4wd.service"
+    "8 systemd   unite de rattrapage bamboo4wd.service, services a la demande (mode NAV)"
     "9 verify    verifications finales"
 )
 if [ "${STEPS_ONLY:-0}" = "1" ]; then
@@ -439,6 +439,37 @@ else
     else
         warn "$DST_UNIT absent : rien ne recreera les conteneurs apres un 'compose down'"
     fi
+fi
+# Services A LA DEMANDE (option B, 2026-10-11) : le gestionnaire de modes DEPOSE une demande
+# dans /run/bamboo-ondemand (choisir NAV -> lidar + navigation), et ces deux unites
+# l'executent cote hote, sur la liste fermee de docker/ondemand/groups.conf. Le conteneur n'a
+# jamais acces a Docker.
+od_changed=0
+for u in bamboo-ondemand.path bamboo-ondemand.service; do
+    SRC_OD="$HERE/systemd/$u"
+    DST_OD="/etc/systemd/system/$u"
+    if [ ! -r "$SRC_OD" ]; then
+        warn "$SRC_OD introuvable"
+        continue
+    fi
+    want_od="$(sed "s|__COMPOSE_DIR__|$HERE|g" "$SRC_OD")"
+    if [ "$(cat "$DST_OD" 2>/dev/null)" = "$want_od" ]; then
+        ok "$DST_OD a jour"
+    elif [ "$APPLY" = "1" ]; then
+        printf '%s\n' "$want_od" > "$DST_OD" && act "$DST_OD pose" && od_changed=1
+    else
+        warn "$DST_OD absent ou obsolete : choisir NAV ne demarrera pas la navigation"
+    fi
+done
+if [ "$APPLY" = "1" ]; then
+    [ "$od_changed" = "1" ] && systemctl daemon-reload
+    systemctl enable --now bamboo-ondemand.path >/dev/null 2>&1 \
+        && act "bamboo-ondemand.path active (demandes : /run/bamboo-ondemand)" \
+        || warn "bamboo-ondemand.path : activation en echec (journalctl -u bamboo-ondemand.path)"
+elif [ "$(systemctl is-active bamboo-ondemand.path 2>/dev/null)" = "active" ]; then
+    ok "bamboo-ondemand.path actif"
+else
+    warn "bamboo-ondemand.path inactif : le mode NAV ne demarrera pas la navigation"
 fi
 echo ""
 }
