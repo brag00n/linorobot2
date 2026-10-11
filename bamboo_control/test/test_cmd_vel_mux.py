@@ -24,3 +24,14 @@ def test_priority_order():
     assert not m.offer("nav", 0.2)
     assert m.offer("teleop", 0.3)
     assert not m.offer("calib", 0.35)
+
+
+def test_gated_source_passes_only_while_enabled():
+    m = Mux({"teleop": (100, 0.5), "nav": (10, 0.5)}, gated=["nav"])
+    assert not m.offer("nav", 0.0)             # jamais autorisee : fermee
+    assert not m.set_enabled("nav", True, 0.1)
+    assert m.offer("nav", 0.2)                 # autorisee : elle pilote
+    assert m.set_enabled("nav", False, 0.3)    # coupee alors qu'elle avait la main -> STOP
+    assert not m.offer("nav", 0.35)            # residus de Nav2 apres l'arret : ignores
+    assert m.active(0.4) is None
+    assert m.offer("teleop", 0.5)              # la manette, elle, n'a pas de verrou
