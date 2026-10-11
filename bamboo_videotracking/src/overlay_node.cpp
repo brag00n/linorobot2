@@ -413,6 +413,24 @@ public:
       declare_parameter<std::string>("diagnostics_agg_topic", "/diagnostics_agg"),
       rclcpp::QoS(1).reliable(),
       [this](diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr m) {
+        // CPU du RPi et batterie : valeur + NIVEAU du diagnostic, pour la ligne du bas a
+        // droite. La couleur suit le niveau : aucun seuil n'est recopie ici.
+        for (const auto & st : m->status) {
+          const std::string & nm = st.name;
+          if (nm.size() >= 23 && nm.compare(nm.size() - 23, 23, "systeme: occupation CPU") == 0) {
+            cpu_level_ = static_cast<int>(st.level);
+            for (const auto & kv : st.values) {
+              if (kv.key == "occupation_pct") {
+                try {cpu_pct_ = std::stod(kv.value);} catch (...) {}
+              }
+            }
+            last_cpu_ = now_steady_.now();
+          } else if (nm.size() >= 10 && nm.compare(nm.size() - 10, 10, ": batterie") == 0 &&
+            nm.find("driver") != std::string::npos)
+          {
+            batt_level_ = static_cast<int>(st.level);
+          }
+        }
         std::vector<std::pair<std::string, int>> mods;
         std::vector<HealthItem> bad;
         // Modules PERIMES (plus de nouvelles : service arrete) : leurs composants gardent leur
@@ -964,6 +982,10 @@ private:
     const auto st = teleopFresh();
     if (!st) {return y;}
     const size_t n = std::min({st->keys.size(), st->labels.size(), st->active.size()});
+    // CLIGNOTEMENT a 2 Hz d'une action EN COURS (commande envoyee, reponse attendue :
+    // demarrage ou arret de Nav2 / slam_toolbox) ; vert fixe une fois active, eteint une fois
+    // arretee (demande utilisateur 2026-10-11).
+    const bool blink_on = (now_steady_.now().nanoseconds() / 250000000LL) % 2 == 0;
     const bool busy = st->busy && !st->busy_text.empty();
     const int h = iu(28, u) + static_cast<int>(n) * iu(16, u) + (busy ? iu(24, u) : 0) +
       iu(4, u);
@@ -980,9 +1002,12 @@ private:
     }
     int yy = y + iu(36, u);
     for (size_t i = 0; i < n; ++i) {
-      // Pastille d'etat : remplie = action active, cerclee = inactive ou sans etat.
+      // Pastille d'etat : remplie = action active, cerclee = inactive ou sans etat,
+      // CLIGNOTANTE = commande en cours (pending, absent des anciens messages).
+      const bool pend = i < st->pending.size() && st->pending[i];
+      const bool lit = pend ? blink_on : static_cast<bool>(st->active[i]);
       cv::circle(im, cv::Point(x + iu(14, u), yy - iu(4, u)), std::max(2, iu(4, u)),
-        st->active[i] ? kOn : kOff, st->active[i] ? cv::FILLED : 1, cv::LINE_AA);
+        lit ? kOn : kOff, lit ? cv::FILLED : 1, cv::LINE_AA);
       put(im, st->keys[i], x + iu(26, u), yy, kLabel, 0.42 * u);
       put(im, st->labels[i], x + iu(88, u), yy, kVal, 0.42 * u);
       yy += iu(16, u);
@@ -996,8 +1021,10 @@ private:
   }
 
   /// En-tete commun des cartes CONDUITE et CALIB : cadre, titre, batterie.
+  /// La TENSION n'y est plus par defaut : elle est en bas a droite, avec la CPU, colorees
+  /// par leur niveau de sante (demande utilisateur 2026-10-11). Seule SANTE la detaille.
   void cardFrame(cv::Mat & im, int x, int y, int h, const std::string & title, bool dot_on,
-    double u, bool show_batt = true)
+    double u, bool show_batt = false)
   {
     cardBg(im, cv::Rect(x, y, iu(300, u), h));
     dashedRect(im, cv::Rect(x, y, iu(300, u), h), kBorder, u);
@@ -1295,27 +1322,33 @@ private:
   void drawMiniMap(cv::Mat & im, int x, int y, double u)
   {
     const auto mm = std::atomic_load(&minimap_);
-    const int head = iu(30, u);
     const int bottom = im.rows - iu(8 + 2 * 22, u);
-    const int side = std::min({iu(minimap_px_, u), iu(280, u), bottom - y - head});
-    if (side < iu(60, u)) {return;}                    // vraiment pas la place : rien
-    const int box = side + head;
-    cardFrame(im, x, y, box, "CARTE", mm && fresh(last_map_, 5.0), u, false);
+    // Le cadre va jusqu'a la place restante (plafond : minimap_size_px + en-tete), et la
+    // carte le REMPLIT, titre compris : le titre est redessine par-dessus (demande
+    // utilisateur 2026-10-11).
+    const int box = std::min(iu(minimap_px_ + 30, u), bottom - y);
+    if (box < iu(80, u)) {return;}                     // vraiment pas la place : rien
+    const bool live = mm && fresh(last_map_, 5.0);
+    cardFrame(im, x, y, box, "CARTE", live, u);
     if (!mm) {
       put(im, "aucune carte (/map)", x + iu(10, u), y + iu(42, u), kOff, 0.4 * u);
       return;
     }
+    const int pad = iu(3, u);
+    const int aw = iu(300, u) - 2 * pad;               // zone utile = tout le cadre
+    const int ah = box - 2 * pad;
     // Reduction en CACHE : refaite seulement si la carte ou la place changent.
+    const int side = aw * 10000 + ah;                  // cle de cache (largeur, hauteur)
     if (mm != mm_src_ || side != mm_side_) {
-      mm_scale_ = std::min(static_cast<double>(side) / mm->w,
-          static_cast<double>(side) / mm->h);           // pixels par cellule
+      mm_scale_ = std::min(static_cast<double>(aw) / mm->w,
+          static_cast<double>(ah) / mm->h);             // pixels par cellule
       cv::resize(mm->img, mm_scaled_, cv::Size(), mm_scale_, mm_scale_,
         mm_scale_ < 1.0 ? cv::INTER_AREA : cv::INTER_NEAREST);
       mm_src_ = mm;
       mm_side_ = side;
     }
-    const int x0 = x + (iu(300, u) - mm_scaled_.cols) / 2;
-    const int y0 = y + iu(26, u) + (side - mm_scaled_.rows) / 2;
+    const int x0 = x + pad + (aw - mm_scaled_.cols) / 2;
+    const int y0 = y + pad + (ah - mm_scaled_.rows) / 2;
     const cv::Rect r = cv::Rect(x0, y0, mm_scaled_.cols, mm_scaled_.rows) &
       cv::Rect(0, 0, im.cols, im.rows);
     if (r.width <= 0 || r.height <= 0) {return;}
@@ -1362,6 +1395,11 @@ private:
       cv::line(im, c, tip, cv::Scalar(0, 220, 255), 2, cv::LINE_AA);
       cv::circle(im, c, std::max(3, iu(4, u)), kMarker, cv::FILLED);
     }
+    // Titre et pastille PAR-DESSUS la carte, ombres pour rester lisibles.
+    const int hy = y + iu(18, u);
+    cv::circle(im, cv::Point(x + iu(13, u), hy - iu(5, u)), std::max(2, iu(5, u)),
+      live ? kZoneOut : kOff, cv::FILLED);
+    putShadowed(im, "CARTE", cv::Point(x + iu(25, u), hy), 0.5 * u);
   }
 
   /// Carte de la colonne de droite SELON LE MODE : TRACKING -> CAM, CONDUITE et NAV ->
@@ -1508,12 +1546,34 @@ private:
       // CADENCE DU HUD (trames annotees publiees par seconde, fenetre des stats), en bas a
       // droite a la place des consignes servo (demande utilisateur 2026-10-04). Orange sous
       // 10 fps : le flux saccade et la latence affichee ne dit plus tout.
-      const std::string hud = "HUD " + fmt(last_overlay_fps_, 1) + " fps";
-      int b1 = 0;
-      const int sw = cv::getTextSize(hud, cv::FONT_HERSHEY_SIMPLEX, 0.5 * u, 1, &b1).width;
-      putShadowed(im, hud, cv::Point(im.cols - iu(8, u) - sw, im.rows - iu(10, u)), 0.5 * u);
-      if (last_overlay_fps_ < 10.0) {
-        put(im, hud, im.cols - iu(8, u) - sw, im.rows - iu(10, u), kZoneOut, 0.5 * u);
+      // Ligne du bas a droite : CPU du RPi, tension, cadence du HUD (de droite a gauche).
+      // CPU et tension prennent la couleur du NIVEAU de leur diagnostic (blanc OK, orange
+      // WARN, rouge ERROR) ; le HUD passe orange sous 10 fps.
+      // couleur : -1 = blanc (texte ombre seul), sinon niveau 1 orange / 2 rouge / 9 gris.
+      struct Seg {std::string text; int col;};
+      std::vector<Seg> segs;
+      const bool cpu_ok = fresh(last_cpu_, 15.0);
+      const int cl = cpu_level_;
+      segs.push_back({cpu_ok ? "CPU " + fmt(cpu_pct_, 0) + " %" : "CPU --",
+          cpu_ok ? (cl >= 1 ? cl : -1) : 9});
+      const bool bat_ok = fresh(last_batt_, 5.0);
+      const int bl = batt_level_;
+      segs.push_back({bat_ok ? fmt(batt_v_, 2) + " V" : "-- V",
+          bat_ok ? (bl >= 1 ? bl : -1) : 9});
+      segs.push_back({"HUD " + fmt(last_overlay_fps_, 1) + " fps",
+          last_overlay_fps_ < 10.0 ? 1 : -1});
+      int xr = im.cols - iu(8, u);
+      const int yb = im.rows - iu(10, u);
+      for (auto it = segs.rbegin(); it != segs.rend(); ++it) {
+        int base = 0;
+        const int w = cv::getTextSize(it->text, cv::FONT_HERSHEY_SIMPLEX, 0.5 * u, 1, &base).width;
+        xr -= w;
+        putShadowed(im, it->text, cv::Point(xr, yb), 0.5 * u);
+        if (it->col >= 0) {
+          put(im, it->text, xr, yb, it->col == 9 ? kOff : (it->col == 1 ? kZoneOut : kBad),
+            0.5 * u);
+        }
+        xr -= iu(14, u);
       }
     }
 
@@ -1733,6 +1793,11 @@ private:
   rclcpp::Time last_pose_{0, 0, RCL_STEADY_TIME};
   std::atomic<bool> minimap_enabled_{true};
   std::atomic<int> minimap_px_{200};
+  // CPU du RPi et niveau de sante batterie (/diagnostics_agg), pour le bas a droite.
+  std::atomic<double> cpu_pct_{0.0};
+  std::atomic<int> cpu_level_{0};
+  std::atomic<int> batt_level_{0};
+  rclcpp::Time last_cpu_{0, 0, RCL_STEADY_TIME};
   // Cache de la reduction (fil du dessin seulement) : carte source, cote, echelle.
   std::shared_ptr<const MiniMap> mm_src_;
   cv::Mat mm_scaled_;

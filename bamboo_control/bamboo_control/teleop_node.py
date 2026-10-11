@@ -329,6 +329,8 @@ class TeleopNode(Node):
         self._navCli = self.create_client(NavCommand, str(self.declare_parameter(
             "nav_command_service", "/nav_supervisor/command").value))
         self._navState = None
+        self._curAction = None        # action en cours d'execution (cf. _run)
+        self._pendingActs = set()     # actions dont la commande attend sa reponse
         self.create_subscription(NavState, "/navigation/state",
                                  lambda m: setattr(self, "_navState", m),
                                  QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
@@ -1068,7 +1070,12 @@ class TeleopNode(Node):
         }
 
     def _run(self, name):
-        self._actions[name][0]()
+        # L'action en cours d'execution : _nav() la marque EN COURS jusqu'a la reponse.
+        self._curAction = name
+        try:
+            self._actions[name][0]()
+        finally:
+            self._curAction = None
         self._publishState()
 
     def _keyValue(self, msg, key):
@@ -1149,6 +1156,7 @@ class TeleopNode(Node):
             st.keys.append(displayKey(key))
             st.labels.append(label())
             st.active.append(bool(active()) if active is not None else False)
+            st.pending.append(action in self._pendingActs)
         st.armed = self._motionOn
         st.busy = self._calBusy()
         st.busy_text = self._calText if st.busy else ""
@@ -1233,13 +1241,21 @@ class TeleopNode(Node):
         return self._navState.submode if self._navState is not None else ""
 
     def _nav(self, command, arg=""):
-        """Commande au superviseur de navigation ; reponse au journal (et donc au HUD)."""
+        """Commande au superviseur de navigation ; reponse au journal (et donc au HUD).
+
+        L'action est EN COURS (voyant clignotant au HUD) jusqu'a la reponse : le superviseur
+        ne repond qu'une fois Nav2 / slam_toolbox demarres ou arretes (10 a 30 s). Demande
+        utilisateur du 2026-10-11 : savoir que l'appui a ete pris et ou en est la fonction."""
         if not self._navCli.service_is_ready():
             self.get_logger().warn("navigation : %s absent (conteneur navigation arrete ?)"
                                    % self._navCli.srv_name)
             return
+        act = self._curAction
+        if act:
+            self._pendingActs.add(act)
 
         def done(f):
+            self._pendingActs.discard(act)
             try:
                 r = f.result()
                 (self.get_logger().info if r.success else self.get_logger().warn)(
