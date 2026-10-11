@@ -43,7 +43,7 @@ from action_msgs.srv import CancelGoal
 from diagnostic_msgs.msg import DiagnosticStatus
 from diagnostic_updater import Updater
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
-from rcl_interfaces.srv import SetParameters
+from rcl_interfaces.srv import GetParameters, SetParameters
 
 from bamboo_interfaces.msg import ModeCmd, RobotMode
 from bamboo_interfaces.srv import ChangeMode, GetAvailableModes, GetMode
@@ -67,6 +67,19 @@ def _paramValue(text):
     except ValueError:
         v.type, v.string_value = ParameterType.PARAMETER_STRING, text.strip()
         return v
+
+
+_VALUE_FIELD = {ParameterType.PARAMETER_BOOL: "bool_value",
+                ParameterType.PARAMETER_INTEGER: "integer_value",
+                ParameterType.PARAMETER_DOUBLE: "double_value",
+                ParameterType.PARAMETER_STRING: "string_value"}
+
+
+def _sameValue(want, got):
+    """Le noeud porte-t-il la valeur voulue ? (types scalaires du modele seulement)"""
+    field = _VALUE_FIELD.get(want.type)
+    return field is not None and got.type == want.type and \
+        getattr(got, field) == getattr(want, field)
 
 
 class ModeManager(Node):
@@ -111,6 +124,7 @@ class ModeManager(Node):
         self.create_service(GetAvailableModes, "/bamboo/get_available_modes",
                             self._onAvailable, callback_group=self._cbg)
         self._paramClients = {}
+        self._getClients = {}
         self._cancelClients = {}
         # Noeuds ABSENTS lors de l'entree dans le mode courant : leurs reglages sont
         # REAPPLIQUES des qu'ils apparaissent (le groupe suivi demarre souvent apres nous).
@@ -280,7 +294,10 @@ class ModeManager(Node):
 
     def _applyPending(self):
         """Reapplique les reglages d'entree du mode COURANT aux noeuds apparus depuis."""
-        if not self._pending or self._mode is None:
+        if self._mode is None:
+            return
+        self._checkDrift()
+        if not self._pending:
             return
         with self._lock:
             nodes = self._nodeNames()
@@ -295,6 +312,42 @@ class ModeManager(Node):
             else:
                 self.get_logger().info("mode %s : reglages appliques a %s"
                                        % (self._mode, ", ".join(ready)))
+
+    def _checkDrift(self):
+        """RELIT les reglages du mode courant et reapplique ceux qui ont derive.
+
+        Un noeud REDEMARRE (conteneur relance) revient avec ses valeurs PAR DEFAUT : relancer
+        bamboo_videotracking en mode NAV rallumait la detection de visages et portait son CPU
+        a 190 % (2026-10-11). Guetter sa DISPARITION du graphe ne marche pas : arrete
+        brutalement, l'ancien participant DDS y reste jusqu'a expiration de son bail, le
+        nouveau est deja la, et le nom ne quitte jamais la liste. On compare donc la VALEUR
+        reelle a la valeur du mode -- ce qui couvre aussi un reglage change a la main.
+        """
+        byNode = {}
+        for node, prm, val in self._model[self._mode]["enter_params"]:
+            if node not in self._pending:
+                byNode.setdefault(node, []).append((prm, val))
+        for node, items in byNode.items():
+            cli = self._getClients.get(node)
+            if cli is None:
+                cli = self.create_client(GetParameters, node + "/get_parameters",
+                                         callback_group=self._cbg)
+                self._getClients[node] = cli
+            if not cli.service_is_ready():
+                continue                       # absent : _setParams l'a mis en attente
+            fut = cli.call_async(GetParameters.Request(names=[p for p, _ in items]))
+            if not self._wait(fut) or fut.result() is None:
+                continue
+            drifted = [(node, p, v) for (p, v), got in zip(items, fut.result().values)
+                       if not _sameValue(_paramValue(v), got)]
+            if not drifted:
+                continue
+            with self._lock:
+                faults = self._setParams(drifted)
+            self.get_logger().warn(
+                "mode %s : %s avait perdu %s (noeud redemarre ?) -> %s"
+                % (self._mode, node, ", ".join(p for _, p, _ in drifted),
+                   "reapplique" if not faults else "REFUS : " + "; ".join(faults)))
 
     def _cancelAll(self, action):
         """Annule TOUS les buts d'une action : goal_info nul = tous (action_msgs/CancelGoal)."""
