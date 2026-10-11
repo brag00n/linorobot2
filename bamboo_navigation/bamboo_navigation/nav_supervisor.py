@@ -43,7 +43,8 @@ from diagnostic_updater import Updater
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import ManageLifecycleNodes
-from nav_msgs.msg import OccupancyGrid, Odometry
+from nav_msgs.msg import Odometry
+from nav_msgs.srv import GetMap
 from rcl_interfaces.srv import SetParameters
 from sensor_msgs.msg import Imu, LaserScan
 from tf2_ros import Buffer, TransformListener
@@ -84,7 +85,6 @@ class NavSupervisor(Node):
         self._next = 0
         self._lock = threading.Lock()
         self._last = {"scan": None, "imu": None, "odom": None}
-        self._map = None
 
         # TF ecoutee SEULEMENT hors idle (cf. _tfListen) : un TransformListener Python sur tout
         # /tf, sous MultiThreadedExecutor, coutait a lui seul une bonne part des ~30 % d'un
@@ -110,9 +110,14 @@ class NavSupervisor(Node):
         threading.Thread(target=self._watchEx.spin, name="nav_watch", daemon=True).start()
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        self.create_subscription(OccupancyGrid, self.map_topic,
-                                 lambda m: setattr(self, "_map", m), latched,
-                                 callback_group=self._cbg)
+        # La carte est DEMANDEE a la sauvegarde (GetMap), pas suivie en continu : s'abonner a
+        # /map faisait deserialiser toute la grille en Python a chaque mise a jour de
+        # slam_toolbox (2 s), pour une carte qui ne sert qu'a `save_map` (2026-10-11).
+        self.mapCli = {
+            "exploration": self.create_client(GetMap, "/slam_toolbox/dynamic_map",
+                                              callback_group=self._cbg),
+            "navigation": self.create_client(GetMap, "/map_server/map",
+                                             callback_group=self._cbg)}
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._onAmcl, 10,
                                  callback_group=self._cbg)
         self.pubState = self.create_publisher(NavState, "/navigation/state", latched)
@@ -371,9 +376,15 @@ class NavSupervisor(Node):
         if cmd in ("exploration", "navigation", "idle"):
             return self.setSubmode(cmd, arg)
         if cmd == "save_map":
-            m = self._map
-            if m is None:
-                return False, "aucune carte recue sur %s" % self.map_topic
+            cli = self.mapCli.get(self.submode)
+            if cli is None:
+                return False, "pas de carte en sous-mode %s (explorer d'abord)" % self.submode
+            if not cli.wait_for_service(timeout_sec=2.0):
+                return False, "%s absent" % cli.srv_name
+            fut = cli.call_async(GetMap.Request())
+            if not self._wait(fut, 10.0):
+                return False, "%s sans reponse" % cli.srv_name
+            m = fut.result().map
             name = arg or map_io.stamp_name("carte")
             q = m.info.origin.orientation
             path = map_io.write_map(os.path.join(self.maps_dir, name), m.info.width,

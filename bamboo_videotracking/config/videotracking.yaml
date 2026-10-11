@@ -100,7 +100,10 @@ overlay_node:
     jpeg_quality: 80
     # 0.0 = pas de limitation : l'etage suit la cadence de detection. Le monter (ex. 0.1)
     # bride le RE-ENCODAGE, seul etage qui coute du CPU pur sur RPi4.
-    min_period_s: 0.0
+    # 0.06 depuis le 2026-10-11 : HUD a 15 img/s (une trame camera sur deux, a 30 img/s ;
+    # 0.06 et non 0.0667 pour qu'une gigue de quelques ms ne fasse pas sauter DEUX trames).
+    # Avec la navigation lancee, le RPi4 etait a 96 % et l'overlay a ~70 % d'un coeur.
+    min_period_s: 0.06
     stats_period_s: 1.0
     draw_stats: true
     # Enregistrement aupres de bamboo_video : ce groupe est CLIENT, jamais l'inverse. Sans
