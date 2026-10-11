@@ -47,6 +47,7 @@ from nav2_msgs.srv import ManageLifecycleNodes
 from nav_msgs.msg import Odometry
 from nav_msgs.srv import GetMap
 from rcl_interfaces.srv import SetParameters
+from std_srvs.srv import Trigger
 from sensor_msgs.msg import BatteryState, Imu, LaserScan
 from tf2_ros import Buffer, TransformListener
 
@@ -80,6 +81,11 @@ class NavSupervisor(Node):
         self.auto_max_duration_s = float(d("auto_max_duration_s", 900.0).value)
         self.auto_resume_s = float(d("auto_resume_s", 3.0).value)
         self.auto_battery_min_v = float(d("auto_battery_min_v", 10.8).value)
+        # Recalibration du gyro AVANT de partir (robot immobile) : service `recalibrate_imu`
+        # du driver, trouve automatiquement si vide (ESP32 comme STM32).
+        self.auto_recal_service = str(d("auto_recal_service", "").value)
+        self.auto_recal_settle_s = float(d("auto_recal_settle_s", 4.0).value)
+        self.auto_still_s = float(d("auto_still_s", 2.0).value)
         teleop_topic = str(d("teleop_topic", "/cmd_vel_teleop").value)
         battery_topic = str(d("battery_topic", "/battery").value)
         mode_topic = str(d("mode_topic", "/bamboo/mode").value)
@@ -532,20 +538,66 @@ class NavSupervisor(Node):
     # inconnu, bamboo_navigation.frontier) jusqu'a ce qu'il n'en reste plus, puis REVENIR au
     # depart, sauver la carte et s'arreter. Le stick met en PAUSE (le multiplexeur lui donne
     # deja la main) ; l'exploration repart seule `auto_resume_s` apres le relachement.
+    def _recalService(self):
+        """Service `recalibrate_imu` du driver : le parametre, sinon le premier du graphe."""
+        if self.auto_recal_service:
+            return self.auto_recal_service
+        for name, types in self.get_service_names_and_types():
+            if name.endswith("/recalibrate_imu") and "std_srvs/srv/Trigger" in types:
+                return name
+        return ""
+
+    def _recalGyro(self):
+        """Fait remesurer le biais du gyro par la carte (robot IMMOBILE). Retourne
+        (instant de la demande, message) ; instant None si rien n'a ete fait.
+
+        Essai Nc (2026-10-11) : le gyro derive de 0,12 deg/min a l'arret, et l'EKF l'integre
+        comme une rotation ; 6,6 des 9,2 deg de cap que le SLAM a du corriger, et des murs
+        dedoubles. Une remesure juste avant de partir retire le biais pris depuis le boot
+        (temperature). Elle ne suffit pas aux longues immobilites : cf. le gyro ignore a
+        l'arret."""
+        name = self._recalService()
+        if not name:
+            return None, "gyro NON recalibre (aucun service recalibrate_imu)"
+        cli = self.create_client(Trigger, name, callback_group=self._cbg)
+        try:
+            if not cli.wait_for_service(timeout_sec=1.0):
+                return None, "gyro NON recalibre (%s absent)" % name
+            fut = cli.call_async(Trigger.Request())
+            if not self._wait(fut, 3.0) or not fut.result().success:
+                return None, "gyro NON recalibre (%s : %s)" % (
+                    name, fut.result().message if fut.done() and fut.result() else "muet")
+            return time.monotonic(), "gyro recalibre (%s)" % name
+        finally:
+            self.destroy_client(cli)
+
     def _autoStart(self):
+        # Le robot doit etre IMMOBILE : la carte moyenne le gyro ~2 s, et un mouvement
+        # pendant ce temps deviendrait un biais.
+        if time.monotonic() - self._teleopT < self.auto_still_s:
+            return False, ("exploration auto refusee : robot en mouvement (lacher le stick "
+                           "%.0f s)" % self.auto_still_s)
         if self.submode != "exploration":
             ok, why = self.setSubmode("exploration")
             if not ok:
                 return False, "exploration auto impossible : " + why
+        recal_t, recal_msg = self._recalGyro()
+        if recal_t is None:
+            self.get_logger().warn("exploration auto : " + recal_msg)
+        # Le demarrage de Nav2 (~10 s) recouvre l'attente de la recalibration.
         ok, why = self._manage(self.navMgr, STARTUP)
         if not ok:
             return False, "exploration auto impossible : Nav2 " + why
+        if recal_t is not None:
+            rest = self.auto_recal_settle_s - (time.monotonic() - recal_t)
+            if rest > 0:
+                time.sleep(rest)
         self.auto, self._autoResumeTo = "running", "running"
         self._autoT0 = time.monotonic()
         self._autoHome, self._autoTarget = None, None
         self._autoAvoid, self._autoN, self._autoNoFront, self._autoHomeTries = [], 0, 0, 0
-        self.get_logger().info("exploration auto : demarrage")
-        return True, "exploration auto lancee"
+        self.get_logger().info("exploration auto : demarrage, " + recal_msg)
+        return True, "exploration auto lancee, " + recal_msg
 
     def _autoStop(self, why, nav_reset=True):
         # L'etat bascule EN PREMIER : la boucle peut etre au milieu d'un tour (carte demandee
