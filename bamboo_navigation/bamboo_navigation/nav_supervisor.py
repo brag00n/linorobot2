@@ -21,6 +21,7 @@ DIAGNOSTIC `navigation` DEPENDANT DES CAPTEURS : la liste des capteurs EXIGES vi
 `sensors:` du robot (nav_params.required_sensors). Un capteur absent du robot n'est pas exige ;
 sans lidar, la navigation est declaree impossible (ERROR), avec la raison.
 """
+import collections
 import math
 import os
 import signal
@@ -81,7 +82,11 @@ class NavSupervisor(Node):
         self.auto_goal_timeout_s = float(d("auto_goal_timeout_s", 60.0).value)
         self.auto_max_duration_s = float(d("auto_max_duration_s", 900.0).value)
         self.auto_resume_s = float(d("auto_resume_s", 3.0).value)
-        self.auto_battery_min_v = float(d("auto_battery_min_v", 10.8).value)
+        # Tension jugee sur la MEDIANE de `auto_battery_window_s` : sous l'effort des moteurs
+        # elle chute (10,44 V lus en roulant pour 12,05 V au repos, essai E2 du 2026-10-11),
+        # et un creux passager renvoyait le robot au depart.
+        self.auto_battery_min_v = float(d("auto_battery_min_v", 10.5).value)
+        self.auto_battery_window_s = float(d("auto_battery_window_s", 20.0).value)
         # Recalibration du gyro AVANT de partir (robot immobile) : service `recalibrate_imu`
         # du driver, trouve automatiquement si vide (ESP32 comme STM32).
         self.auto_recal_service = str(d("auto_recal_service", "").value)
@@ -120,7 +125,8 @@ class NavSupervisor(Node):
         self._autoFronts = 0
         self._autoKnown = math.nan
         self._teleopT = 0.0              # dernier ordre NON NUL de la manette
-        self._battV = math.nan
+        self._battV = math.nan           # mediane glissante (cf. _onBattery)
+        self._battHist = collections.deque()
         self._robotMode = ""
         self._armed = None               # traction armee a la manette ? None = inconnu (simu)
 
@@ -147,8 +153,7 @@ class NavSupervisor(Node):
         # automatique. Sur le satellite aussi : peu de messages, et rien a faire tourner sous
         # le verrou du superviseur.
         self._watch.create_subscription(Twist, teleop_topic, self._onTeleop, 5)
-        self._watch.create_subscription(BatteryState, battery_topic,
-                                        lambda m: setattr(self, "_battV", float(m.voltage)), 1)
+        self._watch.create_subscription(BatteryState, battery_topic, self._onBattery, 1)
         latched_in = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                 durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self._watch.create_subscription(
@@ -213,6 +218,17 @@ class NavSupervisor(Node):
     # ------------------------------------------------------------ capteurs
     def _seen(self, k):
         self._last[k] = time.monotonic()
+
+    def _onBattery(self, m):
+        now, v = time.monotonic(), float(m.voltage)
+        if not v > 0.0:
+            return
+        h = self._battHist
+        h.append((now, v))
+        while h and now - h[0][0] > self.auto_battery_window_s:
+            h.popleft()
+        vals = sorted(x for _, x in h)
+        self._battV = vals[len(vals) // 2]
 
     def _onTeleop(self, m):
         if abs(m.linear.x) > 1e-3 or abs(m.angular.z) > 1e-3:
@@ -616,7 +632,19 @@ class NavSupervisor(Node):
         if time.monotonic() - self._teleopT < self.auto_still_s:
             return False, ("exploration auto refusee : robot en mouvement (lacher le stick "
                            "%.0f s)" % self.auto_still_s)
-        if self.submode != "exploration":
+        # Carte NEUVE a chaque lancement, partie de la position REELLE du robot. Reprendre la
+        # session de slam_toolbox en cours etait dangereux : un robot deplace a la main entre
+        # temps (les roues n'ont rien vu, le lidar si) part sur une carte et une pose fausses
+        # (essai E2 du 2026-10-11 : « il part sur une ancienne carte »).
+        if self.submode == "exploration":
+            self._manage(self.navMgr, RESET)
+            self._stopSlam()
+            self.tf.clear()            # sinon l'ANCIEN map->odom reste quelques secondes
+            ok, why = self._startSlam()
+            if not ok:
+                return False, "exploration auto impossible : " + why
+            self.map_name = map_io.stamp_name("exploration")
+        else:
             ok, why = self.setSubmode("exploration")
             if not ok:
                 return False, "exploration auto impossible : " + why
