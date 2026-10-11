@@ -90,6 +90,13 @@ def _setup(context, *args, **kwargs):
     nav2_container = ComposableNodeContainer(
         name="nav2_container", namespace="", package="rclcpp_components",
         executable="component_container_isolated", output="screen",
+        # Le fichier Nav2 passe AUSSI au CONTENEUR (--params-file du processus), comme le fait
+        # nav2_bringup : les costmaps sont des SOUS-NOEUDS crees par controller_server et
+        # planner_server (/local_costmap/local_costmap...), et les `parameters` d'un
+        # ComposableNode ne servent que le noeud qu'il nomme. Sans cela les deux costmaps
+        # tournaient avec leurs DEFAUTS -- carte statique seule, AUCUNE source d'obstacles
+        # (le lidar n'y entrait pas) : essai E2 du 2026-10-11, le robot a fonce dans un mur.
+        parameters=[nav2],
         composable_node_descriptions=[
             comp("nav2_controller", "nav2_controller::ControllerServer", "controller_server",
                  [nav2], [("cmd_vel", smoothed)]),
