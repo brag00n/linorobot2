@@ -1258,8 +1258,13 @@ class TeleopNode(Node):
             self._pendingActs.discard(act)
             try:
                 r = f.result()
-                (self.get_logger().info if r.success else self.get_logger().warn)(
-                    "navigation %s : %s" % (command, r.message))
+                # DEUX appels distincts, pas `(info if ok else warn)(...)` : rclpy refuse qu'un
+                # meme point d'appel change de severite ("Logger severity cannot be changed
+                # between calls"), et cette exception MASQUAIT la vraie reponse (essai E2c).
+                if r.success:
+                    self.get_logger().info("navigation %s : %s" % (command, r.message))
+                else:
+                    self.get_logger().warn("navigation %s : %s" % (command, r.message))
             except Exception as exc:                                # noqa: BLE001
                 self.get_logger().warn("navigation %s echouee : %s" % (command, exc))
             self._publishState()

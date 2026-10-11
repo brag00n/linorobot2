@@ -142,6 +142,7 @@ class NavSupervisor(Node):
         self._battV = math.nan           # mediane glissante (cf. _onBattery)
         self._battHist = collections.deque()
         self._robotMode = ""
+        self._lastRobotMode = ""
         self._armed = None               # traction armee a la manette ? None = inconnu (simu)
 
         # TF ecoutee SEULEMENT hors idle (cf. _tfListen) : un TransformListener Python sur tout
@@ -372,9 +373,25 @@ class NavSupervisor(Node):
         return "pose initiale : %s" % ("depart" if wps else "origine de la carte")
 
     # ------------------------------------------------------------ sous-modes
+    def _slamAlive(self):
+        return self.slam is not None and self.slam.poll() is None
+
+    def _saveBeforeLeaving(self, why):
+        """Sauve la carte EN COURS avant que slam_toolbox ne s'arrete. Essai E2c (2026-10-11) :
+        Y long (idle) puis X long -> carte PERDUE, slam_toolbox etait deja arrete."""
+        if self.submode != "exploration" or not self._slamAlive():
+            return ""
+        ok, msg = self.command("save_map", "")
+        self.get_logger().info("carte sauvee avant %s : %s" % (why, msg) if ok else
+                               "carte NON sauvee avant %s : %s" % (why, msg))
+        return msg if ok else ""
+
     def setSubmode(self, mode, arg=""):
         if mode == self.submode and mode != "navigation":
             return True, "deja en %s" % mode
+        saved = ""
+        if mode != "exploration":
+            saved = self._saveBeforeLeaving("le sous-mode %s" % mode)
         if mode != "exploration" and self.auto != "off":
             self._autoStop("sous-mode %s" % mode, nav_reset=False)
         self._cancelGoal()
@@ -415,6 +432,8 @@ class NavSupervisor(Node):
             return False, "sous-mode inconnu : %s" % mode
         self.submode = mode
         self.detail = "sous-mode %s%s" % (mode, (" (%s)" % self.map_name) if self.map_name else "")
+        if saved:
+            self.detail += " ; " + saved
         self.get_logger().info(self.detail)
         return True, self.detail
 
@@ -568,6 +587,11 @@ class NavSupervisor(Node):
             known, occ = map_io.map_stats(m.info.width, m.info.height, m.data)
             if self.submode == "exploration":
                 self.map_name = name
+            if self._autoLog:
+                # Le DEBRIEFING de l'exploration auto suit TOUTE sauvegarde de la carte (X long
+                # compris) : <carte>_frontieres.yaml.
+                map_io.save_frontier_log(self.maps_dir, name, self._autoLog, self._autoHome)
+                self._publishLog()
             return True, "carte %s (%dx%d, %.0f %% connue) -> %s" % (
                 name, m.info.width, m.info.height, 100 * known, path)
         if cmd == "save_waypoint":
@@ -955,11 +979,6 @@ class NavSupervisor(Node):
         ok, msg = self.command("save_map", "")
         if ok and self._autoHome is not None:
             map_io.save_waypoint(self.maps_dir, self.map_name, "depart", *self._autoHome)
-        if ok:
-            # Le debriefing, a cote de la carte : <carte>_frontieres.yaml.
-            map_io.save_frontier_log(self.maps_dir, self.map_name, self._autoLog,
-                                     self._autoHome)
-            self._publishLog()
         self._manage(self.navMgr, RESET)
         self.auto, self._autoTarget = "done", None
         self._publishMarks()
@@ -968,7 +987,18 @@ class NavSupervisor(Node):
         self.get_logger().info(self.detail)
 
     # ------------------------------------------------------------ etat et diagnostic
+    def _watchModeExit(self):
+        """Sortie du mode NAV : avec la navigation A LA DEMANDE, ce conteneur sera arrete 2 min
+        plus tard, et slam_toolbox avec lui -- on sauve donc la carte DES la sortie, une fois."""
+        mode = self._robotMode
+        if mode and mode != "navigation" and self._lastRobotMode == "navigation":
+            with self._lock:
+                self._saveBeforeLeaving("la sortie du mode NAV")
+        if mode:
+            self._lastRobotMode = mode
+
     def _publish(self):
+        self._watchModeExit()
         m = NavState()
         m.header.stamp = self.get_clock().now().to_msg()
         m.submode, m.map_name = self.submode, self.map_name
