@@ -93,5 +93,17 @@ def save_waypoint(maps_dir, map_name, name, x, y, yaw):
     return wps
 
 
+def save_frontier_log(maps_dir, map_name, entries, home=None):
+    """Debriefing de l'exploration automatique : <carte>_frontieres.yaml (numero, position,
+    statut de chaque frontiere, et le depart)."""
+    path = os.path.join(maps_dir, "%s_frontieres.yaml" % map_name)
+    doc = {"depart": ({"x": float(home[0]), "y": float(home[1])} if home else None),
+           "frontieres": [{"n": int(e["n"]), "x": float(e["x"]), "y": float(e["y"]),
+                           "statut": str(e["s"])} for e in entries]}
+    with open(path, "w", encoding="utf-8") as fh:
+        yaml.safe_dump(doc, fh, sort_keys=False, allow_unicode=True)
+    return path
+
+
 def yaw_of(qz, qw, qx=0.0, qy=0.0):
     return math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))

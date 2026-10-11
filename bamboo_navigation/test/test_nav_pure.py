@@ -63,3 +63,15 @@ def test_map_roundtrip_and_waypoints():
     assert [w["name"] for w in wps] == ["depart", "porte"]
     assert map_io.load_waypoints(d, "salon")[1]["x"] == 1.5
     assert os.path.isfile(y)
+
+
+def test_frontier_log_written_next_to_the_map():
+    d = tempfile.mkdtemp()
+    entries = [{"n": 1, "x": 0.5, "y": -1.0, "s": "atteinte"},
+               {"n": 2, "x": 2.0, "y": 3.25, "s": "inatteignable"}]
+    p = map_io.save_frontier_log(d, "salon", entries, (0.0, 0.1, 0.0))
+    assert os.path.basename(p) == "salon_frontieres.yaml"
+    with open(p, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh)
+    assert doc["depart"] == {"x": 0.0, "y": 0.1}
+    assert [f["statut"] for f in doc["frontieres"]] == ["atteinte", "inatteignable"]

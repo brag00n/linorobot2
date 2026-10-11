@@ -214,8 +214,12 @@ global_costmap:
         map_subscribe_transient_local: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 4.0
-        inflation_radius: 0.30
+        # GLOBALE plus large et plus douce que la locale (0,30 / 4,0) : le planificateur trace
+        # alors au MILIEU des passages. Essai E2b (2026-10-11) : des chemins au ras des chaises
+        # et des chambranles -> 252 arrets "collision ahead" et la porte du haut jamais
+        # franchie. La LOCALE garde 0,30 m : c'est elle qui protege.
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.45
       always_send_full_costmap: true
 
 map_server:

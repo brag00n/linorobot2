@@ -577,13 +577,48 @@ def _png(path, w, h, rows):
                  + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
 
-def _render_map(path, w, h, data, res, origin, pose, scale=1):
+# DEBRIEFING de l'exploration automatique : couleur par statut de frontiere (RGB).
+_FRONTIER_RGB = {"atteinte": (0, 170, 0), "abandonnee": (220, 20, 20),
+                 "trop_longue": (255, 140, 0), "inatteignable": (160, 0, 200),
+                 "interrompue": (30, 110, 255), "en_cours": (230, 200, 0)}
+# Chiffres 3 x 5 (lignes de HAUT en bas) : le PNG est ecrit sans bibliotheque d'image, et les
+# numeros des frontieres doivent rester lisibles une fois l'image agrandie.
+_DIGITS = {"0": ("111", "101", "101", "101", "111"), "1": ("010", "110", "010", "010", "111"),
+           "2": ("111", "001", "111", "100", "111"), "3": ("111", "001", "111", "001", "111"),
+           "4": ("101", "101", "111", "001", "001"), "5": ("111", "100", "111", "001", "111"),
+           "6": ("111", "100", "111", "101", "111"), "7": ("111", "001", "001", "001", "001"),
+           "8": ("111", "101", "111", "101", "111"), "9": ("111", "101", "111", "001", "111")}
+
+
+def _render_map(path, w, h, data, res, origin, pose, scale=1, marks=()):
     """Grille d'occupation -> PNG : inconnu gris, libre blanc, occupe noir, robot en rouge
-    (disque + trait de cap). Image de HAUT en bas : la ligne 0 de la grille (y min) en bas."""
+    (disque + trait de cap). Image de HAUT en bas : la ligne 0 de la grille (y min) en bas.
+    `marks` : [(x, y, (r, g, b), texte)] -- frontieres du debriefing (pastille + numero)."""
     px = bytearray()
     for v in data:
         g = 205 if v < 0 else (254 if v < 25 else (0 if v > 65 else 128))
         px += bytes((g, g, g))
+
+    def dot(x, y, rgb):
+        if 0 <= x < w and 0 <= y < h:
+            px[(y * w + x) * 3:(y * w + x) * 3 + 3] = bytes(rgb)
+    for mx, my, rgb, text in marks:
+        cx, cy = int((mx - origin[0]) / res), int((my - origin[1]) / res)
+        for dy in range(-2, 3):
+            for dx in range(-2, 3):
+                if dx * dx + dy * dy <= 5:
+                    dot(cx + dx, cy + dy, rgb)
+        # numero a DROITE de la pastille ; y de la grille vers le HAUT, glyphes de haut en bas
+        x0 = cx + 4
+        for ch in str(text):
+            glyph = _DIGITS.get(ch)
+            if glyph is None:
+                continue
+            for row, bits in enumerate(glyph):
+                for col, b in enumerate(bits):
+                    if b == "1":
+                        dot(x0 + col, cy + 2 - row, rgb)
+            x0 += 4
     if pose is not None:
         cx = (pose[0] - origin[0]) / res
         cy = (pose[1] - origin[1]) / res
@@ -640,8 +675,19 @@ def t_map(args):
     occ = sum(1 for v in data if v > 65)
     frame = (grid.get("header", {}) or {}).get("frame_id", "map") or "map"
     pose = _robot_pose(frame)
+    # Debriefing de l'exploration automatique (nav_supervisor, latche) : frontieres numerotees
+    # et leur statut, dessinees sur l'image.
+    log, marks = None, []
+    try:
+        got = Bridge().subscribe_collect("/navigation/frontier_log", 2.0, count=1,
+                                         msg_type="std_msgs/msg/String")
+        log = json.loads(got[0]["data"]) if got else None
+    except (BridgeError, ValueError, KeyError):
+        log = None
+    for e in (log or {}).get("frontiers", []):
+        marks.append((e["x"], e["y"], _FRONTIER_RGB.get(e["s"], (90, 90, 90)), e["n"]))
     path = args.get("path") or os.path.join(tempfile.gettempdir(), "bamboo_map.png")
-    _render_map(path, w, h, data, res, origin, pose, scale=args.get("scale", 4))
+    _render_map(path, w, h, data, res, origin, pose, scale=args.get("scale", 4), marks=marks)
     lines = [
         "carte     : %s (sous-mode %s, carte '%s')"
         % (used, sub or "?", (st or {}).get("map_name", "") or "-"),
@@ -654,6 +700,17 @@ def t_map(args):
         if pose else "robot     : pose inconnue (TF %s -> odom -> base_footprint absente)" % frame,
         "image     : %s (gris inconnu, blanc libre, noir obstacle, rouge robot)" % path,
     ]
+    if log and log.get("frontiers"):
+        fr = log["frontiers"]
+        counts = {}
+        for e in fr:
+            counts[e["s"]] = counts.get(e["s"], 0) + 1
+        lines.append("frontieres : %d (%s)" % (len(fr), ", ".join(
+            "%s %d" % (k, v) for k, v in sorted(counts.items()))))
+        lines.append("  couleurs : vert atteinte, rouge abandonnee, orange trop_longue, "
+                     "violet inatteignable, bleu interrompue, jaune en_cours")
+        for e in fr:
+            lines.append("  %3d  (%6.2f, %6.2f)  %s" % (e["n"], e["x"], e["y"], e["s"]))
     return "\n".join(lines)
 
 

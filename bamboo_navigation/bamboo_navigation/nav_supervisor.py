@@ -22,6 +22,7 @@ DIAGNOSTIC `navigation` DEPENDANT DES CAPTEURS : la liste des capteurs EXIGES vi
 sans lidar, la navigation est declaree impossible (ERROR), avec la raison.
 """
 import collections
+import json
 import math
 import os
 import signal
@@ -43,7 +44,7 @@ from diagnostic_msgs.msg import DiagnosticStatus
 from diagnostic_updater import Updater
 from geometry_msgs.msg import (Pose, PoseArray, PoseStamped, PoseWithCovarianceStamped,
                                Twist)
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from nav2_msgs.srv import ManageLifecycleNodes
 from nav_msgs.msg import Odometry
@@ -79,7 +80,12 @@ class NavSupervisor(Node):
         self.loc_cov_warn = float(d("localization_cov_warn", 0.5).value)
         # --- exploration AUTOMATIQUE (frontieres) : reglages, cf. _autoTick ---
         self.auto_min_frontier_m = float(d("auto_min_frontier_m", 0.30).value)
+        # Delai SANS PROGRES (la distance restante ne baisse plus) avant d'abandonner un but ;
+        # un but qui progresse est garde jusqu'a 3 fois ce delai. Le retour au depart a le sien :
+        # essai E2b, un retour de l'autre bout de la piece depassait 60 s et etait abandonne
+        # 2 s avant d'arriver.
         self.auto_goal_timeout_s = float(d("auto_goal_timeout_s", 60.0).value)
+        self.auto_home_timeout_s = float(d("auto_home_timeout_s", 180.0).value)
         self.auto_max_duration_s = float(d("auto_max_duration_s", 900.0).value)
         self.auto_resume_s = float(d("auto_resume_s", 3.0).value)
         # Tension jugee sur la MEDIANE de `auto_battery_window_s` : sous l'effort des moteurs
@@ -119,6 +125,14 @@ class NavSupervisor(Node):
         self._autoGoalT = 0.0
         self._autoOwnCancel = False      # annulation par NOUS (pause) : pas une liste noire
         self._autoAvoid = []             # points deja tentes (echecs et buts atteints)
+        self._autoFailedPts = []         # echecs de 1re passe : retentes UNE fois a la fin
+        self._autoSecond = False         # seconde chance deja donnee ?
+        self._autoProgT = 0.0            # dernier progres du but (distance restante en baisse)
+        self._autoBestD = math.inf
+        # DEBRIEFING (demande utilisateur 2026-10-11) : chaque frontiere, numerotee, avec son
+        # statut ; publie en continu, enregistre avec la carte, dessine par l'outil MCP `map`.
+        self._autoLog = []
+        self._autoEntry = None
         self._autoN = 0
         self._autoNoFront = 0
         self._autoHomeTries = 0
@@ -192,6 +206,7 @@ class NavSupervisor(Node):
         self.pubPose = self.create_publisher(PoseStamped, "/navigation/robot_pose", 1)
         self.pubHome = self.create_publisher(PoseStamped, "/navigation/home", latched)
         self.pubFronts = self.create_publisher(PoseArray, "/navigation/frontiers", latched)
+        self.pubLog = self.create_publisher(String, "/navigation/frontier_log", latched)
         self.create_timer(0.25, self._publishPose, callback_group=self._cbg)
 
         self.locMgr = self.create_client(ManageLifecycleNodes,
@@ -666,6 +681,9 @@ class NavSupervisor(Node):
         self._autoT0 = time.monotonic()
         self._autoHome, self._autoTarget = None, None
         self._autoAvoid, self._autoN, self._autoNoFront, self._autoHomeTries = [], 0, 0, 0
+        self._autoFailedPts, self._autoSecond = [], False
+        self._autoLog, self._autoEntry = [], None
+        self._publishLog()
         self.get_logger().info("exploration auto : demarrage, " + recal_msg)
         return True, "exploration auto lancee, " + recal_msg
 
@@ -686,7 +704,28 @@ class NavSupervisor(Node):
 
     def _autoGoto(self, name, x, y, yaw):
         self._autoTarget, self._autoGoalT, self._autoOwnCancel = (x, y), time.monotonic(), False
+        self._autoProgT, self._autoBestD = self._autoGoalT, math.inf
         return self._goto({"name": name, "x": x, "y": y, "yaw": yaw})
+
+    # --- debriefing -------------------------------------------------------------------
+    # Statuts : en_cours, atteinte, abandonnee (Nav2), trop_longue (sans progres),
+    # inatteignable (aucun chemin, ecartee sans y aller), interrompue (pause manette).
+    def _logEntry(self, x, y, status):
+        self._autoN += 1
+        e = {"n": self._autoN, "x": round(float(x), 2), "y": round(float(y), 2), "s": status}
+        self._autoLog.append(e)
+        self._publishLog()
+        return e
+
+    def _logSet(self, e, status):
+        if e is not None and e["s"] != status:
+            e["s"] = status
+            self._publishLog()
+
+    def _publishLog(self):
+        doc = {"map": self.map_name, "home": list(self._autoHome[:2]) if self._autoHome else None,
+               "frontiers": self._autoLog}
+        self.pubLog.publish(String(data=json.dumps(doc)))
 
     def _autoMap(self):
         """Carte EN COURS de slam_toolbox, demandee hors du verrou (appel de service)."""
@@ -725,6 +764,8 @@ class NavSupervisor(Node):
                     self._autoOwnCancel = True
                     self._cancelGoal()
                     self._autoTarget = None
+                    self._logSet(self._autoEntry, "interrompue")
+                    self._autoEntry = None
             self.detail = "exploration auto : PAUSE (%s)" % (
                 "manette" if stick else "traction desarmee : B long pour reprendre")
             return
@@ -743,12 +784,19 @@ class NavSupervisor(Node):
             self.get_logger().info("exploration auto : depart (%.2f, %.2f)" % pose[:2])
         # --- but en cours ---
         if self.goal_status == "active":
-            if now - self._autoGoalT > self.auto_goal_timeout_s:
+            # Abandon sur ABSENCE DE PROGRES (distance restante qui ne baisse plus), plafonne a
+            # 3 fois le delai : un but qui avance n'est pas coupe.
+            if not math.isnan(self.distance) and self.distance < self._autoBestD - 0.10:
+                self._autoBestD, self._autoProgT = self.distance, now
+            limit = self.auto_home_timeout_s if self.auto == "homing" \
+                else self.auto_goal_timeout_s
+            if now - self._autoProgT > limit or now - self._autoGoalT > 3 * limit:
                 with self._lock:
-                    self.get_logger().warn("exploration auto : %s trop long, abandonne"
+                    self.get_logger().warn("exploration auto : %s sans progres, abandonne"
                                            % self.goal_name)
                     self._autoOwnCancel = False
                     self._cancelGoal()
+                    self._logSet(self._autoEntry, "trop_longue")
             else:
                 return
         # --- bilan du but termine ---
@@ -766,12 +814,19 @@ class NavSupervisor(Node):
                     return
             elif not self._autoOwnCancel:
                 # Atteint OU echoue : dans les deux cas on ne le revise pas (un but atteint
-                # reste parfois en bord d'inconnu, et le robot y reviendrait en boucle).
+                # reste parfois en bord d'inconnu, et le robot y reviendrait en boucle). Un
+                # ECHEC est retente une fois a la fin (seconde chance, cf. plus bas).
                 self._autoAvoid.append(self._autoTarget)
-                if not ok:
+                if ok:
+                    self._logSet(self._autoEntry, "atteinte")
+                else:
+                    self._autoFailedPts.append(self._autoTarget)
+                    if self._autoEntry is not None and self._autoEntry["s"] == "en_cours":
+                        self._logSet(self._autoEntry, "abandonnee")
                     self.get_logger().info("exploration auto : %s %s, liste noire"
                                            % (self.goal_name, self.goal_status))
             self._autoTarget = None
+            self._autoEntry = None
         if self.auto == "homing":
             self._autoGotoHome()
             return
@@ -801,13 +856,26 @@ class NavSupervisor(Node):
                 f = cand
                 break
             self._autoAvoid.append((cand["x"], cand["y"]))
-            self.get_logger().info("exploration auto : frontiere (%.2f, %.2f) INATTEIGNABLE, "
-                                   "ecartee" % (cand["x"], cand["y"]))
+            e = self._logEntry(cand["x"], cand["y"], "inatteignable")
+            self.get_logger().info("exploration auto : frontiere %d (%.2f, %.2f) INATTEIGNABLE, "
+                                   "ecartee" % (e["n"], cand["x"], cand["y"]))
             if self.auto != "running":
                 return
         if f is None:
             if frontier.choose(fs, pose[:2], self._autoAvoid) is not None:
                 return                         # d'autres candidates : au tour suivant
+            if not self._autoSecond and self._autoFailedPts:
+                # SECONDE CHANCE, une fois : une frontiere abandonnee (robot coince contre un
+                # chambranle, essai E2b : la porte du haut) redevient souvent atteignable avec
+                # la carte agrandie et depuis une autre position. Les INATTEIGNABLES (aucun
+                # chemin) ne sont pas retentees.
+                self._autoSecond = True
+                failed = self._autoFailedPts
+                self._autoAvoid = [p for p in self._autoAvoid if p not in failed]
+                self._autoFailedPts = []
+                self.get_logger().info("exploration auto : seconde chance pour %d frontieres "
+                                       "abandonnees" % len(failed))
+                return
             self._autoNoFront += 1
             reason = "carte complete" if not fs else \
                 "plus de frontiere atteignable (%d ecartees)" % len(fs)
@@ -825,7 +893,7 @@ class NavSupervisor(Node):
                 self._autoTarget = None
                 self.detail = "exploration auto : " + why
                 return
-            self._autoN += 1
+            self._autoEntry = self._logEntry(f["x"], f["y"], "en_cours")
             self.detail = "exploration auto : frontiere %d, %d restantes, %.0f %% connue" % (
                 self._autoN, len(fs), 100 * self._autoKnown)
         self.get_logger().info("exploration auto : frontiere %d -> (%.2f, %.2f), %.2f m de "
@@ -887,6 +955,11 @@ class NavSupervisor(Node):
         ok, msg = self.command("save_map", "")
         if ok and self._autoHome is not None:
             map_io.save_waypoint(self.maps_dir, self.map_name, "depart", *self._autoHome)
+        if ok:
+            # Le debriefing, a cote de la carte : <carte>_frontieres.yaml.
+            map_io.save_frontier_log(self.maps_dir, self.map_name, self._autoLog,
+                                     self._autoHome)
+            self._publishLog()
         self._manage(self.navMgr, RESET)
         self.auto, self._autoTarget = "done", None
         self._publishMarks()
