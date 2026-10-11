@@ -41,6 +41,7 @@ from rclpy.qos import (DurabilityPolicy, QoSProfile, ReliabilityPolicy,
 from diagnostic_msgs.msg import DiagnosticStatus
 from diagnostic_updater import Updater
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
+from std_msgs.msg import Bool
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import ManageLifecycleNodes
 from nav_msgs.msg import Odometry
@@ -49,7 +50,7 @@ from rcl_interfaces.srv import SetParameters
 from sensor_msgs.msg import BatteryState, Imu, LaserScan
 from tf2_ros import Buffer, TransformListener
 
-from bamboo_interfaces.msg import NavState, RobotMode
+from bamboo_interfaces.msg import NavState, RobotMode, TeleopState
 from bamboo_interfaces.srv import NavCommand
 from bamboo_navigation import frontier, map_io
 
@@ -82,6 +83,7 @@ class NavSupervisor(Node):
         teleop_topic = str(d("teleop_topic", "/cmd_vel_teleop").value)
         battery_topic = str(d("battery_topic", "/battery").value)
         mode_topic = str(d("mode_topic", "/bamboo/mode").value)
+        teleop_state_topic = str(d("teleop_state_topic", "/teleop/state").value)
 
         self.submode = "idle"
         self.map_name = ""
@@ -113,6 +115,7 @@ class NavSupervisor(Node):
         self._teleopT = 0.0              # dernier ordre NON NUL de la manette
         self._battV = math.nan
         self._robotMode = ""
+        self._armed = None               # traction armee a la manette ? None = inconnu (simu)
 
         # TF ecoutee SEULEMENT hors idle (cf. _tfListen) : un TransformListener Python sur tout
         # /tf, sous MultiThreadedExecutor, coutait a lui seul une bonne part des ~30 % d'un
@@ -139,10 +142,15 @@ class NavSupervisor(Node):
         self._watch.create_subscription(Twist, teleop_topic, self._onTeleop, 5)
         self._watch.create_subscription(BatteryState, battery_topic,
                                         lambda m: setattr(self, "_battV", float(m.voltage)), 1)
+        latched_in = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                                durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self._watch.create_subscription(
-            RobotMode, mode_topic, lambda m: setattr(self, "_robotMode", m.mode),
-            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
-                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
+            RobotMode, mode_topic, lambda m: setattr(self, "_robotMode", m.mode), latched_in)
+        # Traction DESARMEE = pause : les roues ne tournent plus, chaque but finirait en echec
+        # et TOUTES les frontieres passeraient en liste noire (essai E1, 2026-10-11).
+        self._watch.create_subscription(
+            TeleopState, teleop_state_topic, lambda m: setattr(self, "_armed", bool(m.armed)),
+            latched_in)
         self._watchEx = SingleThreadedExecutor()
         self._watchEx.add_node(self._watch)
         threading.Thread(target=self._watchEx.spin, name="nav_watch", daemon=True).start()
@@ -160,6 +168,13 @@ class NavSupervisor(Node):
                                  callback_group=self._cbg)
         self.pubState = self.create_publisher(NavState, "/navigation/state", latched)
         self.pubInit = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
+        # AUTORISATION de la voie navigation du multiplexeur : ouverte SEULEMENT pendant un
+        # but actif. A l'arret, Nav2 met ~1 s a s'eteindre et ses manoeuvres de reprise
+        # publient en direct : sans ce verrou, soubresauts (essai E1, 2026-10-11).
+        self.pubEnable = self.create_publisher(
+            Bool, str(d("enable_topic", "/navigation/enable").value), latched)
+        self._navEnabled = None
+        self._setNavEnable(False)
 
         self.locMgr = self.create_client(ManageLifecycleNodes,
                                          "/lifecycle_manager_localization/manage_nodes",
@@ -364,6 +379,11 @@ class NavSupervisor(Node):
         return (t.transform.translation.x, t.transform.translation.y,
                 map_io.yaw_of(q.z, q.w, q.x, q.y))
 
+    def _setNavEnable(self, on):
+        if on != self._navEnabled:
+            self._navEnabled = on
+            self.pubEnable.publish(Bool(data=on))
+
     def _goto(self, wp):
         if not self.nav.wait_for_server(timeout_sec=2.0):
             return False, "navigate_to_pose absent (Nav2 inactif ?)"
@@ -386,6 +406,7 @@ class NavSupervisor(Node):
         fut = self.nav.send_goal_async(
             goal, feedback_callback=lambda fb, s=seq: self._onFeedback(fb, s))
         fut.add_done_callback(lambda f, s=seq: self._onAccepted(f, s))
+        self._setNavEnable(True)
         return True, "en route vers %s" % wp["name"]
 
     def _onFeedback(self, fb, seq):
@@ -407,6 +428,7 @@ class NavSupervisor(Node):
         if not h.accepted:
             self.goal_status = "aborted"
             self.detail = "but %s refuse par Nav2" % self.goal_name
+            self._setNavEnable(False)
             return
         self._goal = h
         h.get_result_async().add_done_callback(lambda f, s=seq: self._onResult(f, s))
@@ -414,6 +436,7 @@ class NavSupervisor(Node):
     def _onResult(self, fut, seq):
         if seq != self._goalSeq:
             return
+        self._setNavEnable(False)
         st = fut.result().status
         self.goal_status = {4: "succeeded", 5: "canceled", 6: "aborted"}.get(st, str(st))
         self.detail = "but %s : %s" % (self.goal_name, self.goal_status)
@@ -421,6 +444,7 @@ class NavSupervisor(Node):
         self.get_logger().info(self.detail)
 
     def _cancelGoal(self):
+        self._setNavEnable(False)          # d'abord : la voie se ferme dans la milliseconde
         if self._goal is not None:
             self._goal.cancel_goal_async()
             self._goal = None
@@ -524,12 +548,15 @@ class NavSupervisor(Node):
         return True, "exploration auto lancee"
 
     def _autoStop(self, why, nav_reset=True):
+        # L'etat bascule EN PREMIER : la boucle peut etre au milieu d'un tour (carte demandee
+        # hors verrou) ; elle revoit `auto` sous le verrou avant tout envoi. Essai E1 : sans
+        # cela, une frontiere est partie 2 s APRES l'arret.
+        self.auto, self._autoTarget = "off", None
         self._autoOwnCancel = True
         self._cancelGoal()
         if nav_reset and self.submode == "exploration":
             # Exploration MANUELLE ensuite : Nav2 n'y sert a rien (cf. setSubmode).
             self._manage(self.navMgr, RESET)
-        self.auto, self._autoTarget = "off", None
         self.detail = "exploration auto arretee (%s)" % why
         self.get_logger().info(self.detail)
         return True, self.detail
@@ -566,18 +593,23 @@ class NavSupervisor(Node):
             late = now - self._autoT0 > self.auto_max_duration_s
             if low or late:
                 self._autoHoming("batterie %.2f V" % self._battV if low else "duree maximale")
-        # --- pause manette : le stick a la main, on n'envoie RIEN ---
-        if now - self._teleopT < self.auto_resume_s:
+        # --- pause : le stick a la main, ou la traction est desarmee ; on n'envoie RIEN ---
+        stick = now - self._teleopT < self.auto_resume_s
+        if stick or self._armed is False:
             if self.auto in ("running", "homing"):
                 with self._lock:
                     self._autoResumeTo, self.auto = self.auto, "paused"
                     self._autoOwnCancel = True
                     self._cancelGoal()
                     self._autoTarget = None
-                    self.detail = "exploration auto : PAUSE (manette)"
+            self.detail = "exploration auto : PAUSE (%s)" % (
+                "manette" if stick else "traction desarmee : B long pour reprendre")
             return
         if self.auto == "paused":
-            self.auto = self._autoResumeTo
+            with self._lock:
+                if self.auto != "paused":
+                    return
+                self.auto = self._autoResumeTo
         pose = self._robotPose()
         if pose is None:
             self.detail = "exploration auto : attente de la pose (map->base_footprint)"
@@ -638,12 +670,18 @@ class NavSupervisor(Node):
                 self._autoHoming("carte complete")
             return
         self._autoNoFront = 0
-        self._autoN += 1
         yaw = math.atan2(f["y"] - pose[1], f["x"] - pose[0])
         with self._lock:
-            self._autoGoto("frontiere %d" % self._autoN, f["x"], f["y"], yaw)
-        self.detail = "exploration auto : frontiere %d, %d restantes, %.0f %% connue" % (
-            self._autoN, len(fs), 100 * self._autoKnown)
+            if self.auto != "running":     # arrete ou mis en pause pendant ce tour
+                return
+            ok, why = self._autoGoto("frontiere %d" % (self._autoN + 1), f["x"], f["y"], yaw)
+            if not ok:                     # Nav2 absent : rien n'est parti, on le dit
+                self._autoTarget = None
+                self.detail = "exploration auto : " + why
+                return
+            self._autoN += 1
+            self.detail = "exploration auto : frontiere %d, %d restantes, %.0f %% connue" % (
+                self._autoN, len(fs), 100 * self._autoKnown)
         self.get_logger().info("exploration auto : frontiere %d -> (%.2f, %.2f), %.2f m de "
                                "large, %d en vue" % (self._autoN, f["x"], f["y"],
                                                      f["size_m"], len(fs)))
@@ -665,7 +703,12 @@ class NavSupervisor(Node):
             return
         x, y, yaw = self._autoHome
         with self._lock:
-            self._autoGoto("retour depart", x, y, yaw)
+            if self.auto != "homing":
+                return
+            ok, why = self._autoGoto("retour depart", x, y, yaw)
+            if not ok:
+                self._autoTarget = None
+                self.detail = "exploration auto : retour impossible, " + why
 
     def _autoFinish(self):
         ok, msg = self.command("save_map", "")
