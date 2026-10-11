@@ -152,6 +152,12 @@ services:
       # Types MAISON (bamboo_interfaces : NavState, NavCommand, RobotMode...) : sans eux le
       # bridge ne sait ni decoder ces messages ni appeler ces services, et les outils MCP
       # nav_state / waypoints restent muets. Lecture seule : le bridge ne compile rien.
+      # install/ SEUL NE SUFFIT PAS (constate le 2026-10-11) : sous --symlink-install, ses
+      # scripts d'environnement et ses modules Python generes sont des LIENS vers build/ et
+      # vers les sources -- sans eux, `source setup.bash` echoue en silence et le bridge
+      # repond "No module named 'bamboo_interfaces'". Memes montages que bamboo_diagnostics.
+      - ..:/root/linorobot2_ws/src/linorobot2:ro
+      - ws_build:/root/linorobot2_ws/build:ro
       - ws_install:/root/linorobot2_ws/install:ro
     ports:
       - "9090:9090"
