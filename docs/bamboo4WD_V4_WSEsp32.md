@@ -454,8 +454,8 @@ Le défaut vaut quel que soit le producteur de `cmd_vel` : manette, navigation, 
 | TRACKING | cible | A = détecteur, Y = apprentissage, L/R = taille de la cible, ZL/ZR = plafond |
 | CALIB | mesure | **A long = lancer**, X = contrôle IMU seul, Y = arcs on/off, R = variante suivante |
 | CALIB | essai | A = appliquer le candidat **en RAM**, X = revenir au fichier, Y = PI de lacet on/off |
-| NAV | exploration | **A long = cartographier**, X long = sauver la carte, Y long = arrêter, ZR long = miroir |
-| NAV | navigation | **A long = naviguer** (dernière carte), Y long = noter ce point, A = point suivant, X long = retour au départ, Y = annuler le but |
+| NAV | exploration | A = exploration auto marche / arrêt, **A long = cartographier** (complète la carte courante), L / R = gate précédente / suivante, X = explorer la gate sélectionnée, X long = sauver la carte, Y long = arrêter, **+ long = nouvelle carte vierge**, ZR long = miroir |
+| NAV | navigation | **A long = naviguer** (carte courante), L / R = destination précédente / suivante, A = aller à la destination sélectionnée, Y long = nouvelle destination, **− long = supprimer la destination sélectionnée**, X long = retour au départ, Y = annuler le but, + long = relocaliser |
 
 Une carte de touches fausse est **refusée au démarrage** : touche, action ou groupe inconnu, ou B réaffecté. La manette se replie alors sur la conduite seule, et le diagnostic `bamboo_teleop: modes` passe en ERROR avec la raison.
 
@@ -530,8 +530,9 @@ ros2 action send_goal /bamboo_calibration/calibrate bamboo_interfaces/action/Cal
 
 driver.lidarD500 (bamboo_lidar)  ldlidar_stl_ros2 --/scan--> scan_monitor (diag `lidar`)
 navigation (bamboo_navigation)   EKF (roues vx + gyro vyaw) --/odom + TF odom-->
-                                 nav_supervisor : exploration -> slam_toolbox
-                                                  navigation  -> map_server + AMCL + Nav2
+                                 nav_supervisor : exploration -> slam_toolbox (cartographie)
+                                                  navigation  -> slam_toolbox (localisation) + Nav2
+                                                  (carte COURANTE gardee, relocalisation maison)
                                  Nav2 (RPP, velocity_smoother) --/cmd_vel_nav-->
 bamboo_control                   cmd_vel_mux : teleop 100 > calib 90 > nav 10 --/cmd_vel--> driver
 ```
@@ -559,23 +560,67 @@ docker compose --profile nav   up -d navigation
 |---|---|
 | `ekf_filter_node` | Fusion **vx des roues + vyaw du gyro** (le lacet des roues est ignoré : glissement). Publie `/odom` et la TF `odom → base_footprint`. |
 | Nav2 | controller (RPP, `use_rotate_to_heading`) → velocity_smoother → `/cmd_vel_nav` ; planner, smoother, behavior_server (spin/backup directement sur `/cmd_vel_nav`), bt_navigator, waypoint_follower. |
-| map_server + AMCL | Localisation en sous-mode navigation. |
-| `nav_supervisor` | Sous-modes, cartes, points, état, diagnostic. |
-| 2 lifecycle managers | navigation et localisation, `autostart: false` : c'est le superviseur qui les démarre. |
+| `nav_supervisor` | Carte courante, sous-modes, slam_toolbox (sous-processus), gates, destinations, relocalisation, sauvegardes, état, diagnostic. |
+| lifecycle manager | navigation, `autostart: false` : c'est le superviseur qui démarre Nav2. map_server et AMCL ne sont plus lancés (2026-10-13). |
 
-**Sous-modes** (un seul actif) :
-- `exploration` : slam_toolbox en cartographie (sous-processus), on conduit à la manette ;
-- `navigation` : map_server charge la carte, AMCL, Nav2 actif, pose initiale au point `depart` ;
-- `idle` : tout est arrêté.
+**Sous-modes** (un seul actif), tous sur la **carte courante**, gardée de l'un à l'autre :
+- `exploration` : slam_toolbox en **cartographie**. La carte courante se **complète** : son graphe est rechargé à la pose du robot. `exploration new` (ou `new_map`) repart d'une carte vierge. On conduit à la manette, ou l'exploration automatique va de gate en gate ;
+- `navigation` : slam_toolbox en **localisation** sur le graphe de la carte courante, Nav2 actif, buts vers les destinations ;
+- `idle` : tout est arrêté ; la carte reste la carte courante, sur le disque.
 
-**Commandes** — service unique `/nav_supervisor/command` (`bamboo_interfaces/srv/NavCommand`) :
-`exploration`, `navigation [carte]`, `idle`, `save_map [nom]`, `save_waypoint [nom]`, `goto next|home|<nom>`, `cancel`, `list`.
+En passant d'exploration à navigation (ou l'inverse), la pose courante est transmise : pas de relocalisation, pas de saut.
 
-**Cartes et points** : `<robot>_base/maps/<carte>.{yaml,pgm}` et `<carte>_waypoints.yaml`.
+**Commandes** — service unique `/nav_supervisor/command` (`bamboo_interfaces/srv/NavCommand`, liste complète dans le `.srv`) :
+`exploration [new]`, `navigation [carte]`, `idle`, `new_map`, `load_map <carte>`, `save_map`, `auto_explore`, `explore_gate [n]`, `select gate+|gate-|dest+|dest-|gate n|dest n`, `dest_add [nom]`, `dest_del [n|nom]`, `dest_rename <n|nom> <nouveau>`, `goto [n|nom|home|next]`, `relocalize [global]`, `cancel`, `list`, `events [n]`.
 
-**État** : `/navigation/state` (`NavState`, latché) — sous-mode, carte, but, distance restante, reprises, covariance AMCL, points, capteurs manquants. Lu par le HUD (carte NAV), la manette et le MCP.
+**État** : `/navigation/state` (`NavState`, latché) — sous-mode, carte, but, distance restante, reprises, **localisation** (`loc_state`, accord scan/carte `map_match`), **sélection**, **gates** et **destinations** (tableaux, pour la mini-carte), capteurs manquants. Lu par le HUD (carte NAV, mini-carte), la manette et le MCP. Le détail part aussi en JSON sur `/navigation/objects`.
 
-**Diagnostic `navigation`** : il n'exige **que les capteurs déclarés** dans `sensors:` du fichier canonique. Lidar absent ou muet → ERROR « navigation impossible » ; localisation incertaine → WARN.
+**Diagnostic `navigation`** : il n'exige **que les capteurs déclarés** dans `sensors:` du fichier canonique. Lidar absent ou muet → ERROR « navigation impossible ». En navigation : localisation perdue ou en cours de relocalisation, ou carte douteuse → WARN.
+
+### 10.3.1 La carte est un dossier
+
+`<robot>_base/maps/<carte>/` (`map_io.MapStore`) :
+
+| Fichier | Contenu |
+|---|---|
+| `slam.posegraph` + `slam.data` | graphe de poses de slam_toolbox (`SerializePoseGraph`) : ce qui permet de **compléter** la carte et de s'y **localiser** |
+| `map.pgm` + `map.yaml` | l'image (format map_server) : MCP, HUD, relocalisation |
+| `meta.yaml` | destinations, gates, départ, dernière pose |
+| `events.jsonl` | **historique**, une ligne JSON par événement (sous-modes, sauvegardes, gates, destinations, relocalisations, décalages) |
+
+- **Carte courante** : son nom est dans `maps/COURANTE`, et elle est reprise au démarrage.
+- **Sauvegarde** :
+  - graphe + image + meta toutes les `save_period_s` (60 s) **si le robot a bougé** ;
+  - à chaque événement : gate atteinte, destination, changement de sous-mode, arrêt, sortie du mode NAV, fin d'exploration ;
+  - toute écriture passe par un fichier temporaire renommé, donc une coupure laisse l'ancienne version ou la nouvelle.
+- **Anciennes cartes** (fichiers à plat d'avant le 2026-10-13) : listées « ancienne ». `load_map` les **importe** en dossier (image, destinations, gates), mais sans graphe de poses : on ne peut ni les compléter, ni y naviguer.
+
+### 10.3.2 Gates et destinations
+
+- **Gates** = les frontières connu / inconnu, **numérotées** et gardées dans la meta. Une gate garde son numéro tant qu'elle reste à moins de 0,5 m. Statuts :
+  - `ouverte` : à explorer ;
+  - `en_cours` : visée en ce moment ;
+  - `atteinte` : le robot y est allé ;
+  - `exploree` : la zone est connue ;
+  - `abandonnee` : Nav2 a échoué, ou le but n'avançait plus ;
+  - `inatteignable` : aucun chemin.
+- **Exploration automatique** : elle va de gate ouverte en gate ouverte, après avoir vérifié qu'un chemin existe, puis revient au départ. Une gate **désignée** (`explore_gate`, ou L / R puis X à la manette) passe avant les autres. Une nouvelle session redonne leur chance aux gates en échec.
+- **Destinations** : `p1`, `p2`… (renommables au MCP). Les numéros ne sont jamais réutilisés.
+
+### 10.3.3 Relocalisation et contrôle « carte = réalité » (`relocalize.py`)
+
+slam_toolbox ne sait pas faire de **localisation globale** : il lui faut une pose approchée. Quand la pose est inconnue (démarrage, robot déplacé, décalage), le superviseur la cherche lui-même sur l'image de la carte :
+- **score** d'une pose = champ de vraisemblance (distance au mur le plus proche) × part des rayons qui ne **traversent** aucun mur de la carte avant leur impact ;
+- recherche **locale** autour de la dernière pose connue, puis **globale** sur toutes les cellules libres × 32 caps, puis affinage ;
+- la pose est **acceptée** si son score atteint `reloc_accept` et devance de `reloc_margin` la meilleure hypothèse **distincte** ;
+- en cas d'**ambiguïté**, le robot fait des rotations de 90° (au plus `reloc_turns`, traction armée seulement) et cumule les scores ;
+- la pose trouvée est donnée à slam_toolbox : `map_start_pose` au démarrage, `/initialpose` en cours de navigation.
+
+**Contrôle continu en navigation**, toutes les 2 s :
+- accord sous `match_ok` : avertissement « carte modifiée ? » ;
+- sous `match_lost` pendant 5 s : le robot est **perdu**. Le but est mis en pause, le robot est relocalisé (localement, puis globalement), puis le but **reprend**.
+
+Les seuils sont à caler sur de vrais scans pris à des poses connues (essai G4).
 
 ### 10.4 Arbitrage des consignes
 
@@ -610,9 +655,10 @@ docker compose up navigation.simu      # navigation.launch.py robot:=${ROBOT} si
 
 | Outil | Serveur | Effet |
 |---|---|---|
-| `map` | ros2-analysis | GetMap (slam_toolbox en exploration, map_server en navigation) → taille, part explorée, pose du robot, **PNG** à lire en image. |
-| `nav_state` | ros2-analysis | Résumé de `/navigation/state`. |
-| `waypoints` | ros2-analysis | Cartes et points (commande `list`). |
+| `map` | ros2-analysis | GetMap (slam_toolbox, dans les deux sous-modes) → taille, part explorée, pose du robot, localisation, gates (statut, numéro), destinations, **PNG** à lire en image. |
+| `nav_state` | ros2-analysis | Résumé de `/navigation/state` (localisation, sélection, gates, destinations). |
+| `waypoints` | ros2-analysis | Cartes, destinations et gates (commande `list`). |
+| `nav_events` | ros2-analysis | Historique de la carte courante (commande `events`). |
 | `call_service /nav_supervisor/command` | ros2-action | Toutes les autres commandes. |
 
 Le rosbridge monte `ws_install` en lecture seule et le source : sans cela, il ne connaît pas les types `bamboo_interfaces`.
@@ -628,3 +674,9 @@ Le rosbridge monte `ws_install` en lecture seule et le source : sans cela, il ne
 | Ne | obstacle sur le trajet : contournement ou reprise |
 | Nf | lidar débranché : mode NAV indisponible, diagnostic `navigation` en ERROR |
 | Nsim | cartographie et points dans `playground.world` |
+| G0 ✅ (partiel) | relocalisation hors robot : 80 poses simulées sur les 10 vraies cartes, aucune pose fausse acceptée. Un vrai scan, robot immobile : une seule carte acceptée. Reste à la refaire à une pose **connue** |
+| G1 | carte vierge, exploration auto, sauvegarde périodique visible dans le dossier ; arrêt brutal → rien de perdu |
+| G2 | compléter : carte rechargée, cartographie reprise sans murs dédoublés ; numéros des gates stables ; gate désignée explorée en premier |
+| G3 | exploration → navigation → exploration sans perte ni saut ; destinations ajoutées, supprimées, atteintes |
+| G4 | robot posé ailleurs : localisation globale (avec rotations si ambiguë), puis navigation vers une destination |
+| G5 | robot soulevé et déplacé en navigation → pause, relocalisation, reprise ; meuble déplacé → simple avertissement |

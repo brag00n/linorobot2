@@ -523,10 +523,11 @@ def t_ros2_status(args):
 # ---------------------------------------------------------------------------
 # Navigation (bamboo_navigation) : carte, etat du superviseur, points
 # ---------------------------------------------------------------------------
-# Services GetMap a essayer, dans l'ordre : la carte EN COURS (slam_toolbox, exploration)
-# puis la carte CHARGEE (map_server, navigation). Le sous-mode publie decide de l'ordre.
+# Service GetMap : slam_toolbox publie la carte dans les DEUX sous-modes depuis le 2026-10-13
+# (cartographie en exploration, localisation en navigation) ; map_server ne tourne plus et
+# n'est garde qu'en repli (ancien superviseur).
 _MAP_SERVICES = {"exploration": ("/slam_toolbox/dynamic_map", "/map_server/map"),
-                 "navigation": ("/map_server/map", "/slam_toolbox/dynamic_map")}
+                 "navigation": ("/slam_toolbox/dynamic_map", "/map_server/map")}
 _NAV_STATE = "/navigation/state"
 _NAV_COMMAND = "/nav_supervisor/command"
 
@@ -577,10 +578,14 @@ def _png(path, w, h, rows):
                  + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
 
-# DEBRIEFING de l'exploration automatique : couleur par statut de frontiere (RGB).
-_FRONTIER_RGB = {"atteinte": (0, 170, 0), "abandonnee": (220, 20, 20),
-                 "trop_longue": (255, 140, 0), "inatteignable": (160, 0, 200),
-                 "interrompue": (30, 110, 255), "en_cours": (230, 200, 0)}
+# GATES (zones inconnues numerotees) : couleur par statut (RGB). Les statuts d'avant le
+# 2026-10-13 (trop_longue, interrompue) restent pour les anciens debriefings.
+_FRONTIER_RGB = {"ouverte": (0, 190, 220), "en_cours": (230, 200, 0),
+                 "atteinte": (0, 170, 0), "exploree": (150, 150, 150),
+                 "abandonnee": (255, 140, 0), "inatteignable": (160, 0, 200),
+                 "trop_longue": (255, 140, 0), "interrompue": (30, 110, 255)}
+_DEST_RGB = (220, 0, 220)          # destinations (carres magenta)
+_SEL_RGB = (255, 230, 0)           # selection de la manette (anneau)
 # Chiffres 3 x 5 (lignes de HAUT en bas) : le PNG est ecrit sans bibliotheque d'image, et les
 # numeros des frontieres doivent rester lisibles une fois l'image agrandie.
 _DIGITS = {"0": ("111", "101", "101", "101", "111"), "1": ("010", "110", "010", "010", "111"),
@@ -593,7 +598,8 @@ _DIGITS = {"0": ("111", "101", "101", "101", "111"), "1": ("010", "110", "010", 
 def _render_map(path, w, h, data, res, origin, pose, scale=1, marks=()):
     """Grille d'occupation -> PNG : inconnu gris, libre blanc, occupe noir, robot en rouge
     (disque + trait de cap). Image de HAUT en bas : la ligne 0 de la grille (y min) en bas.
-    `marks` : [(x, y, (r, g, b), texte)] -- frontieres du debriefing (pastille + numero)."""
+    `marks` : [(x, y, (r, g, b), texte[, forme])] -- gates (pastille + numero), destinations
+    (forme "carre"), selection (forme "anneau", sans texte)."""
     px = bytearray()
     for v in data:
         g = 205 if v < 0 else (254 if v < 25 else (0 if v > 65 else 128))
@@ -602,11 +608,16 @@ def _render_map(path, w, h, data, res, origin, pose, scale=1, marks=()):
     def dot(x, y, rgb):
         if 0 <= x < w and 0 <= y < h:
             px[(y * w + x) * 3:(y * w + x) * 3 + 3] = bytes(rgb)
-    for mx, my, rgb, text in marks:
+    for mk in marks:
+        mx, my, rgb, text = mk[:4]
+        shape = mk[4] if len(mk) > 4 else "disque"
         cx, cy = int((mx - origin[0]) / res), int((my - origin[1]) / res)
-        for dy in range(-2, 3):
-            for dx in range(-2, 3):
-                if dx * dx + dy * dy <= 5:
+        for dy in range(-4, 5):
+            for dx in range(-4, 5):
+                r2 = dx * dx + dy * dy
+                if (shape == "disque" and r2 <= 5) or \
+                        (shape == "carre" and abs(dx) <= 2 and abs(dy) <= 2) or \
+                        (shape == "anneau" and 13 <= r2 <= 20):
                     dot(cx + dx, cy + dy, rgb)
         # numero a DROITE de la pastille ; y de la grille vers le HAUT, glyphes de haut en bas
         x0 = cx + 4
@@ -675,17 +686,36 @@ def t_map(args):
     occ = sum(1 for v in data if v > 65)
     frame = (grid.get("header", {}) or {}).get("frame_id", "map") or "map"
     pose = _robot_pose(frame)
-    # Debriefing de l'exploration automatique (nav_supervisor, latche) : frontieres numerotees
-    # et leur statut, dessinees sur l'image.
-    log, marks = None, []
+    # Objets de la carte COURANTE (nav_supervisor, latche) : gates numerotees et leur statut,
+    # destinations, selection. Repli : l'ancien debriefing des frontieres.
+    objs, log, marks = None, None, []
     try:
-        got = Bridge().subscribe_collect("/navigation/frontier_log", 2.0, count=1,
+        got = Bridge().subscribe_collect("/navigation/objects", 2.0, count=1,
                                          msg_type="std_msgs/msg/String")
-        log = json.loads(got[0]["data"]) if got else None
+        objs = json.loads(got[0]["data"]) if got else None
     except (BridgeError, ValueError, KeyError):
-        log = None
-    for e in (log or {}).get("frontiers", []):
-        marks.append((e["x"], e["y"], _FRONTIER_RGB.get(e["s"], (90, 90, 90)), e["n"]))
+        objs = None
+    if objs is None:
+        try:
+            got = Bridge().subscribe_collect("/navigation/frontier_log", 2.0, count=1,
+                                             msg_type="std_msgs/msg/String")
+            log = json.loads(got[0]["data"]) if got else None
+        except (BridgeError, ValueError, KeyError):
+            log = None
+    gates = (objs or {}).get("gates") or [
+        {"n": e["n"], "x": e["x"], "y": e["y"], "status": e["s"]}
+        for e in (log or {}).get("frontiers", [])]
+    dests = (objs or {}).get("destinations") or []
+    sel = (objs or {}).get("selected") or {}
+    for g in gates:
+        if g["status"] != "exploree":
+            marks.append((g["x"], g["y"], _FRONTIER_RGB.get(g["status"], (90, 90, 90)), g["n"]))
+            if sel.get("gate") == g["n"]:
+                marks.append((g["x"], g["y"], _SEL_RGB, "", "anneau"))
+    for d in dests:
+        marks.append((d["x"], d["y"], _DEST_RGB, d["n"], "carre"))
+        if sel.get("dest") == d["n"]:
+            marks.append((d["x"], d["y"], _SEL_RGB, "", "anneau"))
     path = args.get("path") or os.path.join(tempfile.gettempdir(), "bamboo_map.png")
     _render_map(path, w, h, data, res, origin, pose, scale=args.get("scale", 4), marks=marks)
     lines = [
@@ -700,17 +730,29 @@ def t_map(args):
         if pose else "robot     : pose inconnue (TF %s -> odom -> base_footprint absente)" % frame,
         "image     : %s (gris inconnu, blanc libre, noir obstacle, rouge robot)" % path,
     ]
-    if log and log.get("frontiers"):
-        fr = log["frontiers"]
+    if objs is not None:
+        m = objs.get("match")
+        lines.append("localis.  : %s, accord scan/carte %s" % (
+            objs.get("loc", "?"), "--" if m is None else "%.2f" % m))
+    if gates:
         counts = {}
-        for e in fr:
-            counts[e["s"]] = counts.get(e["s"], 0) + 1
-        lines.append("frontieres : %d (%s)" % (len(fr), ", ".join(
+        for g in gates:
+            counts[g["status"]] = counts.get(g["status"], 0) + 1
+        lines.append("gates     : %d (%s)" % (len(gates), ", ".join(
             "%s %d" % (k, v) for k, v in sorted(counts.items()))))
-        lines.append("  couleurs : vert atteinte, rouge abandonnee, orange trop_longue, "
-                     "violet inatteignable, bleu interrompue, jaune en_cours")
-        for e in fr:
-            lines.append("  %3d  (%6.2f, %6.2f)  %s" % (e["n"], e["x"], e["y"], e["s"]))
+        lines.append("  couleurs : cyan ouverte, jaune en_cours, vert atteinte, orange "
+                     "abandonnee, violet inatteignable (exploree : non dessinee) ; anneau "
+                     "jaune = selection")
+        for g in gates:
+            lines.append("  %3d  (%6.2f, %6.2f)  %s%s" % (
+                g["n"], g["x"], g["y"], g["status"],
+                "  <- selection" if sel.get("gate") == g["n"] else ""))
+    if dests:
+        lines.append("destinations : %d (carres magenta)" % len(dests))
+        for d in dests:
+            lines.append("  p%-3d (%6.2f, %6.2f)  %s%s" % (
+                d["n"], d["x"], d["y"], d["name"],
+                "  <- selection" if sel.get("dest") == d["n"] else ""))
     return "\n".join(lines)
 
 
@@ -732,11 +774,37 @@ def t_nav_state(args):
         "but        : %s %s, reste %s, reprises %s"
         % (st.get("goal") or "-", st.get("goal_status") or "", num(st.get("distance_remaining"), " m"),
            st.get("recoveries", 0)),
-        "localis.   : covariance %s" % num(st.get("localization_cov"), ""),
-        "points     : %s" % (", ".join(st.get("waypoints", [])) or "aucun"),
+        "localis.   : %s, accord scan/carte %s" % (st.get("loc_state") or "?",
+                                                   num(st.get("map_match"), "")),
+        "selection  : %s" % (("%s %s %s" % (st.get("selected_kind"), st.get("selected_n"),
+                                             st.get("selected_name") or "")).strip()
+                             if st.get("selected_n") else "aucune"),
+        "gates      : %s" % (", ".join("%s:%s" % (n, s) for n, s in zip(
+            st.get("gate_n", []), st.get("gate_status", []))) or "aucune"),
+        "destinat.  : %s" % (", ".join(st.get("waypoints", [])) or "aucune"),
         "manquants  : %s" % (", ".join(st.get("missing_sensors", [])) or "aucun"),
         "detail     : %s" % (st.get("detail") or "-"),
     ])
+
+
+def t_nav_events(args):
+    # `events` ne modifie rien : lecture de l'historique de la carte courante.
+    n = int(args.get("n", 20))
+    try:
+        v = _bridge().call_service(_NAV_COMMAND, {"command": "events", "arg": str(n)})
+    except BridgeError as e:
+        return "%s (conteneur navigation arrete ?)" % e
+    try:
+        evs = json.loads(v.get("message", "[]"))
+    except ValueError:
+        return v.get("message", "") or "reponse vide"
+    if not evs:
+        return "aucun evenement (pas de carte courante ?)"
+    out = []
+    for e in evs:
+        rest = ", ".join("%s=%s" % (k, val) for k, val in e.items() if k not in ("t", "ev"))
+        out.append("%s  %-22s %s" % (e.get("t", "?"), e.get("ev", "?"), rest))
+    return "\n".join(out)
 
 
 def t_waypoints(args):
@@ -832,10 +900,12 @@ TOOLS = [
          "required": ["node"]}},
     {"name": "map",
      "description": "CARTE de navigation (bamboo_navigation) : appelle GetMap sur "
-                    "slam_toolbox (exploration, carte en cours) ou map_server (navigation, "
-                    "carte chargee), rend taille/resolution/part exploree/pose du robot et "
-                    "ECRIT UN PNG (gris inconnu, blanc libre, noir obstacle, robot rouge) a "
-                    "lire avec l'outil de lecture d'image du client.",
+                    "slam_toolbox (carte courante, en exploration comme en navigation), "
+                    "rend taille/resolution/part exploree/pose du robot, localisation, GATES "
+                    "(numero, statut) et DESTINATIONS, et ECRIT UN PNG (gris inconnu, blanc "
+                    "libre, noir obstacle, robot rouge, gates en pastilles colorees, "
+                    "destinations en carres magenta, selection cerclee de jaune) a lire avec "
+                    "l'outil de lecture d'image du client.",
      "inputSchema": {"type": "object", "properties": {
          "service": {"type": "string",
                      "description": "service GetMap explicite (defaut : selon le sous-mode)"},
@@ -844,14 +914,21 @@ TOOLS = [
                    "description": "agrandissement entier du PNG (defaut 4 : 1 cellule = 4 px)"}}}},
     {"name": "nav_state",
      "description": "Etat du superviseur de navigation (/navigation/state) : sous-mode, "
-                    "carte, but et distance restante, reprises, covariance de localisation, "
-                    "points, capteurs requis manquants.",
+                    "carte courante, but et distance restante, reprises, localisation (etat "
+                    "et accord scan/carte), selection, gates, destinations, capteurs requis "
+                    "manquants.",
      "inputSchema": {"type": "object", "properties": {
          "timeout": {"type": "number", "description": "fenetre d'ecoute en s (defaut 3)"}}}},
     {"name": "waypoints",
-     "description": "Cartes enregistrees et points de la carte courante (commande `list` "
-                    "du superviseur, sans effet).",
+     "description": "Cartes enregistrees, destinations et gates de la carte courante "
+                    "(commande `list` du superviseur, sans effet).",
      "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "nav_events",
+     "description": "HISTORIQUE de la carte courante (events.jsonl, commande `events` du "
+                    "superviseur, sans effet) : sous-modes, sauvegardes, gates, destinations, "
+                    "relocalisations, decalages carte/lidar.",
+     "inputSchema": {"type": "object", "properties": {
+         "n": {"type": "integer", "description": "nb d'evenements (defaut 20)"}}}},
     {"name": "ros2_status",
      "description": "Synthese du graphe : nombre de noeuds/topics et presence des topics "
                     "cles du robot (scan, odom, imu, battery, cmd_vel, tf, camera).",
@@ -875,6 +952,7 @@ HANDLERS = {
     "map": t_map,
     "nav_state": t_nav_state,
     "waypoints": t_waypoints,
+    "nav_events": t_nav_events,
 }
 
 
