@@ -90,7 +90,7 @@ class NavSupervisor(Node):
         # Seuils de SCORE (accord du scan avec la carte, 0..1) : a caler a l'essai sur des
         # scans reels (G3/G5) ; hors robot, la vraie pose score 0,7-0,95.
         self.reloc_accept = float(d("reloc_accept", 0.55).value)
-        self.reloc_margin = float(d("reloc_margin", 0.08).value)
+        self.reloc_margin = float(d("reloc_margin", 0.10).value)
         self.reloc_local_r = float(d("reloc_local_radius_m", 1.5).value)
         self.reloc_turns = int(d("reloc_turns", 3).value)
         self.reloc_turn_speed = float(d("reloc_turn_speed", 0.5).value)
@@ -636,7 +636,7 @@ class NavSupervisor(Node):
             how = "globale"
         turns = 0
         while not ok and best is not None and turns < self.reloc_turns:
-            if self._armed is False:
+            if self._armed is not True:     # rotation : traction ARMEE explicitement
                 break
             o0 = self._odomPose()
             self.detail = "relocalisation : ambigue, rotation %d/%d" % (turns + 1,
@@ -657,7 +657,7 @@ class NavSupervisor(Node):
         if not ok:
             why = ("aucune pose plausible" if best is None or best[0] < self.reloc_accept
                    else "plusieurs poses possibles (%.2f contre %.2f)" % (best[0], rival[0]))
-            if self._armed is False and turns < self.reloc_turns and best is not None:
+            if self._armed is not True and turns < self.reloc_turns and best is not None:
                 why += " ; armer la traction (B long) pour tourner et lever le doute"
             self._event("relocalisation_echec", raison=why, **info)
             return None, "relocalisation impossible : " + why
@@ -687,7 +687,7 @@ class NavSupervisor(Node):
         pose = self._robotPose(stamp)
         if pose is None:
             return math.nan
-        return float(lm.score(pts, [pose])[0])
+        return lm.judge(pts, pose)
 
     def _locTick(self):
         """CONTROLE CONTINU en navigation : la carte correspond-elle a ce que voit le lidar ?
@@ -828,6 +828,12 @@ class NavSupervisor(Node):
         return ok, "navigation sur %s (%s) : %s" % (name, how, why)
 
     def setSubmode(self, mode, arg=""):
+        ok, why = self._setSubmode(mode, arg)
+        if not ok and self.submode == "idle" and not self.slamMode:
+            self._tfListen(False)          # refus depuis idle : la TF n'a plus a etre ecoutee
+        return ok, why
+
+    def _setSubmode(self, mode, arg):
         if mode not in ("idle", "exploration", "navigation"):
             return False, "sous-mode inconnu : %s" % mode
         if mode == self.submode and not arg:

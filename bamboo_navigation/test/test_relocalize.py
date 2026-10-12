@@ -92,6 +92,20 @@ def test_local_search_stays_in_its_region():
     assert hs and all(math.hypot(p[0] - 2.2, p[1] - 1.6) < 0.6 + 0.2 for _s, p in hs)
 
 
+def test_rays_through_a_wall_condemn_a_pose():
+    # Deux pieces identiques cote a cote, separees par un mur ; la vraie pose est dans celle
+    # de gauche, la porte de communication est fermee. Placee a droite, la meme lecture
+    # colle aussi aux murs, mais ses rayons vers la gauche TRAVERSENT le mur mitoyen.
+    g = _room(8.0, 3.0, [(3.95, 0.0, 4.05, 3.0)])
+    m = rl.LikelihoodMap(g, RES, (0.0, 0.0))
+    pts = _scan(m, (1.0, 1.5, 0.0))
+    assert m.crossing(pts, (1.0, 1.5, 0.0)) < 0.02
+    assert m.crossing(pts, (5.0, 1.5, 0.0)) < 0.02          # piece jumelle : rien a redire
+    wrong = (3.0, 1.5, 0.0)                                 # decalee : rayons vers la droite
+    assert m.crossing(pts, wrong) > 0.1
+    assert m.judge(pts, wrong) < m.judge(pts, (1.0, 1.5, 0.0)) - 0.2
+
+
 def test_compose_and_relative_are_inverse():
     p0, p1 = (1.0, 2.0, 0.5), (1.4, 2.3, 1.1)
     back = rl.compose(p0, rl.relative(p0, p1))

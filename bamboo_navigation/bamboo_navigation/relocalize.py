@@ -14,6 +14,8 @@ METHODE (champ de vraisemblance, comme le « likelihood field » d'AMCL) :
   - recherche GLOBALE : toutes les cellules libres (pas `step`), `n_head` caps, avec un sigma
     LARGE (la grille de recherche est grossiere), puis AFFINAGE des meilleures (descente de
     pas, sigma fin) ;
+  - COHERENCE des rayons : la note finale d'une hypothese affinee est multipliee par la part
+    des rayons qui ne TRAVERSENT aucun mur de la carte avant leur impact (judge) ;
   - DECISION : la meilleure est acceptee si son score atteint `accept` ET si elle devance de
     `margin` la meilleure hypothese DISTINCTE (ailleurs, ou meme endroit mais autre cap :
     une piece rectangulaire vide se lit pareil retournee de 180 degres) ;
@@ -133,6 +135,41 @@ class LikelihoodMap:
         val[inside] = lik[iy[inside], ix[inside]]
         return val.mean(axis=1)
 
+    def crossing(self, pts, pose, margin=0.30, depth=3):
+        """Part des rayons qui TRAVERSENT un obstacle de la carte avant leur point d'impact
+        (plus de `margin` avant lui) : un mur entre le lidar et ce qu'il a touche contredit la
+        pose. Le seul champ de vraisemblance ne le voit pas -- essai G0 sur scan reel
+        (2026-10-13) : des poses FAUSSES y scoraient 0,69 contre 0,72 pour la candidate juste,
+        dans des pieces aux murs droits. TRAVERSER = `depth` echantillons occupes d'affilee
+        (pas d'une demi-cellule, ~0,1 m) : un rayon qui RASE un angle de mur ne compte pas."""
+        x, y, t = pose
+        c, s = math.cos(t), math.sin(t)
+        wx = x + c * pts[:, 0] - s * pts[:, 1]
+        wy = y + s * pts[:, 0] + c * pts[:, 1]
+        dx, dy = wx - x, wy - y
+        r = np.hypot(dx, dy)
+        n = int(np.max(r) / (self.res / 2.0)) + 1 if len(r) else 0
+        if n <= depth:
+            return 0.0
+        f = np.linspace(0.0, 1.0, n)[None, :]
+        sx = x + dx[:, None] * f
+        sy = y + dy[:, None] * f
+        along = r[:, None] * f
+        use = (along > 0.10) & (along < r[:, None] - margin)
+        ix = np.floor((sx - self.ox) / self.res).astype(np.int64)
+        iy = np.floor((sy - self.oy) / self.res).astype(np.int64)
+        inside = use & (ix >= 0) & (ix < self.w) & (iy >= 0) & (iy < self.h)
+        occ = np.zeros(ix.shape, dtype=bool)
+        occ[inside] = self.grid[iy[inside], ix[inside]] >= OCC
+        run = occ[:, :n - depth + 1].copy()
+        for k in range(1, depth):
+            run &= occ[:, k:n - depth + 1 + k]
+        return float(run.any(axis=1).mean())
+
+    def judge(self, pts, pose, sigma=0.05):
+        """Note FINALE d'une pose : vraisemblance x (1 - part des rayons qui traversent)."""
+        return float(self.score(pts, [pose], sigma)[0]) * (1.0 - self.crossing(pts, pose))
+
     def candidates(self, step=0.15, region=None):
         """Positions (x, y) ou le robot TIENT : cellules libres a plus de `clearance` d'un
         obstacle, une tous les `step` m ; `region` = (x, y, rayon) pour restreindre."""
@@ -191,7 +228,10 @@ class LikelihoodMap:
                 picked.append(p)
                 if len(picked) >= 3 * keep:
                     break
-        out = [self.refine(pts, p) for p in picked]
+        out = []
+        for p in picked:
+            _s, q = self.refine(pts, p)
+            out.append((self.judge(pts, q), q))
         if region is not None:
             # L'affinage peut faire glisser une hypothese faible hors de la zone demandee :
             # une recherche LOCALE ne rend que des poses de sa zone.
@@ -247,8 +287,8 @@ class Relocalizer:
     def update(self, pts, delta):
         out = []
         for _mean, pose, scores in self.hyps:
-            s, p = self.m.refine(pts, compose(pose, delta))
-            sc = scores + [s]
+            _s, p = self.m.refine(pts, compose(pose, delta))
+            sc = scores + [self.m.judge(pts, p)]
             out.append((sum(sc) / len(sc), p, sc))
         out.sort(key=lambda h: -h[0])
         kept = []
