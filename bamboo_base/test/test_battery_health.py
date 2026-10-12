@@ -91,3 +91,12 @@ def test_motion_resets_the_reference():
     _rest(det, 0, 100, lambda t: 11.9, [])
     assert det.observe(100.5, 11.5, None) is None                  # en roulant : ignore
     assert det.observe(101.0, 12.1, 0.5) is None                   # repos trop court : rien
+
+
+def test_settling_after_plug_is_not_an_unplug():
+    """Mesure du 2026-10-12 : saut +0,7 V au branchement, puis la tension redescend un peu."""
+    det, ev = ChargerDetector(), []
+    _rest(det, 0, 260,
+          lambda t: 11.31 if t < 100 else 12.01 - 0.05 * (1 - math.exp(-(t - 100) / 20.0)), ev)
+    assert [e[1] for e in ev] == ["branche"]
+    assert det.charging is True

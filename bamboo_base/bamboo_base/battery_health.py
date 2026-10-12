@@ -84,8 +84,12 @@ class ChargerDetector:
                     return self._set(True, dv, "saut V")
                 if dv < -self.step_v and self.charging is not False:
                     return self._set(False, dv, "saut V")
-        # PENTE : chargeur deja branche (ou debranche) avant le debut du repos, sans saut vu.
-        if rest_age >= self.quiet_s + self.slope_span_s:
+        # PENTE : chargeur deja branche avant le debut du repos, sans saut vu. Seulement sur un
+        # historique COMPLET de slope_span_s : juste apres un branchement la tension redescend
+        # un peu (12,01 -> 11,98 V en 30 s, 2026-10-12), et une pente sur ces quelques secondes
+        # passait pour un debranchement.
+        span = (h[-1][0] - h[0][0]) if h else 0.0
+        if rest_age >= self.quiet_s + self.slope_span_s and span >= 0.9 * self.slope_span_s:
             pts = [(u, x) for u, x in h if t - u <= self.slope_span_s]
             if len(pts) >= 10:
                 mu = sum(u for u, _ in pts) / len(pts)
@@ -94,8 +98,9 @@ class ChargerDetector:
                 slope = 60.0 * sum((u - mu) * (x - mx) for u, x in pts) / den if den else 0.0
                 if slope > self.slope_v_min and self.charging is not True:
                     return self._set(True, slope, "pente V/min")
-                if slope < -self.slope_v_min / 2 and self.charging is True:
-                    return self._set(False, slope, "pente V/min")
+                # Jamais de DEBRANCHEMENT sur une pente : un chargeur qui couvre mal la
+                # consommation du robot fait lui aussi baisser lentement la tension. Le
+                # debranchement se lit sur le SAUT vers le bas (ci-dessus) uniquement.
                 # PAS de conclusion sur une tension STABLE : un chargeur qui compense tout juste
                 # la consommation du robot (~0,6 A) la laisse stable ALORS QU'IL EST BRANCHE
                 # (constate le 2026-10-12 : +0,002 V/min, chargeur branche). Etat inconnu.
