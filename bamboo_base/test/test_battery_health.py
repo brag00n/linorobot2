@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from bamboo_base.battery_health import BatteryHealth, soc_from_rest  # noqa: E402
+from bamboo_base.battery_health import BatteryHealth, ChargerDetector, soc_from_rest  # noqa: E402,E501
 
 
 def test_soc_curve():
@@ -48,3 +48,46 @@ def test_no_current_falls_back_on_commands():
     for k in range(40):
         h.observe(0.25 * k, 11.8, None, [0.0, 0.0], [0.0, 0.0])
     assert h.resistance is None and h.rest_voltage == 11.8
+
+
+def _rest(det, t0, t1, volt, events):
+    """Repos continu de t0 a t1 (s), un point par 0,25 s ; volt(t) -> tension."""
+    t = t0
+    while t < t1:
+        ev = det.observe(t, volt(t), t - t0 + 200.0)       # repos commence bien avant t0
+        if ev:
+            events.append((t, ev[0]))
+        t += 0.25
+
+
+def test_charger_plug_and_unplug_steps():
+    det, ev = ChargerDetector(), []
+    _rest(det, 0, 300, lambda t: 11.91 if t < 100 else (12.02 if t < 200 else 11.92), ev)
+    assert [e[1] for e in ev] == ["branche", "debranche"]
+    assert 100 < ev[0][0] < 110 and 200 < ev[1][0] < 210          # detecte en < 10 s
+    assert det.charging is False
+
+
+def test_relaxation_after_driving_is_not_a_charger():
+    """Apres avoir roule, la tension REMONTE seule (constante de temps ~15 s)."""
+    det, ev, t = ChargerDetector(), [], 0.0
+    while t < 400:
+        v = 11.90 - 0.30 * math.exp(-t / 15.0)
+        e = det.observe(t, v, t)                                 # repos qui commence a t = 0
+        if e:
+            ev.append(e[0])
+        t += 0.25
+    assert ev == []
+
+
+def test_charger_already_plugged_seen_by_slope():
+    det, ev = ChargerDetector(), []
+    _rest(det, 0, 300, lambda t: 11.90 + 0.02 * t / 60.0, ev)     # +0,02 V/min, sans saut
+    assert ev and ev[0][1] == "branche"
+
+
+def test_motion_resets_the_reference():
+    det = ChargerDetector()
+    _rest(det, 0, 100, lambda t: 11.9, [])
+    assert det.observe(100.5, 11.5, None) is None                  # en roulant : ignore
+    assert det.observe(101.0, 12.1, 0.5) is None                   # repos trop court : rien

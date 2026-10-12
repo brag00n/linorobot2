@@ -753,6 +753,11 @@ class Esp32MavlinkDriver(Node):
             b.current = float("nan") if cur is None else -float(cur)
             soc = self._diag.health.soc if getattr(self, "_diag", None) else None
             b.percentage = float("nan") if soc is None else soc / 100.0
+            # Chargeur deduit de la tension au repos (battery_health.ChargerDetector).
+            chg = self._diag.health.charger.charging if getattr(self, "_diag", None) else None
+            b.power_supply_status = (BatteryState.POWER_SUPPLY_STATUS_UNKNOWN if chg is None
+                                     else BatteryState.POWER_SUPPLY_STATUS_CHARGING if chg
+                                     else BatteryState.POWER_SUPPLY_STATUS_DISCHARGING)
             self.pub_batt.publish(b)
 
         # magneto (optionnelle) : uT -> Tesla.

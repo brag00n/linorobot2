@@ -42,6 +42,70 @@ def soc_from_rest(v_pack, cells):
     return None
 
 
+class ChargerDetector:
+    """Branchement / debranchement du CHARGEUR, deduit de la tension AU REPOS.
+
+    Sur BambooWS le chargeur alimente le pack SANS passer par l'INA219 de la carte : le
+    courant mesure reste celui du robot (-0,61 A, chargeur branche, 2026-10-12). Reste la
+    TENSION : au branchement elle fait un SAUT vers le haut (+0,11 V mesure, 11,91 -> 12,02 V),
+    au debranchement un saut vers le bas, et en charge elle MONTE lentement.
+    Piege : apres avoir roule, la tension REMONTE seule (relaxation du pack), et ressemble a un
+    branchement. On ne compare donc que sur un repos CONTINU d'au moins `quiet_s`.
+    """
+
+    def __init__(self, step_v=0.08, quiet_s=60.0, slope_v_min=0.01, slope_span_s=120.0):
+        self.step_v = step_v
+        self.quiet_s = quiet_s
+        self.slope_v_min = slope_v_min
+        self.slope_span_s = slope_span_s
+        self._hist = collections.deque()         # (t, v) au repos, un point par 0,5 s
+        self.charging = None                     # None = inconnu
+
+    def observe(self, t, v, rest_age):
+        """`rest_age` = duree du repos continu (s), None en mouvement. Rend None, ou
+        ("branche" | "debranche", mesure, "saut V" | "pente V/min") quand l'etat change."""
+        if rest_age is None:
+            self._hist.clear()
+            return None
+        h = self._hist
+        if h and t - h[-1][0] < 0.5:
+            return None
+        h.append((t, v))
+        while h and t - h[0][0] > max(40.0, self.slope_span_s):
+            h.popleft()
+        # SAUT : 5 dernieres secondes contre la fenetre [t-30, t-25], repos continu depuis
+        # quiet_s AVANT cette fenetre (la relaxation apres conduite est alors finie).
+        if rest_age >= self.quiet_s + 30.0:
+            rec = [x for u, x in h if t - u <= 5.0]
+            past = [x for u, x in h if 25.0 <= t - u <= 30.0]
+            if len(rec) >= 3 and len(past) >= 3:
+                dv = statistics.median(rec) - statistics.median(past)
+                if dv > self.step_v and self.charging is not True:
+                    return self._set(True, dv, "saut V")
+                if dv < -self.step_v and self.charging is not False:
+                    return self._set(False, dv, "saut V")
+        # PENTE : chargeur deja branche (ou debranche) avant le debut du repos, sans saut vu.
+        if rest_age >= self.quiet_s + self.slope_span_s:
+            pts = [(u, x) for u, x in h if t - u <= self.slope_span_s]
+            if len(pts) >= 10:
+                mu = sum(u for u, _ in pts) / len(pts)
+                mx = sum(x for _, x in pts) / len(pts)
+                den = sum((u - mu) ** 2 for u, _ in pts)
+                slope = 60.0 * sum((u - mu) * (x - mx) for u, x in pts) / den if den else 0.0
+                if slope > self.slope_v_min and self.charging is not True:
+                    return self._set(True, slope, "pente V/min")
+                if slope < -self.slope_v_min / 2 and self.charging is True:
+                    return self._set(False, slope, "pente V/min")
+                if self.charging is None and abs(slope) <= self.slope_v_min / 2:
+                    self.charging = False             # repos stable : pas en charge (sans evenement)
+        return None
+
+    def _set(self, state, value, kind):
+        self.charging = state
+        self._hist.clear()                       # le meme saut ne doit pas compter deux fois
+        return ("branche" if state else "debranche", value, kind)
+
+
 class BatteryHealth:
 
     def __init__(self, cells=3, profile=None, rest_current_a=0.3, rest_settle_s=2.0,
@@ -67,6 +131,8 @@ class BatteryHealth:
         self._drive = collections.deque()        # (t, dt, deficit, v)
         self._last_t = None
         self.has_current = False
+        self.charger = ChargerDetector()
+        self._chgEvents = collections.deque(maxlen=4)
 
     # ------------------------------------------------------------------ entree
     def observe(self, t, v, i=None, req=None, meas=None):
@@ -100,6 +166,10 @@ class BatteryHealth:
             self._low.append((t, v))
         while self._low and t - self._low[0][0] > 10.0:
             self._low.popleft()
+        rest_age = (t - self._rest_since) if at_rest and self._rest_since is not None else None
+        ev = self.charger.observe(t, v, rest_age)
+        if ev:
+            self._chgEvents.append(ev)
 
         # Decrochage de traction (M1/M2 : un encodeur par cote sur l'ESP32).
         if req and meas and moving:
@@ -114,6 +184,10 @@ class BatteryHealth:
             self._req_since = None
         while self._drive and t - self._drive[0][0] > self.window_s:
             self._drive.popleft()
+
+    def pop_charger_event(self):
+        """Le prochain evenement chargeur (etat, mesure, nature de la mesure), ou None."""
+        return self._chgEvents.popleft() if self._chgEvents else None
 
     # ------------------------------------------------------------------ estimations
     @property

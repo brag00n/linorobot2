@@ -83,6 +83,14 @@ class DriverDiagnostics:
         self._battKey = key
         self.health.observe(now, float(v), snap.get("battery_current"),
                             snap.get("motor_rpm_req"), snap.get("motor_rpm"))
+        ev = self.health.pop_charger_event()
+        if ev:
+            # Au JOURNAL (demande utilisateur 2026-10-12) : branchement / debranchement de la
+            # charge, deduit de la tension au repos (le chargeur ne passe pas par l'INA219).
+            what, val, kind = ev
+            self._d.get_logger().warn(
+                "chargeur %s (%s %+.3f au repos, tension %.2f V)" % (
+                    "BRANCHE" if what == "branche" else "DEBRANCHE", kind, val, float(v)))
 
     # ------------------------------------------------------------------ taches
     def _link(self, stat):
@@ -137,6 +145,8 @@ class DriverDiagnostics:
         stat.add("courant_a", "non mesure" if cur is None else "%.2f" % cur)
         rest, soc, r, sag = h.rest_voltage, h.soc, h.resistance, h.sag
         stat.add("tension_repos_v", "?" if rest is None else "%.2f" % rest)
+        chg = h.charger.charging
+        stat.add("chargeur", "?" if chg is None else ("branche" if chg else "debranche"))
         stat.add("charge_pct", "?" if soc is None else "%.0f" % soc)
         stat.add("courbe_charge", "profil mesure" if h.profile else "Li-ion generique")
         stat.add("resistance_interne_ohm",
