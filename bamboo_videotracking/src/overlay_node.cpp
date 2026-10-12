@@ -136,6 +136,9 @@ const cv::Scalar kLockId(147, 20, 255);    // identite d'episode (DeepPink en BG
 const cv::Scalar kOrange(0, 140, 255);     // prediction
 const cv::Scalar kCross(80, 80, 80);       // croix de centrage
 const cv::Scalar kBad(0, 0, 255);          // absent / en faute (`_C_BAD` du proto)
+const cv::Scalar kSelect(0, 255, 255);     // selection de la manette (L / R), mini-carte
+const cv::Scalar kGateOpen(255, 255, 0);   // gate a explorer (cyan)
+const cv::Scalar kDest(255, 0, 255);       // destination (magenta)
 
 /// Pastille MANETTE : portage de la pastille d'etat du bouton MANETTE du prototype
 /// (RobotMain.py, `_draw_help_matrix`), TROIS etats et non deux :
@@ -205,6 +208,35 @@ void put(
   double sc = 0.45, int th = 1)
 {
   cv::putText(im, s, cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, sc, col, th, cv::LINE_AA);
+}
+
+/// Icone de PRISE (chargeur branche), en primitives : les polices Hershey d'OpenCV ne savent
+/// pas tracer d'emoji (demande utilisateur 2026-10-12 : « une prise devant la tension »).
+/// Prise couchee, broches vers la DROITE, bord droit en `xr`, posee sur la ligne de base
+/// `yb` du texte voisin. Rend la largeur dessinee.
+int drawPlug(cv::Mat & im, int xr, int yb, double u)
+{
+  const int bh = std::max(6, iu(9, u));          // corps : hauteur
+  const int bw = std::max(5, iu(7, u));          //         largeur
+  const int pl = std::max(3, iu(4, u));          // broches
+  const int cl = std::max(3, iu(5, u));          // depart du cable
+  const int top = yb - bh;
+  const int bx1 = xr - pl;
+  const int bx0 = bx1 - bw;
+  const int p1 = top + bh / 3;
+  const int p2 = yb - bh / 3;
+  const int mid = top + bh / 2;
+  // Ombre noire d'abord (lisible sur toute image), puis le trace vert.
+  for (int pass = 0; pass < 2; ++pass) {
+    const cv::Scalar col = pass == 0 ? kShade : kOn;
+    const int th = pass == 0 ? 3 : 1;
+    cv::rectangle(im, cv::Point(bx0, top), cv::Point(bx1, yb), col,
+      pass == 0 ? th : cv::FILLED);
+    cv::line(im, cv::Point(bx1, p1), cv::Point(xr, p1), col, th);
+    cv::line(im, cv::Point(bx1, p2), cv::Point(xr, p2), col, th);
+    cv::line(im, cv::Point(bx0 - cl, mid), cv::Point(bx0, mid), col, th);
+  }
+  return pl + bw + cl;
 }
 
 /// Nombre formate a `nd` decimales, sans passer par printf (types flottants varies).
@@ -429,6 +461,15 @@ public:
             nm.find("driver") != std::string::npos)
           {
             batt_level_ = static_cast<int>(st.level);
+          } else if (nm.size() >= 14 && nm.compare(nm.size() - 14, 14, "modes du robot") == 0) {
+            // Navigation A LA DEMANDE (gestionnaire de modes) : pendant les ~30 s ou le
+            // conteneur demarre, la carte NAV le dit au lieu de « superviseur muet ».
+            for (const auto & kv : st.values) {
+              if (kv.key == "a_la_demande_nav") {
+                std::atomic_store(&od_nav_, std::make_shared<const std::string>(kv.value));
+                last_od_ = now_steady_.now();
+              }
+            }
           }
         }
         std::vector<std::pair<std::string, int>> mods;
@@ -572,6 +613,10 @@ public:
       rclcpp::QoS(10).reliable(),
       [this](sensor_msgs::msg::BatteryState::ConstSharedPtr m) {
         batt_v_ = m->voltage;
+        // CHARGEUR branche : deduit par le driver de la tension au repos (ChargerDetector de
+        // bamboo_base) ; icone de prise devant la tension, en bas a droite (2026-10-12).
+        charging_ = m->power_supply_status ==
+          sensor_msgs::msg::BatteryState::POWER_SUPPLY_STATUS_CHARGING;
         last_batt_ = now_steady_.now();
       });
     // Rapport de calibration (lignes de mesure), LATCHE par bamboo_calibration : meme
@@ -1249,10 +1294,22 @@ private:
     const int step = iu(19, u);
     const int yc = y + iu(38, u);
     const size_t nm = n ? n->missing_sensors.size() : 0;
-    const int h = iu(38 + 5 * 19 + 4, u) + static_cast<int>(nm + 1) * iu(15, u);
+    const int h = iu(38 + 6 * 19 + 4, u) + static_cast<int>(nm + 1) * iu(15, u);
     cardFrame(im, x, y, h, "NAVIGATION", n && n->ready, u);
     if (!n) {
-      cardRow(im, x, yc, u, {{10, "superviseur muet (conteneur navigation ?)", kOff}});
+      // Navigation A LA DEMANDE : le superviseur se tait aussi pendant son demarrage (~30 s
+      // apres l'entree en NAV) et apres l'arret differe ; le dire plutot que « muet ».
+      const auto od = fresh(last_od_, 5.0) ? std::atomic_load(&od_nav_) : nullptr;
+      const std::string s = od ? *od : "";
+      const char * txt = "superviseur muet (conteneur navigation ?)";
+      if (s.rfind("starting", 0) == 0 || s.rfind("running", 0) == 0) {
+        txt = "demarrage a la demande (~30 s)...";
+      } else if (s.rfind("stopping", 0) == 0 || s.rfind("stopped", 0) == 0) {
+        txt = "navigation arretee (hors mode NAV)";
+      } else if (s.rfind("error", 0) == 0) {
+        txt = "demarrage a la demande EN ECHEC";
+      }
+      cardRow(im, x, yc, u, {{10, txt, s.rfind("error", 0) == 0 ? kBad : kOff}});
       return y + h;
     }
     cardRow(im, x, yc, u, {
@@ -1269,11 +1326,25 @@ private:
       {100, std::isnan(n->distance_remaining) ? "--" : fmt(n->distance_remaining, 2) + " m",
         kVal},
       {180, "reprises", kLabel}, {255, std::to_string(n->recoveries), kVal}});
+    // LOCALISATION (slam_toolbox + controle de l'accord scan / carte du superviseur) : vert
+    // ok, orange douteuse / relocalisation, rouge perdue.
+    const std::string & ls = n->loc_state;
+    const cv::Scalar lc = ls == "ok" ? kOn : (ls == "perdue" ? kBad :
+      (ls == "inconnue" || ls.empty()) ? kOff : kZoneOut);
     cardRow(im, x, yc + 4 * step, u, {
-      {10, "points", kLabel}, {100, std::to_string(n->waypoints.size()), kVal},
-      {180, "loc.", kLabel},
-      {225, std::isnan(n->localization_cov) ? "--" : fmt(n->localization_cov, 2), kVal}});
-    int yy = yc + 5 * step;
+      {10, "loc.", kLabel}, {100, ls.empty() ? "--" : ls, lc},
+      {180, "accord", kLabel},
+      {245, std::isnan(n->map_match) ? "--" : fmt(n->map_match, 2), lc}});
+    // SELECTION (L / R) : gate en exploration, destination en navigation.
+    std::string sel = "--";
+    if (n->selected_n > 0) {
+      sel = n->selected_kind == "gate" ? "gate " + std::to_string(n->selected_n) :
+        std::to_string(n->selected_n) + " " + n->selected_name;
+    }
+    cardRow(im, x, yc + 5 * step, u, {
+      {10, "sel.", kLabel}, {100, sel, n->selected_n > 0 ? kSelect : kOff},
+      {180, "dest.", kLabel}, {245, std::to_string(n->dest_n.size()), kVal}});
+    int yy = yc + 6 * step;
     // Le MESSAGE du superviseur (exploration auto, gyro recalibre, refus...) : sans lui,
     // l'operateur ne voyait que les champs, pas ce qui vient de se passer (2026-10-11).
     std::string det = n->detail;
@@ -1369,11 +1440,40 @@ private:
       for (const auto & p : plan->poses) {pts.push_back(px(p.pose.position.x, p.pose.position.y));}
       if (pts.size() > 1) {cv::polylines(im, pts, false, kOrange, 1, cv::LINE_AA);}
     }
-    const auto fr = std::atomic_load(&fronts_);
-    if (fr) {
+    // GATES (zones inconnues numerotees) et DESTINATIONS de la carte courante, avec leur
+    // numero ; la SELECTION de la manette est cerclee. Les gates viennent de NavState (depuis
+    // le 2026-10-13) ; /navigation/frontiers ne sert plus que de repli (superviseur ancien).
+    const double ts = 0.32 * u;
+    const int rr = std::max(2, iu(3, u));
+    if (n && !n->gate_n.empty()) {
+      const size_t ng = std::min({n->gate_n.size(), n->gate_x.size(), n->gate_y.size(),
+          n->gate_status.size()});
+      for (size_t i = 0; i < ng; ++i) {
+        const std::string & st = n->gate_status[i];
+        const cv::Scalar col = st == "ouverte" ? kGateOpen : st == "en_cours" ? kPredicted :
+          st == "atteinte" ? kOn : st == "inatteignable" ? kBad : kZoneOut;
+        const cv::Point c = px(n->gate_x[i], n->gate_y[i]);
+        cv::circle(im, c, rr, col, cv::FILLED);
+        putShadowed(im, std::to_string(n->gate_n[i]), c + cv::Point(rr + 1, -rr), ts);
+        if (n->selected_kind == "gate" && n->selected_n == n->gate_n[i]) {
+          cv::circle(im, c, rr + std::max(3, iu(4, u)), kSelect, 1, cv::LINE_AA);
+        }
+      }
+    } else if (const auto fr = std::atomic_load(&fronts_)) {
       for (const auto & p : fr->poses) {
-        cv::circle(im, px(p.position.x, p.position.y), std::max(2, iu(3, u)),
-          cv::Scalar(255, 255, 0), cv::FILLED);
+        cv::circle(im, px(p.position.x, p.position.y), rr, kGateOpen, cv::FILLED);
+      }
+    }
+    if (n) {
+      const size_t nd = std::min({n->dest_n.size(), n->dest_x.size(), n->dest_y.size()});
+      const int k = std::max(2, iu(3, u));
+      for (size_t i = 0; i < nd; ++i) {
+        const cv::Point c = px(n->dest_x[i], n->dest_y[i]);
+        cv::rectangle(im, c - cv::Point(k, k), c + cv::Point(k, k), kDest, cv::FILLED);
+        putShadowed(im, "p" + std::to_string(n->dest_n[i]), c + cv::Point(k + 1, -k), ts);
+        if (n->selected_kind == "dest" && n->selected_n == n->dest_n[i]) {
+          cv::circle(im, c, k + std::max(4, iu(5, u)), kSelect, 1, cv::LINE_AA);
+        }
       }
     }
     const auto home = std::atomic_load(&home_);
@@ -1550,18 +1650,19 @@ private:
       // CPU et tension prennent la couleur du NIVEAU de leur diagnostic (blanc OK, orange
       // WARN, rouge ERROR) ; le HUD passe orange sous 10 fps.
       // couleur : -1 = blanc (texte ombre seul), sinon niveau 1 orange / 2 rouge / 9 gris.
-      struct Seg {std::string text; int col;};
+      // `plug` : icone de PRISE devant le segment (chargeur branche).
+      struct Seg {std::string text; int col; bool plug;};
       std::vector<Seg> segs;
       const bool cpu_ok = fresh(last_cpu_, 15.0);
       const int cl = cpu_level_;
       segs.push_back({cpu_ok ? "CPU " + fmt(cpu_pct_, 0) + " %" : "CPU --",
-          cpu_ok ? (cl >= 1 ? cl : -1) : 9});
+          cpu_ok ? (cl >= 1 ? cl : -1) : 9, false});
       const bool bat_ok = fresh(last_batt_, 5.0);
       const int bl = batt_level_;
       segs.push_back({bat_ok ? fmt(batt_v_, 2) + " V" : "-- V",
-          bat_ok ? (bl >= 1 ? bl : -1) : 9});
+          bat_ok ? (bl >= 1 ? bl : -1) : 9, bat_ok && charging_});
       segs.push_back({"HUD " + fmt(last_overlay_fps_, 1) + " fps",
-          last_overlay_fps_ < 10.0 ? 1 : -1});
+          last_overlay_fps_ < 10.0 ? 1 : -1, false});
       int xr = im.cols - iu(8, u);
       const int yb = im.rows - iu(10, u);
       for (auto it = segs.rbegin(); it != segs.rend(); ++it) {
@@ -1573,6 +1674,7 @@ private:
           put(im, it->text, xr, yb, it->col == 9 ? kOff : (it->col == 1 ? kZoneOut : kBad),
             0.5 * u);
         }
+        if (it->plug) {xr -= drawPlug(im, xr - iu(4, u), yb, u) + iu(4, u);}
         xr -= iu(14, u);
       }
     }
@@ -1798,6 +1900,10 @@ private:
   std::atomic<int> cpu_level_{0};
   std::atomic<int> batt_level_{0};
   rclcpp::Time last_cpu_{0, 0, RCL_STEADY_TIME};
+  std::atomic<bool> charging_{false};
+  // Etat du groupe `nav` a la demande (starting / running / stopping / stopped, ...).
+  std::shared_ptr<const std::string> od_nav_;
+  rclcpp::Time last_od_{0, 0, RCL_STEADY_TIME};
   // Cache de la reduction (fil du dessin seulement) : carte source, cote, echelle.
   std::shared_ptr<const MiniMap> mm_src_;
   cv::Mat mm_scaled_;
