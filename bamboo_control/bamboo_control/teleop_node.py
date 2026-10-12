@@ -1045,20 +1045,44 @@ class TeleopNode(Node):
                              lambda: "< duree %s" % self._captText(), None),
             "flip_image": (self._actFlip, lambda: "miroir image",
                            lambda: bool(self._flipOn)),
-            # --- mode NAV : sous-modes, cartes, points (nav_supervisor) ----------------
-            "nav_explore": (lambda: self._nav("exploration"), lambda: "explorer (carte)",
+            # --- mode NAV : sous-modes, carte courante, gates, destinations ----------------
+            # (nav_supervisor). La carte COURANTE est gardee d'un sous-mode a l'autre ; la
+            # SELECTION (L / R) est tenue par le superviseur, que le HUD et le MCP lisent aussi.
+            "nav_explore": (lambda: self._nav("exploration"), lambda: "cartographier",
                             lambda: self._navSub() == "exploration"),
-            # Exploration AUTOMATIQUE (frontieres, retour au depart) : bascule marche / arret.
+            # Exploration AUTOMATIQUE (gates, retour au depart) : bascule marche / arret.
             "nav_auto_explore": (lambda: self._nav("auto_explore"),
                                  lambda: "explorer seul",
                                  lambda: bool(self._navState and self._navState.detail
                                               .startswith("exploration auto :"))),
+            "nav_new_map": (lambda: self._nav("new_map"), lambda: "nouvelle carte", None),
+            "nav_gate_next": (lambda: self._nav("select", "gate+"),
+                              lambda: "gate %s >" % self._navSel("gate"), None),
+            "nav_gate_prev": (lambda: self._nav("select", "gate-"),
+                              lambda: "< gate %s" % self._navSel("gate"), None),
+            "nav_explore_gate": (lambda: self._nav("explore_gate"),
+                                 lambda: "explorer la gate %s" % self._navSel("gate"), None),
             "nav_save_map": (lambda: self._nav("save_map"), lambda: "sauver la carte", None),
             "nav_idle": (lambda: self._nav("idle"), lambda: "arreter", None),
             "nav_navigate": (lambda: self._nav("navigation"),
-                             lambda: "naviguer (derniere carte)",
+                             lambda: "naviguer (carte courante)",
                              lambda: self._navSub() == "navigation"),
-            "nav_save_wp": (lambda: self._nav("save_waypoint"), lambda: "noter ce point", None),
+            "nav_save_wp": (lambda: self._nav("dest_add"), lambda: "nouvelle destination",
+                            None),
+            "nav_dest_next": (lambda: self._nav("select", "dest+"),
+                              lambda: "dest. %s >" % self._navSel("dest"), None),
+            "nav_dest_prev": (lambda: self._nav("select", "dest-"),
+                              lambda: "< dest. %s" % self._navSel("dest"), None),
+            "nav_goto_sel": (lambda: self._nav("goto"),
+                             lambda: "aller a %s" % self._navSel("dest"),
+                             lambda: bool(self._navState and
+                                          self._navState.goal_status == "active")),
+            "nav_dest_del": (lambda: self._nav("dest_del"),
+                             lambda: "supprimer %s" % self._navSel("dest"), None),
+            "nav_relocalize": (lambda: self._nav("relocalize"), lambda: "relocaliser",
+                               lambda: bool(self._navState and
+                                            getattr(self._navState, "loc_state", "") ==
+                                            "relocalisation")),
             "nav_goto_next": (lambda: self._nav("goto", "next"), lambda: "aller au point suivant",
                               lambda: bool(self._navState and
                                            self._navState.goal_status == "active")),
@@ -1239,6 +1263,17 @@ class TeleopNode(Node):
 
     def _navSub(self):
         return self._navState.submode if self._navState is not None else ""
+
+    def _navSel(self, kind):
+        """Libelle de la selection du superviseur (gate ou destination) pour le HUD : numero
+        (et nom d'une destination), "-" si rien. Champs de NavState du 2026-10-13 : lus avec
+        getattr tant que bamboo_interfaces n'est pas recompile partout."""
+        st = self._navState
+        if st is None or getattr(st, "selected_kind", "") != kind or not st.selected_n:
+            return "-"
+        if kind == "dest" and st.selected_name and st.selected_name != "p%d" % st.selected_n:
+            return "%d %s" % (st.selected_n, st.selected_name)
+        return ("p%d" if kind == "dest" else "%d") % st.selected_n
 
     def _nav(self, command, arg=""):
         """Commande au superviseur de navigation ; reponse au journal (et donc au HUD).

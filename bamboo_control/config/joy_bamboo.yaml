@@ -159,6 +159,9 @@ bamboo_teleop:
     # predict detector training target_grow target_shrink speed_max_up
     # speed_max_down speed_min_up speed_min_down calib_start calib_imu
     # calib_arcs calib_variant calib_apply calib_revert calib_pi flip_image
+    # nav_explore nav_auto_explore nav_new_map nav_gate_next nav_gate_prev nav_explore_gate
+    # nav_save_map nav_idle nav_navigate nav_save_wp nav_dest_next nav_dest_prev
+    # nav_goto_sel nav_dest_del nav_relocalize nav_goto_next nav_goto_home nav_cancel
     # nav_unavailable
     #
     # ZR LONG = MIROIR HORIZONTAL de l'image (flip de tracking_node, h <-> none), dans
@@ -299,21 +302,33 @@ bamboo_teleop:
       # le service /nav_supervisor/command (bamboo_navigation). On CONDUIT au stick dans les
       # deux ; en navigation, pousser le stick reprend la main sur Nav2 (multiplexeur).
       # Appuis LONGS pour ce qui demarre une pile ou enregistre quelque chose.
+      # Carte COURANTE gardee d'un groupe a l'autre (2026-10-13). L / R parcourent les GATES
+      # (zones inconnues numerotees) en exploration et les DESTINATIONS en navigation ; la
+      # selection est surlignee sur la mini-carte du HUD. Ce qui efface ou cree une carte est
+      # sur un appui LONG d'une touche peu utilisee (PLUS / MINUS).
       navigation:
         groups: "exploration;navigation"
         exploration:
           ZR_long: "flip_image"
           A: "nav_auto_explore"
           A_long: "nav_explore"
+          L: "nav_gate_prev"
+          R: "nav_gate_next"
+          X: "nav_explore_gate"
           X_long: "nav_save_map"
           Y_long: "nav_idle"
+          PLUS_long: "nav_new_map"
         navigation:
           ZR_long: "flip_image"
           A_long: "nav_navigate"
+          A: "nav_goto_sel"
+          L: "nav_dest_prev"
+          R: "nav_dest_next"
           Y_long: "nav_save_wp"
-          A: "nav_goto_next"
+          MINUS_long: "nav_dest_del"
           X_long: "nav_goto_home"
           Y: "nav_cancel"
+          PLUS_long: "nav_relocalize"
 
     # Calibration : variantes proposees par R (groupe mesure), separees par ';'.
     # Le nom devient celui du fichier candidat ET de l'entree calib.<nom> a
