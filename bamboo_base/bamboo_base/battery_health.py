@@ -96,8 +96,9 @@ class ChargerDetector:
                     return self._set(True, slope, "pente V/min")
                 if slope < -self.slope_v_min / 2 and self.charging is True:
                     return self._set(False, slope, "pente V/min")
-                if self.charging is None and abs(slope) <= self.slope_v_min / 2:
-                    self.charging = False             # repos stable : pas en charge (sans evenement)
+                # PAS de conclusion sur une tension STABLE : un chargeur qui compense tout juste
+                # la consommation du robot (~0,6 A) la laisse stable ALORS QU'IL EST BRANCHE
+                # (constate le 2026-10-12 : +0,002 V/min, chargeur branche). Etat inconnu.
         return None
 
     def _set(self, state, value, kind):
