@@ -8,10 +8,11 @@ Tout vient du paquet `<robot>_base` (lot NAV) :
 Les sujets et les bornes sont INJECTES dans des copies des fichiers (nav_params), ecrites
 dans /tmp : aucun fichier de configuration ne porte un nom de sujet qui fasse foi.
 
-Ce que ce launch NE lance PAS : slam_toolbox. C'est nav_supervisor qui le demarre en
-sous-mode exploration et l'arrete ensuite (il n'a pas de cycle de vie). map_server et AMCL
-sont lances INACTIFS (lifecycle_manager_localization sans autostart), le coeur de Nav2 aussi :
-le superviseur active ce que le sous-mode demande.
+Ce que ce launch NE lance PAS : slam_toolbox. C'est nav_supervisor qui le demarre, en
+cartographie (exploration) ou en localisation (navigation) sur la carte courante, et l'arrete
+ensuite (il n'a pas de cycle de vie). Le coeur de Nav2 est lance INACTIF : le superviseur
+l'active quand un but est possible. map_server et AMCL ne sont plus lances (2026-10-13) :
+slam_toolbox publie la carte et map->odom dans les deux sous-modes.
 
 Sortie de Nav2 : le controleur passe par le velocity_smoother, et les comportements (spin,
 backup) publient directement -- les deux sur `cmd_vel_nav` du wiring, entree de plus faible
@@ -38,7 +39,6 @@ from launch_ros.descriptions import ComposableNode
 
 _NAV_NODES = ["controller_server", "smoother_server", "planner_server", "behavior_server",
               "bt_navigator", "waypoint_follower", "velocity_smoother"]
-_LOC_NODES = ["map_server", "amcl"]
 
 
 def _load(path):
@@ -111,17 +111,10 @@ def _setup(context, *args, **kwargs):
             comp("nav2_velocity_smoother", "nav2_velocity_smoother::VelocitySmoother",
                  "velocity_smoother", [nav2],
                  [("cmd_vel", smoothed), ("cmd_vel_smoothed", w["cmd_vel_nav"])]),
-            comp("nav2_map_server", "nav2_map_server::MapServer", "map_server", [nav2],
-                 [("map", w["map"])]),
-            comp("nav2_amcl", "nav2_amcl::AmclNode", "amcl", [nav2], [("map", w["map"])]),
             comp("nav2_lifecycle_manager", "nav2_lifecycle_manager::LifecycleManager",
                  "lifecycle_manager_navigation",
                  [{"use_sim_time": use_sim_time, "autostart": False,
                    "node_names": _NAV_NODES, "bond_timeout": 0.0}]),
-            comp("nav2_lifecycle_manager", "nav2_lifecycle_manager::LifecycleManager",
-                 "lifecycle_manager_localization",
-                 [{"use_sim_time": use_sim_time, "autostart": False,
-                   "node_names": _LOC_NODES, "bond_timeout": 0.0}]),
         ])
     lifecycle = []
     nodes = [
@@ -136,6 +129,9 @@ def _setup(context, *args, **kwargs):
                           "required_sensors": required or [""],
                           "scan_topic": w["scan"], "imu_topic": w["imu"],
                           "odom_topic": w["odom"], "map_topic": w["map"],
+                          # rotations sur place de la relocalisation (voie Nav2 du mux)
+                          "cmd_vel_nav_topic": w["cmd_vel_nav"],
+                          "lidar_range_max_m": float(lidar.get("range_max_m", 8.0)),
                           # pause de l'exploration auto quand la manette parle
                           "teleop_topic": wiring["control"]["cmd_vel_teleop"]}]),
     ]

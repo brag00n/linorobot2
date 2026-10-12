@@ -1,13 +1,26 @@
 # Commande de la navigation (bamboo_navigation/nav_supervisor, ~/command). Une seule porte
-# d'entree, pour la manette comme pour le MCP (ros2-action call_service) :
-#   exploration            demarrer la cartographie (slam_toolbox)
-#   navigation [carte]     naviguer sur une carte (map_server + AMCL) ; vide = carte par defaut
-#   idle                   arreter cartographie / localisation (Nav2 reste pret)
-#   save_map [nom]         sauvegarder la carte en cours (nom vide = horodate)
-#   save_waypoint [nom]    enregistrer la pose courante comme point de la carte courante
-#   goto <nom>|next|home   aller a un point ; home = le point "depart"
+# d'entree, pour la manette comme pour le MCP (ros2-action call_service). La carte COURANTE
+# (dossier maps/<nom>/) est gardee d'un sous-mode a l'autre :
+#   exploration [new]      cartographier : COMPLETE la carte courante (le robot s'y relocalise
+#                          d'abord) ; new = nouvelle carte vierge
+#   navigation [carte]     naviguer sur la carte courante (ou celle nommee) : localisation
+#                          globale si la pose est inconnue
+#   idle                   arreter cartographie / localisation et Nav2 (carte sauvee)
+#   new_map                nouvelle carte VIERGE (l'ancienne reste sur le disque)
+#   load_map <carte>       changer de carte courante
+#   save_map               sauver maintenant (graphe, image, meta)
+#   auto_explore           exploration automatique des gates, marche / arret
+#   explore_gate [n]       explorer la gate n (vide = la selectionnee) en priorite
+#   select <gate|dest><+|-|n>  selection (ex. gate+, dest-, dest 3)
+#   dest_add [nom]         la pose courante devient une destination (p1, p2... sans nom)
+#   dest_del [n|nom]       supprimer une destination (vide = la selectionnee)
+#   dest_rename <n|nom> <nouveau>
+#   goto [n|nom|home|next] aller a une destination (vide = la selectionnee)
+#   relocalize [global]    relocaliser maintenant (locale autour de la pose, puis globale)
 #   cancel                 annuler le but en cours
-#   list                   cartes et points disponibles (dans message)
+#   list                   cartes, destinations et gates (dans message)
+#   events [n]             les n derniers evenements de la carte courante (JSON, dans message)
+#   save_waypoint [nom]    (ancien nom de dest_add)
 string command
 string arg
 ---
