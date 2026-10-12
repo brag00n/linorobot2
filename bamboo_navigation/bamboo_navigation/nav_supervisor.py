@@ -46,7 +46,7 @@ from geometry_msgs.msg import (Pose, PoseArray, PoseStamped, PoseWithCovarianceS
                                Twist)
 from std_msgs.msg import Bool, String
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
-from nav2_msgs.srv import ManageLifecycleNodes
+from nav2_msgs.srv import ClearEntireCostmap, ManageLifecycleNodes
 from nav_msgs.msg import Odometry
 from nav_msgs.srv import GetMap
 from rcl_interfaces.srv import SetParameters
@@ -88,10 +88,13 @@ class NavSupervisor(Node):
         self.auto_home_timeout_s = float(d("auto_home_timeout_s", 180.0).value)
         self.auto_max_duration_s = float(d("auto_max_duration_s", 900.0).value)
         self.auto_resume_s = float(d("auto_resume_s", 3.0).value)
-        # Tension jugee sur la MEDIANE de `auto_battery_window_s` : sous l'effort des moteurs
-        # elle chute (10,44 V lus en roulant pour 12,05 V au repos, essai E2 du 2026-10-11),
-        # et un creux passager renvoyait le robot au depart.
-        self.auto_battery_min_v = float(d("auto_battery_min_v", 10.5).value)
+        # Batterie jugee sur le POURCENTAGE de /battery, que le driver calcule sur la tension AU
+        # REPOS (traction arretee). La tension instantanee chute de ~1,4 V sous l'effort des
+        # moteurs : meme en mediane sur 20 s, elle a renvoye le robot au depart avec une
+        # batterie a 72 % (essai E2d, 2026-10-12). Repli sur la tension (mediane, seuil bas)
+        # seulement si le pourcentage est inconnu.
+        self.auto_battery_min_pct = float(d("auto_battery_min_pct", 15.0).value)
+        self.auto_battery_min_v = float(d("auto_battery_min_v", 10.0).value)
         self.auto_battery_window_s = float(d("auto_battery_window_s", 20.0).value)
         # Recalibration du gyro AVANT de partir (robot immobile) : service `recalibrate_imu`
         # du driver, trouve automatiquement si vide (ESP32 comme STM32).
@@ -140,6 +143,9 @@ class NavSupervisor(Node):
         self._autoKnown = math.nan
         self._teleopT = 0.0              # dernier ordre NON NUL de la manette
         self._battV = math.nan           # mediane glissante (cf. _onBattery)
+        self._battPct = math.nan         # etat de charge AU REPOS (0..100), du driver
+        self._lastSaveT = -1e9           # derniere sauvegarde de carte (dedoublonnage)
+        self._autoClearT = -1e9          # dernier vidage des costmaps (echecs en serie)
         self._battHist = collections.deque()
         self._robotMode = ""
         self._lastRobotMode = ""
@@ -223,6 +229,9 @@ class NavSupervisor(Node):
         # Pour verifier qu'une frontiere est ATTEIGNABLE avant d'y envoyer le robot.
         self.planner = ActionClient(self, ComputePathToPose, "compute_path_to_pose",
                                     callback_group=self._cbg)
+        self.clearCli = [self.create_client(ClearEntireCostmap, s, callback_group=self._cbg)
+                         for s in ("/global_costmap/clear_entirely_global_costmap",
+                                   "/local_costmap/clear_entirely_local_costmap")]
         self.create_service(NavCommand, "~/command", self._onCommand, callback_group=self._cbg)
 
         self.diag = Updater(self)
@@ -239,6 +248,8 @@ class NavSupervisor(Node):
         self._last[k] = time.monotonic()
 
     def _onBattery(self, m):
+        pct = float(m.percentage)
+        self._battPct = 100.0 * pct if pct == pct and 0.0 <= pct <= 1.0 else math.nan
         now, v = time.monotonic(), float(m.voltage)
         if not v > 0.0:
             return
@@ -381,7 +392,11 @@ class NavSupervisor(Node):
         Y long (idle) puis X long -> carte PERDUE, slam_toolbox etait deja arrete."""
         if self.submode != "exploration" or not self._slamAlive():
             return ""
+        if time.monotonic() - self._lastSaveT < 10.0:
+            return ""                          # deja sauvee a l'instant (deux causes d'arret)
         ok, msg = self.command("save_map", "")
+        if ok:
+            self._lastSaveT = time.monotonic()
         self.get_logger().info("carte sauvee avant %s : %s" % (why, msg) if ok else
                                "carte NON sauvee avant %s : %s" % (why, msg))
         return msg if ok else ""
@@ -679,6 +694,8 @@ class NavSupervisor(Node):
         # temps (les roues n'ont rien vu, le lidar si) part sur une carte et une pose fausses
         # (essai E2 du 2026-10-11 : « il part sur une ancienne carte »).
         if self.submode == "exploration":
+            # La carte en cours est SAUVEE avant d'etre remplacee par une neuve.
+            self._saveBeforeLeaving("la relance de l'exploration")
             self._manage(self.navMgr, RESET)
             self._stopSlam()
             self.tf.clear()            # sinon l'ANCIEN map->odom reste quelques secondes
@@ -716,6 +733,9 @@ class NavSupervisor(Node):
         # hors verrou) ; elle revoit `auto` sous le verrou avant tout envoi. Essai E1 : sans
         # cela, une frontiere est partie 2 s APRES l'arret.
         self.auto, self._autoTarget = "off", None
+        # TOUT arret sauve la carte (essai E2d : arret sur "retour au depart impossible", puis
+        # relance -> carte de la 1re exploration PERDUE).
+        self._saveBeforeLeaving("l'arret de l'exploration auto (%s)" % why)
         self._publishMarks()
         self._autoOwnCancel = True
         self._cancelGoal()
@@ -775,10 +795,15 @@ class NavSupervisor(Node):
                 self._autoStop("lidar muet")
             return
         if self.auto in ("running", "paused"):
-            low = not math.isnan(self._battV) and 0.0 < self._battV < self.auto_battery_min_v
+            if not math.isnan(self._battPct):
+                low = self._battPct < self.auto_battery_min_pct
+                batt = "batterie %.0f %% (au repos)" % self._battPct
+            else:
+                low = not math.isnan(self._battV) and 0.0 < self._battV < self.auto_battery_min_v
+                batt = "batterie %.2f V" % self._battV
             late = now - self._autoT0 > self.auto_max_duration_s
             if low or late:
-                self._autoHoming("batterie %.2f V" % self._battV if low else "duree maximale")
+                self._autoHoming(batt if low else "duree maximale")
         # --- pause : le stick a la main, ou la traction est desarmee ; on n'envoie RIEN ---
         stick = now - self._teleopT < self.auto_resume_s
         if stick or self._armed is False:
@@ -832,6 +857,10 @@ class NavSupervisor(Node):
                         self._autoFinish()
                     return
                 self._autoHomeTries += 1
+                if time.monotonic() - self._autoClearT > 30.0:
+                    # Meme cause probable qu'en exploration : costmap qui croit le robot dans
+                    # un obstacle. On vide avant de recompter.
+                    self._clearCostmaps("retour au depart en echec")
                 if self._autoHomeTries >= 3:
                     with self._lock:
                         self._autoStop("retour au depart impossible")
@@ -870,21 +899,30 @@ class NavSupervisor(Node):
         # (< 1 s). Essai E2 (2026-10-11) : 4 frontieres sur 6 etaient sous des meubles (le
         # lidar, a 17 cm, voit sous un canape ; le robot n'y passe pas) ; Nav2 y perdait ~30 s
         # chacune en manoeuvres de reprise avant d'abandonner.
-        f = None
+        f, bad = None, []
         for _try in range(4):
-            cand = frontier.choose(fs, pose[:2], self._autoAvoid)
+            cand = frontier.choose(fs, pose[:2], self._autoAvoid + bad)
             if cand is None:
                 break
             ok_plan = self._planOk(cand["x"], cand["y"])
             if ok_plan is not False:           # chemin trouve, ou verification impossible
                 f = cand
                 break
-            self._autoAvoid.append((cand["x"], cand["y"]))
-            e = self._logEntry(cand["x"], cand["y"], "inatteignable")
-            self.get_logger().info("exploration auto : frontiere %d (%.2f, %.2f) INATTEIGNABLE, "
-                                   "ecartee" % (e["n"], cand["x"], cand["y"]))
+            bad.append((cand["x"], cand["y"]))
             if self.auto != "running":
                 return
+        # ECHECS EN SERIE : 3 frontieres d'affilee sans chemin, c'est presque toujours le ROBOT
+        # qui est dans une zone que la costmap croit occupee (arrete au ras d'un obstacle), pas
+        # trois frontieres inaccessibles -- essai E2d : 11 condamnees en 2 s. On vide les
+        # costmaps et on reessaie au tour suivant AVANT de condamner quoi que ce soit.
+        if len(bad) >= 3 and time.monotonic() - self._autoClearT > 60.0:
+            self._clearCostmaps("%d frontieres sans chemin d'affilee" % len(bad))
+            return
+        for bx, by in bad:
+            self._autoAvoid.append((bx, by))
+            e = self._logEntry(bx, by, "inatteignable")
+            self.get_logger().info("exploration auto : frontiere %d (%.2f, %.2f) INATTEIGNABLE, "
+                                   "ecartee" % (e["n"], bx, by))
         if f is None:
             if frontier.choose(fs, pose[:2], self._autoAvoid) is not None:
                 return                         # d'autres candidates : au tour suivant
@@ -946,11 +984,26 @@ class NavSupervisor(Node):
         r = res.result()
         return r.status == 4 and len(r.result.path.poses) > 0      # 4 = SUCCEEDED
 
+    def _clearCostmaps(self, why):
+        """Vide les deux costmaps (le lidar les remplit de nouveau en quelques scans)."""
+        self._autoClearT = time.monotonic()
+        n = 0
+        for cli in self.clearCli:
+            if cli.service_is_ready():
+                cli.call_async(ClearEntireCostmap.Request())
+                n += 1
+        self.get_logger().warn("exploration auto : %s -> costmaps videes (%d), nouvel essai"
+                               % (why, n))
+        self.detail = "exploration auto : costmaps videes (%s)" % why
+
     def _autoHoming(self, why):
         if self.auto == "homing":
             return
         self.get_logger().info("exploration auto : retour au depart (%s)" % why)
         with self._lock:
+            # 4. Debriefing : la frontiere coupee par le retour est INTERROMPUE, pas en_cours.
+            self._logSet(self._autoEntry, "interrompue")
+            self._autoEntry = None
             self._autoOwnCancel = True
             self._cancelGoal()
             self.auto, self._autoResumeTo, self._autoTarget = "homing", "homing", None
