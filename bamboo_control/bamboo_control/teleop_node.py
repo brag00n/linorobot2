@@ -343,6 +343,7 @@ class TeleopNode(Node):
         self._navWant = False
         self._navStartSent = False
         self._navStopT = None
+        self._navWantT, self._navRetryAt = 0.0, 0.0
         self._navStackCli = self.create_client(SetBool, "/bamboo/nav_stack")
         self.create_timer(1.0, self._navStackTick)
         self._curAction = None        # action en cours d'execution (cf. _run)
@@ -1483,6 +1484,7 @@ class TeleopNode(Node):
                 self._navStackCall(False)
         else:
             self._navWant, self._navStartSent, self._navStopT = True, False, None
+            self._navWantT, self._navRetryAt = time.monotonic(), 0.0
             self._navStackCall(True)
             self._navStackTick()
         self._publishState()
@@ -1490,14 +1492,34 @@ class TeleopNode(Node):
     def _navStackTick(self):
         """Demarrage : des que le superviseur repond, lui demander le sous-mode du groupe.
         Arret : fini quand le superviseur s'est tu."""
-        if self._navWant and not self._navStartSent and self._navCli.service_is_ready():
+        if self._navWant and not self._navStartSent and self._navCli.service_is_ready() \
+                and time.monotonic() >= self._navRetryAt:
             group = self._groupName() if self._mode == "navigation" else "exploration"
             self._navStartSent = True
-            self._nav(group if group in ("exploration", "navigation") else "exploration")
+            self._nav(group if group in ("exploration", "navigation") else "exploration",
+                      then=self._onNavStarted)
         if self._navStopT is not None and (not self._navCli.service_is_ready() or
                                            time.monotonic() - self._navStopT > 20.0):
             self._navStopT = None
             self._publishState()
+
+    NAV_START_TIMEOUT_S = 90.0
+
+    def _onNavStarted(self, r):
+        """Le superviseur refuse tant que le lidar demarre (« pas de scan lidar ») : on
+        REESSAIE toutes les 3 s, jusqu'a NAV_START_TIMEOUT_S (2026-10-13 : un seul essai, la
+        pastille NAV clignotait pour toujours)."""
+        if r is not None and r.success or not self._navWant:
+            return
+        if time.monotonic() - self._navWantT > self.NAV_START_TIMEOUT_S:
+            self._navWant = False
+            self.get_logger().warn("navigation : demarrage ABANDONNE apres %.0f s (%s)"
+                                   % (self.NAV_START_TIMEOUT_S,
+                                      r.message if r is not None else "pas de reponse"))
+            self._publishState()
+            return
+        self._navStartSent = False
+        self._navRetryAt = time.monotonic() + 3.0
 
     def _askDeleteDest(self):
         st = self._navState
