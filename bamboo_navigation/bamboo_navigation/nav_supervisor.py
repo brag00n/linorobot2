@@ -1396,6 +1396,10 @@ class NavSupervisor(Node):
             return False, "usage : select gate+|gate-|dest+|dest-|gate <n>|dest <n>"
         rest = a[4:]
         items = self._gateList() if kind == "gate" else self.meta["destinations"]
+        # Le DEPART (numero 0) en tete des deux listes (demande utilisateur 2026-10-13) :
+        # navigation, A y va ; exploration, X y retourne.
+        if self._homePose() is not None:
+            items = [{"n": 0}] + list(items)
         if rest in ("+", "-"):
             n = map_io.cycle(items, self.sel[kind], +1 if rest == "+" else -1)
         elif rest.isdigit() and any(int(i["n"]) == int(rest) for i in items):
@@ -1406,6 +1410,8 @@ class NavSupervisor(Node):
         if n is None:
             return True, "aucune %s sur la carte %s" % (
                 "gate" if kind == "gate" else "destination", self.map_name or "-")
+        if n == 0:
+            return True, "depart"
         if kind == "dest":
             d = map_io.dest_find(self.meta, n)
             return True, "destination %d : %s" % (n, d["name"])
@@ -1432,6 +1438,8 @@ class NavSupervisor(Node):
     def _destDel(self, key):
         if self.meta is None:
             return False, "aucune carte courante"
+        if not key and self.sel["dest"] == 0:
+            return False, "le depart ne se supprime pas"
         key = key or (str(self.sel["dest"]) if self.sel["dest"] else "")
         if not key:
             return False, "aucune destination selectionnee (L / R)"
@@ -1452,8 +1460,10 @@ class NavSupervisor(Node):
         if self.loc in ("perdue", "relocalisation"):
             return False, "localisation %s : attendre (ou relocaliser, + long)" % self.loc
         meta = self.meta or {}
+        if arg in ("", "selected") and self.sel["dest"] == 0:
+            arg = "home"                       # « depart » choisi au L / R
         if arg == "home":
-            home = meta.get("home") or (list(self._autoHome) if self._autoHome else None)
+            home = self._homePose()
             if not home:
                 return False, "depart inconnu sur la carte %s" % (self.map_name or "-")
             wp, kind = {"name": "depart", "x": home[0], "y": home[1], "yaw": home[2]}, "home"
@@ -1475,9 +1485,21 @@ class NavSupervisor(Node):
             return False, "Nav2 " + why
         return self._goto(wp, kind)
 
+    def _homePose(self):
+        """Depart de la carte (meta), sinon de la session d'exploration ; None si inconnu."""
+        home = (self.meta or {}).get("home") or (list(self._autoHome) if self._autoHome
+                                                  else None)
+        return home or None
+
     def _exploreGate(self, arg):
         if self.meta is None:
             return False, "aucune carte courante"
+        if not arg and self.sel["gate"] == 0:
+            # « depart » choisi au L / R : y retourner.
+            if self.auto in ("running", "paused"):
+                self._autoHoming("demande (depart choisi)")
+                return True, "exploration auto : retour au depart"
+            return self._gotoCmd("home")
         n = arg or (str(self.sel["gate"]) if self.sel["gate"] else "")
         g = map_io.gate_find(self.meta, n) if n else None
         if g is None or g["status"] == "exploree":
@@ -2111,9 +2133,10 @@ class NavSupervisor(Node):
             kind = "gate" if self.submode == "exploration" else \
                 "dest" if self.submode == "navigation" else ""
             n = self.sel.get(kind) if kind else None
-            m.selected_kind, m.selected_n = (kind if n else ""), int(n or 0)
+            # n == 0 : le DEPART (selected_name "depart") ; None : rien de choisi.
+            m.selected_kind, m.selected_n = (kind if n is not None else ""), int(n or 0)
             d = map_io.dest_find(meta, n) if kind == "dest" and n else None
-            m.selected_name = d["name"] if d else ""
+            m.selected_name = d["name"] if d else ("depart" if n == 0 else "")
             if self._mapSel:
                 # Carte en cours de choix (+ / -) : affichee a la place de la selection.
                 m.selected_kind, m.selected_n, m.selected_name = "map", 1, self._mapSel

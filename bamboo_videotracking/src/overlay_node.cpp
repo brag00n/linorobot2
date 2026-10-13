@@ -1379,12 +1379,17 @@ private:
       {245, std::isnan(n->map_match) ? "--" : fmt(n->map_match, 2), lc}});
     // SELECTION (L / R) : gate en exploration, destination en navigation.
     std::string sel = "--";
-    if (n->selected_n > 0) {
+    // Numero 0 = le DEPART, en tete des listes de gates et de destinations (2026-10-13).
+    const bool home_sel = !n->selected_kind.empty() && n->selected_n == 0 &&
+      n->selected_name == "depart";
+    if (home_sel) {
+      sel = "depart";
+    } else if (n->selected_n > 0) {
       sel = n->selected_kind == "gate" ? "gate " + std::to_string(n->selected_n) :
         std::to_string(n->selected_n) + " " + n->selected_name;
     }
     cardRow(im, x, yc + 5 * step, u, {
-      {10, "sel.", kLabel}, {100, sel, n->selected_n > 0 ? kSelect : kOff},
+      {10, "sel.", kLabel}, {100, sel, sel != "--" ? kSelect : kOff},
       {180, "dest.", kLabel}, {245, std::to_string(n->dest_n.size()), kVal}});
     int yy = yc + 6 * step;
     // Le MESSAGE du superviseur (exploration auto, gyro recalibre, refus...) : sans lui,
@@ -1539,6 +1544,11 @@ private:
         const int k = std::max(3, iu(5, u));
         cv::line(im, c - cv::Point(k, k), c + cv::Point(k, k), kOn, 2);
         cv::line(im, c - cv::Point(k, -k), c + cv::Point(k, -k), kOn, 2);
+        if (n && !n->selected_kind.empty() && n->selected_n == 0 &&
+          n->selected_name == "depart")
+        {
+          cv::circle(im, c, k + std::max(4, iu(5, u)), kSelect, 1, cv::LINE_AA);
+        }
       }
       const auto pose = std::atomic_load(&pose_);
       if (pose && fresh(last_pose_, 2.0)) {
@@ -1645,14 +1655,16 @@ private:
     const int pill_x0 = iu(8, u);
     int x = pill_x0;
     // La CHAINE DE TRACKING, dans son ordre : ACQ (detection) -> TRK-V (tracker video) ->
-    // TRK-P (suivi physique) ; CAPT (capture), GEN (apprentissage), RECO (reconnaissance).
+    // TRK-P (suivi physique) -> RECO (reconnaissance) ; puis CAPT (capture) et GEN
+    // (apprentissage). RECO avant CAPT (demande utilisateur 2026-10-13) : elle fait partie de
+    // la chaine allumee d'un geste (A long), CAPT et GEN non.
     x = modePill(im, x, row1, "ACQ", detect_on_, u);
     x = modePill(im, x, row1, "TRK-V", track_mode_ != "none" && !track_mode_.empty(), u);
     x = modePill(im, x, row1, "TRK-P", tracking_on_, u);
-    x = modePill(im, x, row1, "CAPT", recog_mode_ == "acquisition", u);
-    x = modePill(im, x, row1, "GEN", gen_on_, u);
-    modePill(
+    x = modePill(
       im, x, row1, "RECO", recog_mode_ == "recognition" || recog_mode_ == "acquisition", u);
+    x = modePill(im, x, row1, "CAPT", recog_mode_ == "acquisition", u);
+    modePill(im, x, row1, "GEN", gen_on_, u);
 
     // MANETTE + SANTE. MANETTE grise si l'etat se tait depuis 4 periodes (2 Hz) ; SANTE
     // grise apres 3 s de silence (agregateur a 1 Hz).

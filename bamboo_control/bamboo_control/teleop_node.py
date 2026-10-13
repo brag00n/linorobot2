@@ -80,6 +80,7 @@ PERTE DE MANETTE = ARRET DE LA CAMERA. Sans /joy depuis `joy_timeout_s`, la vite
 remise a zero. Avec `autorepeat_rate: 25.0` cote joy_linux, un stick tenu republie en
 continu : le silence signifie donc reellement "plus de manette", et pas "stick immobile".
 """
+import random
 import time
 
 import rclpy
@@ -260,7 +261,12 @@ class TeleopNode(Node):
         self._trkvAlgo = _TRK_ALGOS[0]
         self._captDuration = 0
         self._genOn = False             # apprentissage en cours (jusqu'au RESULTAT)
-        self._seq = 0
+        # Numeros des ModeCmd partis d'une valeur ALEATOIRE : les consommateurs rejettent une
+        # commande de meme `seq` que la precedente (garde anti-rejeu du message latche), TOUS
+        # emetteurs confondus. Parti de 0, la manette relancee rejouait des numeros deja vus
+        # (sa session d'avant, le gestionnaire de modes, l'apprentissage) : « tracker -> mil »
+        # ignore apres un redemarrage (2026-10-13).
+        self._seq = random.randint(1_000_000, 2_000_000_000)
 
         # --- etat d'entree ----------------------------------------------------
         self._prev = {}          # nom logique -> etat precedent (0/1)
@@ -1389,8 +1395,11 @@ class TeleopNode(Node):
         (et nom d'une destination), "-" si rien. Champs de NavState du 2026-10-13 : lus avec
         getattr tant que bamboo_interfaces n'est pas recompile partout."""
         st = self._navState
-        if st is None or getattr(st, "selected_kind", "") != kind or not st.selected_n:
+        if st is None or getattr(st, "selected_kind", "") != kind:
             return "-"
+        if not st.selected_n:
+            # Numero 0 : le DEPART, en tete des deux listes (2026-10-13).
+            return "depart" if st.selected_name == "depart" else "-"
         if kind == "dest" and st.selected_name and st.selected_name != "p%d" % st.selected_n:
             return "%d %s" % (st.selected_n, st.selected_name)
         return ("p%d" if kind == "dest" else "%d") % st.selected_n
