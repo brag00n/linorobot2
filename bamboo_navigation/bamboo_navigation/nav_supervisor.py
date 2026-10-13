@@ -1227,6 +1227,8 @@ class NavSupervisor(Node):
             return self._newMap()
         if cmd == "load_map":
             return self._loadMap(arg)
+        if cmd == "delete_map":
+            return self._deleteMap(arg)
         if cmd == "auto_explore":
             if self.auto in ("running", "paused", "homing"):
                 return self._autoStop("demande")
@@ -1295,6 +1297,37 @@ class NavSupervisor(Node):
                 self.map_name, old or "-")
         self.submode = "idle"
         return self.setSubmode("exploration")
+
+    def _deleteMap(self, name=""):
+        """Carte COURANTE (ou nommee) a la CORBEILLE (demande utilisateur 2026-10-13, - long en
+        exploration). Rien n'est sauve avant : c'est elle qu'on jette. Exploration et slam
+        arretes, retour en idle ; la carte la plus recente qui reste devient la courante."""
+        if not name and self._mapSel:
+            # Une carte choisie au + / - n'est pas encore appliquee : - long jetterait
+            # l'ANCIENNE carte courante, pas celle affichee.
+            return False, "carte %s pas encore appliquee : attendre 2 s puis - long" % \
+                self._mapSel
+        name = name or self.map_name
+        if not name or not self.store.exists(name):
+            return False, "aucune carte a supprimer"
+        if name == self.map_name:
+            if self.auto != "off":
+                self.auto, self._autoTarget, self._autoGate = "off", None, None
+                self._autoOwnCancel = True
+            self._cancelGoal()
+            self._nav2(False)
+            self._stopSlam()
+            self._tfListen(False)
+            self.submode, self.loc, self.match = "idle", "inconnue", math.nan
+            self._mapSel = None
+        self._event("supprimee")
+        dst = self.store.trash(name)
+        rest = [m["name"] for m in self.store.list() if m["kind"] == "carte"]
+        if name == self.map_name:
+            self._useMap(rest[0] if rest else "")
+        self.get_logger().warn("carte %s mise a la corbeille (%s)" % (name, dst))
+        return True, "carte %s a la corbeille ; carte courante : %s" % (
+            name, self.map_name or "aucune (+ long : nouvelle carte)")
 
     def _loadMap(self, name):
         if not name:

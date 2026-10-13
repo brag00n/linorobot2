@@ -454,7 +454,7 @@ Le défaut vaut quel que soit le producteur de `cmd_vel` : manette, navigation, 
 | TRACKING | cible | A = détecteur, Y = apprentissage, L/R = taille de la cible, ZL/ZR = plafond |
 | CALIB | mesure | **A long = lancer**, X = contrôle IMU seul, Y = arcs on/off, R = variante suivante |
 | CALIB | essai | A = appliquer le candidat **en RAM**, X = revenir au fichier, Y = PI de lacet on/off |
-| NAV | exploration | A = exploration auto marche / arrêt, **A long = cartographier** (complète la carte courante), L / R = gate précédente / suivante, X = explorer la gate sélectionnée, X long = sauver la carte, Y long = arrêter, **+ long = nouvelle carte vierge**, + / − = carte enregistrée suivante / précédente (forcée), ZR long = miroir |
+| NAV | exploration | A = exploration auto marche / arrêt, **A long = cartographier** (complète la carte courante), L / R = gate précédente / suivante, X = explorer la gate sélectionnée, X long = sauver la carte, Y long = arrêter, **+ long = nouvelle carte vierge**, + / − = carte enregistrée suivante / précédente (forcée), **− long = carte courante à la corbeille** (`maps/_corbeille/`), ZR long = miroir |
 | NAV | navigation | **A long = naviguer** (carte courante), L / R = destination précédente / suivante, A = aller à la destination sélectionnée, Y long = nouvelle destination, **− long = supprimer la destination sélectionnée**, X long = retour au départ, Y = annuler le but, + long = relocaliser, + / − = carte enregistrée suivante / précédente (forcée) |
 
 Une carte de touches fausse est **refusée au démarrage** : touche, action ou groupe inconnu, ou B réaffecté. La manette se replie alors sur la conduite seule, et le diagnostic `bamboo_teleop: modes` passe en ERROR avec la raison.

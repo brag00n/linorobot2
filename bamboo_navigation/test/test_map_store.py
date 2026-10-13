@@ -67,6 +67,18 @@ def test_backup_keeps_the_last_versions():
         assert fh.read() == "v2"
 
 
+def test_trash_moves_the_map_out_of_the_list():
+    s = _store()
+    a, b = s.create(name="garde"), s.create(name="jetee")
+    s.set_current(b)
+    dst = s.trash(b)
+    assert os.path.isfile(os.path.join(dst, "meta.yaml"))       # recuperable
+    assert [m["name"] for m in s.list()] == [a]
+    assert s.current() == ""
+    with pytest.raises(FileNotFoundError):
+        s.trash(b)
+
+
 def test_events_skip_a_truncated_last_line():
     s = _store()
     n = s.create(name="c")

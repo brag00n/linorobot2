@@ -360,6 +360,23 @@ class MapStore:
         return [os.path.join(hist, d) for d in sorted(os.listdir(hist), reverse=True)
                 if os.path.isdir(os.path.join(hist, d))]
 
+    TRASH = "_corbeille"
+
+    def trash(self, name):
+        """Met la carte a la CORBEILLE (<maps>/_corbeille/<nom>_<horodatage>/) au lieu de
+        l'effacer : recuperable a la main. Elle quitte la liste (pas de meta.yaml au premier
+        niveau de la corbeille) et n'est plus la carte courante. Rend le nouveau chemin."""
+        if not self.exists(name):
+            raise FileNotFoundError(self.path(name))
+        dst_dir = os.path.join(self.dir, self.TRASH)
+        os.makedirs(dst_dir, exist_ok=True)
+        dst = os.path.join(dst_dir, "%s_%s" % (name, datetime.datetime.now().strftime(
+            "%Y%m%d_%H%M%S")))
+        shutil.move(self.path(name), dst)
+        if self.current() == "" or self.current() == name:
+            self.set_current("")
+        return dst
+
     def commit_posegraph(self, name):
         """Remplace le graphe par celui que slam_toolbox vient d'ecrire dans posegraph_tmp().
         .data d'abord, .posegraph ensuite : un .posegraph present a toujours ses donnees a

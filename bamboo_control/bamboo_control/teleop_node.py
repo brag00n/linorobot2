@@ -1068,6 +1068,8 @@ class TeleopNode(Node):
                              lambda: "carte %s >" % self._navMap(), None),
             "nav_map_prev": (lambda: self._nav("select", "map-"),
                              lambda: "< carte %s" % self._navMap(), None),
+            "nav_map_delete": (lambda: self._nav("delete_map"),
+                               lambda: "supprimer carte %s" % self._navMap(), None),
             "nav_save_map": (lambda: self._nav("save_map"), lambda: "sauver la carte", None),
             "nav_idle": (lambda: self._nav("idle"), lambda: "arreter", None),
             "nav_navigate": (lambda: self._nav("navigation"),

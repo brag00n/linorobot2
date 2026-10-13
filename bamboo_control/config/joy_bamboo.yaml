@@ -162,7 +162,7 @@ bamboo_teleop:
     # nav_explore nav_auto_explore nav_new_map nav_gate_next nav_gate_prev nav_explore_gate
     # nav_save_map nav_idle nav_navigate nav_save_wp nav_dest_next nav_dest_prev
     # nav_goto_sel nav_dest_del nav_relocalize nav_goto_next nav_goto_home nav_cancel
-    # nav_map_next nav_map_prev
+    # nav_map_next nav_map_prev nav_map_delete
     # nav_unavailable
     #
     # ZR LONG = MIROIR HORIZONTAL de l'image (flip de tracking_node, h <-> none), dans
@@ -321,6 +321,7 @@ bamboo_teleop:
           PLUS_long: "nav_new_map"
           PLUS: "nav_map_next"
           MINUS: "nav_map_prev"
+          MINUS_long: "nav_map_delete"
         navigation:
           ZR_long: "flip_image"
           A_long: "nav_navigate"
