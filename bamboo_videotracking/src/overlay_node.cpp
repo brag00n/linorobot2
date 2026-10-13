@@ -538,6 +538,14 @@ public:
     map_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
       declare_parameter<std::string>("map_topic", "/map"), latched,
       [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr m) {onMap(m);}, map_opts);
+    // APERCU d'une carte enregistree (nav_supervisor) : celle qu'on choisit au + / -, ou la
+    // carte courante en idle (slam arrete, donc pas de /map). Grille vide = pas d'apercu.
+    preview_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
+      declare_parameter<std::string>("map_preview_topic", "/navigation/map_preview"), latched,
+      [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr m) {
+        auto mm = makeMiniMap(m);
+        std::atomic_store(&preview_, mm);
+      }, map_opts);
     plan_sub_ = create_subscription<nav_msgs::msg::Path>(
       declare_parameter<std::string>("plan_topic", "/plan"), rclcpp::QoS(1).reliable(),
       [this](nav_msgs::msg::Path::ConstSharedPtr m) {
@@ -691,6 +699,17 @@ public:
   }
 
 private:
+  // Mini-carte prete a dessiner (avant les fonctions qui la rendent).
+  struct MiniMap
+  {
+    cv::Mat img;                      // grille retournee (ligne 0 = y max), 1 pixel / cellule
+    int w{0};                         // largeur de la grille, en cellules
+    double res{0.05};
+    double ox{0.0};
+    double oy{0.0};
+    int h{0};                         // hauteur de la grille, en cellules
+  };
+
   void onMode(bamboo_interfaces::msg::ModeCmd::ConstSharedPtr m)
   {
     // On ne REJOUE pas une commande deja vue : meme garde anti-rejeu que tracking_node,
@@ -1362,9 +1381,19 @@ private:
   /// reduction a la place disponible se fait au dessin (drawMiniMap), en cache.
   void onMap(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr & m)
   {
+    auto mm = makeMiniMap(m);
+    if (!mm) {return;}
+    std::atomic_store(&minimap_, mm);
+    last_map_ = now_steady_.now();
+  }
+
+  /// Grille -> MiniMap ; nullptr pour une grille vide ou incoherente.
+  static std::shared_ptr<const MiniMap> makeMiniMap(
+    const nav_msgs::msg::OccupancyGrid::ConstSharedPtr & m)
+  {
     const int w = static_cast<int>(m->info.width);
     const int h = static_cast<int>(m->info.height);
-    if (w <= 0 || h <= 0 || m->data.size() != static_cast<size_t>(w) * h) {return;}
+    if (w <= 0 || h <= 0 || m->data.size() != static_cast<size_t>(w) * h) {return nullptr;}
     cv::Mat raw(h, w, CV_8UC3);
     for (int j = 0; j < h; ++j) {
       auto * row = raw.ptr<cv::Vec3b>(h - 1 - j);
@@ -1382,8 +1411,7 @@ private:
     mm->ox = m->info.origin.position.x;
     mm->oy = m->info.origin.position.y;
     mm->h = h;
-    std::atomic_store(&minimap_, std::shared_ptr<const MiniMap>(mm));
-    last_map_ = now_steady_.now();
+    return mm;
   }
 
   /// Mini-carte, nord en haut (repere map fixe) : carte, chemin, frontieres, depart, robot.
@@ -1392,14 +1420,16 @@ private:
   /// les deux lignes latence / fps (les pastilles sont a GAUCHE).
   void drawMiniMap(cv::Mat & im, int x, int y, double u)
   {
-    const auto mm = std::atomic_load(&minimap_);
+    // APERCU (carte choisie au + / -, ou carte courante en idle) prioritaire sur /map.
+    const auto pv = std::atomic_load(&preview_);
+    const auto mm = pv ? pv : std::atomic_load(&minimap_);
     const int bottom = im.rows - iu(8 + 2 * 22, u);
     // Le cadre va jusqu'a la place restante (plafond : minimap_size_px + en-tete), et la
     // carte le REMPLIT, titre compris : le titre est redessine par-dessus (demande
     // utilisateur 2026-10-11).
     const int box = std::min(iu(minimap_px_ + 30, u), bottom - y);
     if (box < iu(80, u)) {return;}                     // vraiment pas la place : rien
-    const bool live = mm && fresh(last_map_, 5.0);
+    const bool live = pv || (mm && fresh(last_map_, 5.0));
     cardFrame(im, x, y, box, "CARTE", live, u);
     if (!mm) {
       put(im, "aucune carte (/map)", x + iu(10, u), y + iu(42, u), kOff, 0.4 * u);
@@ -1434,72 +1464,77 @@ private:
           y0 + static_cast<int>(std::lround((mm->h - (wy - mm->oy) / mm->res) * scale)));
       };
     const auto n = fresh(last_nav_, 3.0) ? nav_ : nullptr;
-    const auto plan = std::atomic_load(&plan_);
-    if (plan && n && n->goal_status == "active" && fresh(last_plan_, 10.0)) {
-      std::vector<cv::Point> pts;
-      for (const auto & p : plan->poses) {pts.push_back(px(p.pose.position.x, p.pose.position.y));}
-      if (pts.size() > 1) {cv::polylines(im, pts, false, kOrange, 1, cv::LINE_AA);}
-    }
-    // GATES (zones inconnues numerotees) et DESTINATIONS de la carte courante, avec leur
-    // numero ; la SELECTION de la manette est cerclee. Les gates viennent de NavState (depuis
-    // le 2026-10-13) ; /navigation/frontiers ne sert plus que de repli (superviseur ancien).
-    const double ts = 0.32 * u;
-    const int rr = std::max(2, iu(3, u));
-    if (n && !n->gate_n.empty()) {
-      const size_t ng = std::min({n->gate_n.size(), n->gate_x.size(), n->gate_y.size(),
-          n->gate_status.size()});
-      for (size_t i = 0; i < ng; ++i) {
-        const std::string & st = n->gate_status[i];
-        const cv::Scalar col = st == "ouverte" ? kGateOpen : st == "en_cours" ? kPredicted :
-          st == "atteinte" ? kOn : st == "inatteignable" ? kBad : kZoneOut;
-        const cv::Point c = px(n->gate_x[i], n->gate_y[i]);
-        cv::circle(im, c, rr, col, cv::FILLED);
-        putShadowed(im, std::to_string(n->gate_n[i]), c + cv::Point(rr + 1, -rr), ts);
-        if (n->selected_kind == "gate" && n->selected_n == n->gate_n[i]) {
-          cv::circle(im, c, rr + std::max(3, iu(4, u)), kSelect, 1, cv::LINE_AA);
+    // Carte en cours de CHOIX (+ / -) : son apercu seul ; robot, chemin, gates et
+    // destinations sont ceux de la carte COURANTE, dans un autre repere.
+    const bool choosing = pv && n && n->selected_kind == "map";
+    if (!choosing) {
+      const auto plan = std::atomic_load(&plan_);
+      if (plan && n && n->goal_status == "active" && fresh(last_plan_, 10.0)) {
+        std::vector<cv::Point> pts;
+        for (const auto & p : plan->poses) {pts.push_back(px(p.pose.position.x, p.pose.position.y));}
+        if (pts.size() > 1) {cv::polylines(im, pts, false, kOrange, 1, cv::LINE_AA);}
+      }
+      // GATES (zones inconnues numerotees) et DESTINATIONS de la carte courante, avec leur
+      // numero ; la SELECTION de la manette est cerclee. Les gates viennent de NavState (depuis
+      // le 2026-10-13) ; /navigation/frontiers ne sert plus que de repli (superviseur ancien).
+      const double ts = 0.32 * u;
+      const int rr = std::max(2, iu(3, u));
+      if (n && !n->gate_n.empty()) {
+        const size_t ng = std::min({n->gate_n.size(), n->gate_x.size(), n->gate_y.size(),
+            n->gate_status.size()});
+        for (size_t i = 0; i < ng; ++i) {
+          const std::string & st = n->gate_status[i];
+          const cv::Scalar col = st == "ouverte" ? kGateOpen : st == "en_cours" ? kPredicted :
+            st == "atteinte" ? kOn : st == "inatteignable" ? kBad : kZoneOut;
+          const cv::Point c = px(n->gate_x[i], n->gate_y[i]);
+          cv::circle(im, c, rr, col, cv::FILLED);
+          putShadowed(im, std::to_string(n->gate_n[i]), c + cv::Point(rr + 1, -rr), ts);
+          if (n->selected_kind == "gate" && n->selected_n == n->gate_n[i]) {
+            cv::circle(im, c, rr + std::max(3, iu(4, u)), kSelect, 1, cv::LINE_AA);
+          }
+        }
+      } else if (const auto fr = std::atomic_load(&fronts_)) {
+        for (const auto & p : fr->poses) {
+          cv::circle(im, px(p.position.x, p.position.y), rr, kGateOpen, cv::FILLED);
         }
       }
-    } else if (const auto fr = std::atomic_load(&fronts_)) {
-      for (const auto & p : fr->poses) {
-        cv::circle(im, px(p.position.x, p.position.y), rr, kGateOpen, cv::FILLED);
-      }
-    }
-    if (n) {
-      const size_t nd = std::min({n->dest_n.size(), n->dest_x.size(), n->dest_y.size()});
-      const int k = std::max(2, iu(3, u));
-      for (size_t i = 0; i < nd; ++i) {
-        const cv::Point c = px(n->dest_x[i], n->dest_y[i]);
-        cv::rectangle(im, c - cv::Point(k, k), c + cv::Point(k, k), kDest, cv::FILLED);
-        putShadowed(im, "p" + std::to_string(n->dest_n[i]), c + cv::Point(k + 1, -k), ts);
-        if (n->selected_kind == "dest" && n->selected_n == n->dest_n[i]) {
-          cv::circle(im, c, k + std::max(4, iu(5, u)), kSelect, 1, cv::LINE_AA);
+      if (n) {
+        const size_t nd = std::min({n->dest_n.size(), n->dest_x.size(), n->dest_y.size()});
+        const int k = std::max(2, iu(3, u));
+        for (size_t i = 0; i < nd; ++i) {
+          const cv::Point c = px(n->dest_x[i], n->dest_y[i]);
+          cv::rectangle(im, c - cv::Point(k, k), c + cv::Point(k, k), kDest, cv::FILLED);
+          putShadowed(im, "p" + std::to_string(n->dest_n[i]), c + cv::Point(k + 1, -k), ts);
+          if (n->selected_kind == "dest" && n->selected_n == n->dest_n[i]) {
+            cv::circle(im, c, k + std::max(4, iu(5, u)), kSelect, 1, cv::LINE_AA);
+          }
         }
       }
-    }
-    const auto home = std::atomic_load(&home_);
-    if (home && home->header.frame_id == "map") {
-      const cv::Point c = px(home->pose.position.x, home->pose.position.y);
-      const int k = std::max(3, iu(5, u));
-      cv::line(im, c - cv::Point(k, k), c + cv::Point(k, k), kOn, 2);
-      cv::line(im, c - cv::Point(k, -k), c + cv::Point(k, -k), kOn, 2);
-    }
-    const auto pose = std::atomic_load(&pose_);
-    if (pose && fresh(last_pose_, 2.0)) {
-      const auto & q = pose->pose.orientation;
-      const double yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
-          1.0 - 2.0 * (q.y * q.y + q.z * q.z));
-      const cv::Point c = px(pose->pose.position.x, pose->pose.position.y);
-      const int len = std::max(6, iu(12, u));
-      const cv::Point tip(c.x + static_cast<int>(std::lround(len * std::cos(yaw))),
-        c.y - static_cast<int>(std::lround(len * std::sin(yaw))));
-      cv::line(im, c, tip, cv::Scalar(0, 220, 255), 2, cv::LINE_AA);
-      cv::circle(im, c, std::max(3, iu(4, u)), kMarker, cv::FILLED);
+      const auto home = std::atomic_load(&home_);
+      if (home && home->header.frame_id == "map") {
+        const cv::Point c = px(home->pose.position.x, home->pose.position.y);
+        const int k = std::max(3, iu(5, u));
+        cv::line(im, c - cv::Point(k, k), c + cv::Point(k, k), kOn, 2);
+        cv::line(im, c - cv::Point(k, -k), c + cv::Point(k, -k), kOn, 2);
+      }
+      const auto pose = std::atomic_load(&pose_);
+      if (pose && fresh(last_pose_, 2.0)) {
+        const auto & q = pose->pose.orientation;
+        const double yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+        const cv::Point c = px(pose->pose.position.x, pose->pose.position.y);
+        const int len = std::max(6, iu(12, u));
+        const cv::Point tip(c.x + static_cast<int>(std::lround(len * std::cos(yaw))),
+          c.y - static_cast<int>(std::lround(len * std::sin(yaw))));
+        cv::line(im, c, tip, cv::Scalar(0, 220, 255), 2, cv::LINE_AA);
+        cv::circle(im, c, std::max(3, iu(4, u)), kMarker, cv::FILLED);
+      }
     }
     // Titre et pastille PAR-DESSUS la carte, ombres pour rester lisibles.
     const int hy = y + iu(18, u);
     cv::circle(im, cv::Point(x + iu(13, u), hy - iu(5, u)), std::max(2, iu(5, u)),
       live ? kZoneOut : kOff, cv::FILLED);
-    putShadowed(im, "CARTE", cv::Point(x + iu(25, u), hy), 0.5 * u);
+    putShadowed(im, pv ? "CARTE apercu" : "CARTE", cv::Point(x + iu(25, u), hy), 0.5 * u);
   }
 
   /// Carte de la colonne de droite SELON LE MODE : TRACKING -> CAM, CONDUITE et NAV ->
@@ -1871,17 +1906,10 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr calib_sub_;
   rclcpp::Subscription<bamboo_interfaces::msg::NavState>::SharedPtr nav_sub_;
   // --- mini-carte (mode NAV) ---
-  struct MiniMap
-  {
-    cv::Mat img;                      // grille retournee (ligne 0 = y max), 1 pixel / cellule
-    int w{0};                         // largeur de la grille, en cellules
-    double res{0.05};
-    double ox{0.0};
-    double oy{0.0};
-    int h{0};                         // hauteur de la grille, en cellules
-  };
   std::shared_ptr<const MiniMap> minimap_;            // atomic_load / atomic_store
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr preview_sub_;
+  std::shared_ptr<const MiniMap> preview_;            // atomic_load / atomic_store
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr plan_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr home_sub_;

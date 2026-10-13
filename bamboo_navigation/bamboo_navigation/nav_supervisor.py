@@ -53,7 +53,7 @@ from geometry_msgs.msg import (Pose, PoseArray, PoseStamped, PoseWithCovarianceS
 from std_msgs.msg import Bool, String
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from nav2_msgs.srv import ClearEntireCostmap, ManageLifecycleNodes
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry
 from nav_msgs.srv import GetMap
 from std_srvs.srv import Trigger
 from sensor_msgs.msg import BatteryState, Imu, LaserScan
@@ -276,6 +276,12 @@ class NavSupervisor(Node):
         self.pubFronts = self.create_publisher(PoseArray, "/navigation/frontiers", latched)
         self.pubLog = self.create_publisher(String, "/navigation/frontier_log", latched)
         self.pubObjs = self.create_publisher(String, "/navigation/objects", latched)
+        # APERCU pour la mini-carte du HUD : la carte choisie au + / -, ou la carte courante en
+        # idle (slam arrete, donc pas de /map). Sur un sujet A PART : /map nourrit aussi la
+        # costmap globale de Nav2. Grille vide = pas d'apercu (demande utilisateur 2026-10-13).
+        self.pubPreview = self.create_publisher(OccupancyGrid, "/navigation/map_preview",
+                                                latched)
+        self._previewName = ""
         self.create_timer(0.25, self._publishPose, callback_group=self._cbg)
 
         self.navMgr = self.create_client(ManageLifecycleNodes,
@@ -2051,6 +2057,28 @@ class NavSupervisor(Node):
                           for g in meta.get("gates", [])]})))
         self._publishMarks()
 
+    def _publishPreview(self):
+        """Apercu de la carte choisie (+ / -) ou, slam arrete, de la carte courante ; une
+        grille vide l'efface. Republie seulement quand la carte a montrer change."""
+        want = self._mapSel or ("" if self.slamMode else self.map_name)
+        if want == self._previewName:
+            return
+        self._previewName = want
+        g = OccupancyGrid()
+        g.header.frame_id = "map"
+        g.header.stamp = self.get_clock().now().to_msg()
+        if want and self.store.has_image(want):
+            try:
+                w, h, res, origin, data = map_io.read_map(self.store.path(want, "map.yaml"))
+            except (OSError, ValueError, KeyError) as e:
+                self.get_logger().warn("apercu %s illisible : %s" % (want, e))
+            else:
+                g.info.width, g.info.height, g.info.resolution = w, h, float(res)
+                g.info.origin.position.x, g.info.origin.position.y = origin[0], origin[1]
+                g.info.origin.orientation.w = 1.0
+                g.data = data
+        self.pubPreview.publish(g)
+
     def _watchModeExit(self):
         """Sortie du mode NAV : avec la navigation A LA DEMANDE, ce conteneur sera arrete 2 min
         plus tard, et slam_toolbox avec lui -- on sauve donc la carte DES la sortie, une fois."""
@@ -2101,6 +2129,7 @@ class NavSupervisor(Node):
             m.dest_y = [float(x["y"]) for x in ds]
         self.pubState.publish(m)
         self._publishObjects()
+        self._publishPreview()
 
     def _diagNav(self, stat):
         miss = self.missing()
