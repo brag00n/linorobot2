@@ -1185,7 +1185,6 @@ class NavSupervisor(Node):
             return False, "carte %s introuvable" % name
         if self.slamMode:
             self._saveMap("changement de carte", force=True)
-            self._nav2(False)
             self._stopSlam()
         self._useMap(name)
         self._event("chargee")
@@ -1444,7 +1443,18 @@ class NavSupervisor(Node):
         # (idle apres l'echec d'une carte forcee precedente).
         prev = self.submode if self.submode != "idle" else (self._wantSub or "idle")
         if self.submode != "idle":
-            self.setSubmode("idle")
+            # Arret LEGER : buts et automatismes annules, carte sauvee, slam arrete -- mais
+            # Nav2 RESTE ACTIF (il suit la nouvelle /map) : le passer par idle l'eteignait puis
+            # le rallumait, et un changement de carte depassait la minute (2026-10-13).
+            if self.auto != "off":
+                self._autoStop("changement de carte", nav_reset=False)
+            if self.patrol != "off":
+                self._patrolStop("changement de carte")
+            self._cancelGoal()
+            if self.slamMode:
+                self._saveMap("changement de carte", force=True)
+            self._stopSlam()
+            self.submode = "idle"
         ok, why = self._switchMap(name)
         if not ok or prev == "idle":
             return ok, why

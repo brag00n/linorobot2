@@ -1534,23 +1534,16 @@ class TeleopNode(Node):
         if self._navWant and self._navOn():
             self._navStarted, self._navOffSince = True, None
         elif self._navWant and self._navStarted and not self._navOn():
-            # Allumee PUIS retombee en idle sans qu'on le demande (ex. carte forcee au + / -
-            # ou le robot n'est pas reconnu) : la pastille NAV redevient grise, avec la raison.
-            # 60 s de grace : forcer une carte passe par idle le temps de relancer slam.
+            # Allumee PUIS retombee en idle sans qu'on le demande (carte forcee refusee, robot
+            # non reconnu) : on NE L'ETEINT PAS (seul A long eteint, 2026-10-13). Apres 60 s
+            # (un changement de carte passe par idle le temps de relancer slam), on redemande
+            # le sous-mode du groupe ; la pastille clignote en attendant.
             self._navOffSince = self._navOffSince or time.monotonic()
-            if time.monotonic() - self._navOffSince < 60.0:
-                return
-            self._navOffSince = None
-            st = self._navState
-            self._navWant, self._navStarted = False, False
-            self.get_logger().warn("navigation : retombee a l'arret (%s)"
-                                   % (st.detail if st is not None else "superviseur muet"))
-            self._publishState()
+            if time.monotonic() - self._navOffSince >= 60.0 and self._navStartSent:
+                self._navOffSince, self._navStartSent = None, False
+                self._navRetryAt = time.monotonic()
         elif self._navWant and self._navStartSent and not self._navOn():
-            now = time.monotonic()
-            if now - self._navWantT > self.NAV_START_TIMEOUT_S:
-                self._onNavStarted(None)           # abandon, avec le message
-            elif now - self._navSentT > self.NAV_ANSWER_TIMEOUT_S:
+            if time.monotonic() - self._navSentT > self.NAV_ANSWER_TIMEOUT_S:
                 # Pas de reponse (superviseur redemarre pendant la commande, 2026-10-13) :
                 # on redemande.
                 self._navStartSent = False
@@ -1559,25 +1552,19 @@ class TeleopNode(Node):
             self._navStopT = None
             self._publishState()
 
-    # Demarrage complet : slam + relocalisation + Nav2 (~1 min sur un RPi4 charge).
-    NAV_START_TIMEOUT_S = 180.0
+    # Reponse attendue au plus (slam + relocalisation + Nav2, ~1 min sur un RPi4 charge),
+    # et delai entre deux essais quand le superviseur refuse.
     NAV_ANSWER_TIMEOUT_S = 75.0
+    NAV_RETRY_S = 10.0
 
     def _onNavStarted(self, r):
-        """Le superviseur refuse tant que le lidar demarre (« pas de scan lidar ») : on
-        REESSAIE toutes les 3 s, jusqu'a NAV_START_TIMEOUT_S (2026-10-13 : un seul essai, la
-        pastille NAV clignotait pour toujours)."""
+        """Refus du superviseur (lidar qui demarre, robot non reconnu, pose ambigue...) : on
+        REESSAIE toutes les NAV_RETRY_S, SANS FIN -- NAV ne s'eteint que sur A long (demande
+        utilisateur 2026-10-13). La pastille clignote et le message dit pourquoi."""
         if r is not None and r.success or not self._navWant:
             return
-        if time.monotonic() - self._navWantT > self.NAV_START_TIMEOUT_S:
-            self._navWant = False
-            self.get_logger().warn("navigation : demarrage ABANDONNE apres %.0f s (%s)"
-                                   % (self.NAV_START_TIMEOUT_S,
-                                      r.message if r is not None else "pas de reponse"))
-            self._publishState()
-            return
         self._navStartSent = False
-        self._navRetryAt = time.monotonic() + 3.0
+        self._navRetryAt = time.monotonic() + self.NAV_RETRY_S
 
     def _askDeleteDest(self):
         st = self._navState
