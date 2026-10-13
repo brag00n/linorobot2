@@ -30,9 +30,11 @@ tracking_node:
     detector: "yunet"
     det_width: 320
     det_conf: 0.6
-    # MIL et non ViT : OpenCV 4.5.4 (Humble/Jammy) n'a PAS cv::TrackerVit (arrive en 4.7).
-    # Le mode "vit" reste declare et repond "indisponible" au lieu de mentir.
-    track_mode: "mil"
+    # COUPE au demarrage, comme la detection (demande utilisateur 2026-10-13 : CPU basse) :
+    # la manette (TRK-V, touche X du mode TRACKING) choisit l'algorithme, MIL par defaut --
+    # OpenCV 4.5.4 (Humble/Jammy) n'a PAS cv::TrackerVit (arrive en 4.7).
+    track_mode: "none"
+    detect_enabled: false
     # Miroir applique A LA TRAME, avant detection : c'est `--flip h` du prototype, et le
     # triplet (flip, invert_pan, invert_tilt) est INDIVISIBLE -- le miroir horizontal inverse
     # nx, donc changer ce champ sans changer invert_pan met le pan a l'envers. Le suivi

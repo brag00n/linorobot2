@@ -26,7 +26,7 @@ ACTIONS = {"tracking", "recenter", "recognition", "acquisition", "tracker", "pre
            "nav_navigate", "nav_save_wp", "nav_goto_next", "nav_goto_home", "nav_cancel",
            "nav_new_map", "nav_gate_next", "nav_gate_prev", "nav_explore_gate",
            "nav_dest_next", "nav_dest_prev", "nav_goto_sel", "nav_dest_del", "nav_relocalize",
-           "nav_map_next", "nav_map_prev", "nav_map_delete"}
+           "nav_map_next", "nav_map_prev", "nav_map_delete", "chain_all"}
 
 
 def _flatten(d, prefix=""):

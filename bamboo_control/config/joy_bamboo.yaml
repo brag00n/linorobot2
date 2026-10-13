@@ -162,7 +162,7 @@ bamboo_teleop:
     # nav_explore nav_auto_explore nav_new_map nav_gate_next nav_gate_prev nav_explore_gate
     # nav_save_map nav_idle nav_navigate nav_save_wp nav_dest_next nav_dest_prev
     # nav_goto_sel nav_dest_del nav_relocalize nav_goto_next nav_goto_home nav_cancel
-    # nav_map_next nav_map_prev nav_map_delete
+    # nav_map_next nav_map_prev nav_map_delete chain_all
     # nav_unavailable
     #
     # ZR LONG = MIROIR HORIZONTAL de l'image (flip de tracking_node, h <-> none), dans
@@ -178,91 +178,101 @@ bamboo_teleop:
           ZL: "speed_max_down"
           PLUS: "speed_min_up"
           MINUS: "speed_min_down"
-      # TRACKING = la CHAINE de suivi de cible (demande utilisateur 2026-10-04). Les
-      # touches d'ACTIVATION sont les memes dans tous les sous-modes :
-      #   L  ACQ    detection de la cible (visage pour l'instant)
-      #   R  TRK-V  suivi video (tracker) ; coupe = verrou tenu par la detection seule
-      #   X  TRK-P  suivi physique (servos ; X long = recentrage)
-      #   A  CAPT   capture des images de la cible
-      #   +  GEN    apprentissage (enrolement) depuis les captures
-      #   Y  RECO   reconnaissance
+      # TRACKING = la CHAINE de suivi de cible (demande utilisateur 2026-10-04 ; touches
+      # revues le 2026-10-13). Les touches d'ACTIVATION sont les memes dans tous les
+      # sous-modes, et TOUT est COUPE au demarrage comme a l'entree dans le mode (CPU basse :
+      # la detection seule coute ~2 coeurs) :
+      #   A long  ACQ + TRK-V + TRK-P + RECO ensemble (tout coupe si l'une est active)
+      #   A       ACQ    detection de la cible (visage pour l'instant), SEULE
+      #   X       TRK-V  suivi video (tracker) ; coupe = verrou tenu par la detection seule
+      #   X long  RECO   reconnaissance
+      #   Y       TRK-P  suivi physique (servos) ; Y long = recentrage
+      #   L long  CAPT   capture des images de la cible
+      #   R long  GEN    apprentissage (enrolement) depuis les captures
       # Le SOUS-MODE (croix haut/bas) est la fonction qu'on CONFIGURE : ZL / ZR y changent
       # l'algorithme (ou la duree, pour CAPT). PAS de plafond de vitesse ici : c'est un
       # reglage de CONDUITE. ZR long = miroir de l'image, comme partout.
-      # Premier sous-mode `fonctions` : la VUE D'ENSEMBLE -- la boite liste les six
-      # fonctions et leur touche d'activation, la carte de droite resume la camera (CAM).
+      # Premier sous-mode `fonctions` : la VUE D'ENSEMBLE -- la boite liste les fonctions
+      # et leur touche d'activation, la carte de droite resume la camera (CAM).
       tracking:
         groups: "fonctions;acq;trkv;trkp;capt;gen;reco"
         fonctions:
-          L: "acq"
-          R: "trkv"
-          X: "tracking"
-          X_long: "recenter"
-          A: "acquisition"
-          PLUS: "training"
-          Y: "recognition"
+          A_long: "chain_all"
+          A: "acq"
+          X: "trkv"
+          X_long: "recognition"
+          Y: "tracking"
+          Y_long: "recenter"
+          L_long: "acquisition"
+          R_long: "training"
           ZR_long: "flip_image"
         acq:
-          L: "acq"
-          R: "trkv"
-          X: "tracking"
-          X_long: "recenter"
-          A: "acquisition"
-          PLUS: "training"
-          Y: "recognition"
+          A_long: "chain_all"
+          A: "acq"
+          X: "trkv"
+          X_long: "recognition"
+          Y: "tracking"
+          Y_long: "recenter"
+          L_long: "acquisition"
+          R_long: "training"
           ZR_long: "flip_image"
           ZL: "detector_prev"
           ZR: "detector"
         trkv:
-          L: "acq"
-          R: "trkv"
-          X: "tracking"
-          X_long: "recenter"
-          A: "acquisition"
-          PLUS: "training"
-          Y: "recognition"
+          A_long: "chain_all"
+          A: "acq"
+          X: "trkv"
+          X_long: "recognition"
+          Y: "tracking"
+          Y_long: "recenter"
+          L_long: "acquisition"
+          R_long: "training"
           ZR_long: "flip_image"
           ZL: "tracker_prev"
           ZR: "tracker"
         trkp:
-          L: "acq"
-          R: "trkv"
-          X: "tracking"
-          X_long: "recenter"
-          A: "acquisition"
-          PLUS: "training"
-          Y: "recognition"
+          A_long: "chain_all"
+          A: "acq"
+          X: "trkv"
+          X_long: "recognition"
+          Y: "tracking"
+          Y_long: "recenter"
+          L_long: "acquisition"
+          R_long: "training"
           ZR_long: "flip_image"
           ZL: "predict_prev"
           ZR: "predict"
         capt:
-          L: "acq"
-          R: "trkv"
-          X: "tracking"
-          X_long: "recenter"
-          A: "acquisition"
-          PLUS: "training"
-          Y: "recognition"
+          A_long: "chain_all"
+          A: "acq"
+          X: "trkv"
+          X_long: "recognition"
+          Y: "tracking"
+          Y_long: "recenter"
+          L_long: "acquisition"
+          R_long: "training"
           ZR_long: "flip_image"
           ZL: "capture_prev"
           ZR: "capture_next"
         gen:
-          L: "acq"
-          R: "trkv"
-          X: "tracking"
-          X_long: "recenter"
-          A: "acquisition"
-          PLUS: "training"
-          Y: "recognition"
+          A_long: "chain_all"
+          A: "acq"
+          X: "trkv"
+          X_long: "recognition"
+          Y: "tracking"
+          Y_long: "recenter"
+          L_long: "acquisition"
+          R_long: "training"
           ZR_long: "flip_image"
         reco:
-          L: "acq"
-          R: "trkv"
-          X: "tracking"
-          X_long: "recenter"
-          A: "acquisition"
-          PLUS: "training"
-          Y: "recognition"
+          A_long: "chain_all"
+          A: "acq"
+          X: "trkv"
+          X_long: "recognition"
+          Y: "tracking"
+          Y_long: "recenter"
+          L_long: "acquisition"
+          R_long: "training"
           ZR_long: "flip_image"
       calibration:
         groups: "mesure;pid;batterie;essai"

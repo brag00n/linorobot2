@@ -254,7 +254,9 @@ class TeleopNode(Node):
         self._predict = _PREDICTS[0]
         # Chaine de TRACKING (cf. joy_bamboo.yaml) : ACQ -> TRK-V -> TRK-P, CAPT, GEN, RECO.
         self._acqOn = False             # detection (detect_enabled de tracking_node)
-        self._trkvOn = True             # suivi video : tracker != none
+        # Suivi video COUPE au demarrage, comme la detection (tracking_node demarre en
+        # track_mode `none`, videotracking.yaml) : CPU basse tant qu'on ne demande rien.
+        self._trkvOn = False            # suivi video : tracker != none
         self._trkvAlgo = _TRK_ALGOS[0]
         self._captDuration = 0
         self._genOn = False             # apprentissage en cours (jusqu'au RESULTAT)
@@ -1045,6 +1047,10 @@ class TeleopNode(Node):
             "calib_pi": (self._calibTogglePi, lambda: "PI de lacet", lambda: self._calPi),
             # --- chaine de TRACKING : activation des fonctions -------------------------
             "acq": (self._actAcq, lambda: "ACQ detection", lambda: self._acqOn),
+            # ACQ + TRK-V + TRK-P + RECO d'un geste (A long, 2026-10-13) : tout COUPE si l'une
+            # tourne, sinon tout ALLUME.
+            "chain_all": (self._actChainAll, lambda: "ACQ+TRK-V+TRK-P+RECO",
+                          lambda: self._chainAny()),
             "trkv": (self._actTrkv, lambda: "TRK-V suivi video", lambda: self._trkvOn),
             # --- chaine de TRACKING : algorithme du sous-mode (ZL / ZR) ----------------
             "detector_prev": (lambda: self._actDetector(-1),
@@ -1177,9 +1183,10 @@ class TeleopNode(Node):
         """Le mode APPLIQUE, tenu par le gestionnaire : le seul qui fasse foi ici."""
         if m.mode != self._mode:
             self._group = 0
-            # Le gestionnaire vient de poser detect_enabled (vrai en TRACKING seulement) :
-            # on le reflete, et on le dit au HUD (pastille ACQ).
-            self._acqOn = (m.mode == "tracking")
+            # Le gestionnaire vient de poser detect_enabled -- FAUX dans tous les modes depuis
+            # le 2026-10-13, TRACKING compris : la detection ne part qu'a la touche ACQ. On le
+            # reflete, et on le dit au HUD (pastille ACQ).
+            self._acqOn = False
             self._sendMode("detect", "on" if self._acqOn else "off")
         self._mode, self._modeLabel = m.mode, m.label or m.mode.upper()
         if self._mode not in self._keymap:
@@ -1261,6 +1268,25 @@ class TeleopNode(Node):
         """Duree de CAPT (facerecog_node, ModeCmd `capture_duration`)."""
         self._captDuration = self._step(_CAPT_DURATIONS, self._captDuration, step)
         self._sendMode("capture_duration", str(self._captDuration))
+
+    def _chainAny(self):
+        return self._acqOn or self._trkvOn or self._trackingOn or self._recog != "off"
+
+    def _actChainAll(self):
+        """Toute la chaine d'un geste : COUPE si une fonction tourne, sinon ALLUMEE."""
+        on = not self._chainAny()
+        self._setAcq(on)
+        if self._trkvOn != on:
+            self._actTrkv()
+        if self._trackingOn != on:
+            self._actTracking()
+        if on and self._recog == "off":
+            self._recog = "recognition"
+            self._sendMode("recognition", "recognition")
+        elif not on and self._recog != "off":
+            self._recog = "off"
+            self._sendMode("recognition", "off")
+        self.get_logger().info("chaine de tracking %s" % ("ALLUMEE" if on else "COUPEE"))
 
     def _actAcq(self):
         """ACQ on/off : `detect_enabled` de tracking_node, puis ModeCmd `detect` pour le HUD."""

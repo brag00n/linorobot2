@@ -450,8 +450,7 @@ Le défaut vaut quel que soit le producteur de `cmd_vel` : manette, navigation, 
 | Mode | Groupe | Touches |
 |---|---|---|
 | CONDUITE | vitesse | ZL/ZR = plafond de vitesse, −/+ = plancher |
-| TRACKING | vision | X = suivi (X long = recentrage), Y = reconnaissance, A = acquisition, L = tracker, R = prédiction, ZL/ZR = plafond |
-| TRACKING | cible | A = détecteur, Y = apprentissage, L/R = taille de la cible, ZL/ZR = plafond |
+| TRACKING | tous les sous-modes | **A long = ACQ + TRK-V + TRK-P + RECO ensemble** (tout coupé si l'une tourne), A = ACQ (détection) seule, X = TRK-V (suivi vidéo), X long = RECO, Y = TRK-P (servos), Y long = recentrage, L long = CAPT, R long = GEN, ZL/ZR = réglage du sous-mode. **Tout est coupé au démarrage et à l'entrée dans le mode** (2026-10-13) |
 | CALIB | mesure | **A long = lancer**, X = contrôle IMU seul, Y = arcs on/off, R = variante suivante |
 | CALIB | essai | A = appliquer le candidat **en RAM**, X = revenir au fichier, Y = PI de lacet on/off |
 | NAV | exploration | A = exploration auto marche / arrêt, **A long = cartographier** (complète la carte courante), L / R = gate précédente / suivante, X = explorer la gate sélectionnée, X long = sauver la carte, Y long = arrêter, **+ long = nouvelle carte vierge**, + / − = carte enregistrée suivante / précédente (forcée), **− long = carte courante à la corbeille** (`maps/_corbeille/`), ZR long = miroir |

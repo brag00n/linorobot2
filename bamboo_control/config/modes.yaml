@@ -15,7 +15,8 @@
 #   exit_params    idem a la sortie
 #   exit_cancel    actions dont les buts en cours sont ANNULES a la sortie
 #
-# DETECTION DE VISAGES : `detect_enabled` de tracking_node n'est VRAI qu'en TRACKING. Elle
+# DETECTION DE VISAGES : `detect_enabled` de tracking_node n'est VRAI qu'en TRACKING, et
+# seulement a la touche ACQ (2026-10-13 : plus allumee d'office a l'entree). Elle
 # coutait 2,6 coeurs sur 4 en permanence (mesure 2026-10-04), y compris suivi coupe. Un
 # noeud ABSENT (groupe suivi arrete) n'est pas une faute : il n'y a rien a regler.
 #
@@ -43,10 +44,11 @@ bamboo_mode_manager:
       enter_params: "/tracking_node:detect_enabled=false"
 
     # Commandes du groupe videotracking (suivi, reconnaissance, apprentissage).
-    # Rien a l'entree : c'est la carte de touches qui change.
+    # Detection COUPEE a l'entree aussi (demande utilisateur 2026-10-13) : elle ne demarre
+    # qu'a la touche ACQ (A). La rallumer d'office coutait ~2 coeurs des le passage en mode.
     tracking:
       label: "TRACKING"
-      enter_params: "/tracking_node:detect_enabled=true"
+      enter_params: "/tracking_node:detect_enabled=false"
 
     # Calibration du glissement en rotation. Disponible seulement si le noeud
     # tourne (option `calibration_enabled` du fichier canonique). Quitter le
