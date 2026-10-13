@@ -344,6 +344,8 @@ class TeleopNode(Node):
         self._navStartSent = False
         self._navStopT = None
         self._navWantT, self._navRetryAt, self._navSentT = 0.0, 0.0, 0.0
+        self._navStarted = False      # allumee au moins une fois depuis le dernier A long
+        self._navOffSince = None      # retombee a l'arret depuis (grace, cf. _navStackTick)
         self._navStackCli = self.create_client(SetBool, "/bamboo/nav_stack")
         self.create_timer(1.0, self._navStackTick)
         self._curAction = None        # action en cours d'execution (cf. _run)
@@ -1484,6 +1486,7 @@ class TeleopNode(Node):
                 self._navStackCall(False)
         else:
             self._navWant, self._navStartSent, self._navStopT = True, False, None
+            self._navStarted = False
             self._navWantT, self._navRetryAt = time.monotonic(), 0.0
             self._navStackCall(True)
             self._navStackTick()
@@ -1498,6 +1501,21 @@ class TeleopNode(Node):
             self._navStartSent, self._navSentT = True, time.monotonic()
             self._nav(group if group in ("exploration", "navigation") else "exploration",
                       then=self._onNavStarted)
+        if self._navWant and self._navOn():
+            self._navStarted, self._navOffSince = True, None
+        elif self._navWant and self._navStarted and not self._navOn():
+            # Allumee PUIS retombee en idle sans qu'on le demande (ex. carte forcee au + / -
+            # ou le robot n'est pas reconnu) : la pastille NAV redevient grise, avec la raison.
+            # 60 s de grace : forcer une carte passe par idle le temps de relancer slam.
+            self._navOffSince = self._navOffSince or time.monotonic()
+            if time.monotonic() - self._navOffSince < 60.0:
+                return
+            self._navOffSince = None
+            st = self._navState
+            self._navWant, self._navStarted = False, False
+            self.get_logger().warn("navigation : retombee a l'arret (%s)"
+                                   % (st.detail if st is not None else "superviseur muet"))
+            self._publishState()
         elif self._navWant and self._navStartSent and not self._navOn():
             now = time.monotonic()
             if now - self._navWantT > self.NAV_START_TIMEOUT_S:

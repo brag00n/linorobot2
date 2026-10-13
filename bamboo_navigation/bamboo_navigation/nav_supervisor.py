@@ -105,8 +105,11 @@ class NavSupervisor(Node):
         self._forcedMap = False          # carte FORCEE : pas de recherche sur les autres
         self.range_max = float(d("lidar_range_max_m", 8.0).value)
         self.match_period_s = float(d("match_period_s", 2.0).value)
-        self.match_ok = float(d("match_ok", 0.45).value)
-        self.match_lost = float(d("match_lost", 0.25).value)
+        # Controle CONTINU en navigation : CALES le 2026-10-13 sur une session reelle (8 buts,
+        # 7 atteints, robot bien localise) : accord 0,33 a 0,45 en roulant (meubles, scan
+        # partiel, carte sauvee il y a une minute) -- 0,45 alertait sans cesse.
+        self.match_ok = float(d("match_ok", 0.30).value)
+        self.match_lost = float(d("match_lost", 0.15).value)
         self.match_lost_s = float(d("match_lost_s", 5.0).value)
         # SAUT de la correction map->odom entre deux controles (2 s) au-dela duquel la pose
         # est jugee sur la carte sauvee (exploration, cf. _jumpCheck).
