@@ -53,6 +53,8 @@ from geometry_msgs.msg import (Pose, PoseArray, PoseStamped, PoseWithCovarianceS
 from std_msgs.msg import Bool, String
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from nav2_msgs.srv import ClearEntireCostmap, ManageLifecycleNodes
+from lifecycle_msgs.msg import State
+from lifecycle_msgs.srv import GetState
 from nav_msgs.msg import OccupancyGrid, Odometry
 from nav_msgs.srv import GetMap
 from std_srvs.srv import Trigger
@@ -148,6 +150,7 @@ class NavSupervisor(Node):
         self.slam = None              # sous-processus slam_toolbox
         self.slamMode = None          # None | mapping | localization
         self._nav2Up = False
+        self._nav2StateCli = None     # /bt_navigator/get_state (etat reel de Nav2)
         self.goal_name, self.goal_status = "", ""
         self._goalInfo = {}           # {"kind": dest|home|gate, ...} du but en cours
         self.distance, self.recoveries = math.nan, 0
@@ -453,14 +456,36 @@ class NavSupervisor(Node):
     def _nav2(self, on):
         """Nav2 actif ou au repos. Au repos en exploration manuelle : ses costmaps et son
         controleur coutaient ~50 % d'un coeur du RPi4 pour rien (2026-10-11)."""
+        # L'ETAT REEL de Nav2 d'abord, pas seulement notre drapeau : un demarrage qui depasse
+        # le delai (RPi charge) aboutit quand meme, et Nav2 deja ACTIF refuse un nouveau
+        # STARTUP (« transition is not registered from state active ») -- essai du
+        # 2026-10-13 : ronde refusee, « Nav2 refuse », alors que Nav2 tournait.
         if on and not self._nav2Up:
-            ok, why = self._manage(self.navMgr, STARTUP)
+            if self._nav2Active():
+                self._nav2Up = True
+                return True, "deja actif"
+            ok, why = self._manage(self.navMgr, STARTUP, timeout=60.0)
+            if not ok and self._nav2Active():
+                ok, why = True, "actif (demarrage plus long que prevu)"
             self._nav2Up = ok
             return ok, why
-        if not on and self._nav2Up:
+        if not on and (self._nav2Up or self._nav2Active()):
             self._nav2Up = False
             return self._manage(self.navMgr, RESET)
         return True, "deja"
+
+    def _nav2Active(self):
+        """bt_navigator est-il ACTIF (cycle de vie) ? False si on ne sait pas."""
+        if self._nav2StateCli is None:
+            self._nav2StateCli = self.create_client(GetState, "/bt_navigator/get_state",
+                                                    callback_group=self._cbg)
+        cli = self._nav2StateCli
+        if not cli.wait_for_service(timeout_sec=1.0):
+            return False
+        fut = cli.call_async(GetState.Request())
+        if not self._wait(fut, 3.0):
+            return False
+        return fut.result().current_state.id == State.PRIMARY_STATE_ACTIVE
 
     def _slamAlive(self):
         return self.slam is not None and self.slam.poll() is None
