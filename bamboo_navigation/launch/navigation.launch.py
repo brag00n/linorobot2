@@ -129,6 +129,7 @@ def _setup(context, *args, **kwargs):
                           "required_sensors": required or [""],
                           "scan_topic": w["scan"], "imu_topic": w["imu"],
                           "odom_topic": w["odom"], "map_topic": w["map"],
+                          "odom_in_topic": w["odom_in"],
                           # rotations sur place de la relocalisation (voie Nav2 du mux)
                           "cmd_vel_nav_topic": w["cmd_vel_nav"],
                           "lidar_range_max_m": float(lidar.get("range_max_m", 8.0)),

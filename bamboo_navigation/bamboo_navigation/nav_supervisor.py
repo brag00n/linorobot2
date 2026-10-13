@@ -127,6 +127,10 @@ class NavSupervisor(Node):
         self.auto_recal_settle_s = float(d("auto_recal_settle_s", 4.0).value)
         self.auto_still_s = float(d("auto_still_s", 2.0).value)
         self.auto_recal_min_interval_s = float(d("auto_recal_min_interval_s", 600.0).value)
+        # Gyro qui tourne roues immobiles au-dela de ce seuil : biais derive -> recalibration
+        # forcee (0,01 rad/s = 34 deg/min ; la derive normale est de 0,12 deg/min).
+        self.auto_gyro_drift_rad_s = float(d("auto_gyro_drift_rad_s", 0.01).value)
+        odom_in_topic = str(d("odom_in_topic", "/odom/unfiltered").value)
         teleop_topic = str(d("teleop_topic", "/cmd_vel_teleop").value)
         battery_topic = str(d("battery_topic", "/battery").value)
         mode_topic = str(d("mode_topic", "/bamboo/mode").value)
@@ -147,6 +151,7 @@ class NavSupervisor(Node):
         self._lock = threading.Lock()
         self._last = {"scan": None, "imu": None, "odom": None}
         self._scanRaw, self._odomRaw = None, None
+        self._imuRaw, self._wheelRaw = None, None
         self._laser = {}              # frame du lidar -> pose (x, y, cap) sur le robot
         # Carte courante, sa meta, et son image prete a scorer (relocalisation, controle).
         self.store = map_io.MapStore(self.maps_dir)
@@ -208,9 +213,13 @@ class NavSupervisor(Node):
         self._watch = rclpy.create_node("nav_supervisor_watch", use_global_arguments=False)
         self._watch.create_subscription(LaserScan, self.scan_topic, self._onScanRaw,
                                         qos_profile_sensor_data, raw=True)
-        self._watch.create_subscription(Imu, self.imu_topic, lambda _m: self._seen("imu"),
+        self._watch.create_subscription(Imu, self.imu_topic, self._onImuRaw,
                                         qos_profile_sensor_data, raw=True)
         self._watch.create_subscription(Odometry, self.odom_topic, self._onOdomRaw, 1,
+                                        raw=True)
+        # Odometrie des ROUES seules (avant l'EKF) : immobilite sans le biais du gyro.
+        self._watch.create_subscription(Odometry, odom_in_topic,
+                                        lambda raw: setattr(self, "_wheelRaw", raw), 1,
                                         raw=True)
         # Manette, batterie et mode du robot : pour la PAUSE et les garde-fous de l'exploration
         # automatique. Sur le satellite aussi : peu de messages, et rien a faire tourner sous
@@ -293,6 +302,10 @@ class NavSupervisor(Node):
     def _onScanRaw(self, raw):
         self._scanRaw = raw
         self._seen("scan")
+
+    def _onImuRaw(self, raw):
+        self._imuRaw = raw
+        self._seen("imu")
 
     def _onOdomRaw(self, raw):
         self._odomRaw = raw
@@ -1360,15 +1373,25 @@ class NavSupervisor(Node):
         finally:
             self.destroy_client(cli)
 
+    def _gyroRate(self):
+        """Vitesse de lacet mesuree par le gyro (rad/s, dernier /imu/data), ou None."""
+        raw = self._imuRaw
+        if raw is None:
+            return None
+        return float(deserialize_message(raw, Imu).angular_velocity.z)
+
     def _waitStill(self, timeout=4.0, need=1.0):
-        """Le robot est-il IMMOBILE selon l'odometrie (EKF) pendant `need` s ? Attend jusqu'a
-        `timeout` (un but vient d'etre annule : le robot s'arrete en moins d'une seconde)."""
+        """Le robot est-il IMMOBILE selon les ROUES (odometrie brute des codeurs) pendant `need`
+        s ? Attend jusqu'a `timeout` (un but vient d'etre annule : le robot s'arrete en moins
+        d'une seconde). PAS selon l'EKF : il porte le biais du gyro -- essai G1c (2026-10-13),
+        un biais de -0,043 rad/s laisse par une recalibration ratee faisait juger le robot « en
+        mouvement », et refuser la recalibration qui l'aurait corrige."""
         t0, still0 = time.monotonic(), None
         while time.monotonic() - t0 < timeout:
-            raw = self._odomRaw
+            raw = self._wheelRaw if self._wheelRaw is not None else self._odomRaw
             if raw is not None:
                 tw = deserialize_message(raw, Odometry).twist.twist
-                if abs(tw.linear.x) < 0.02 and abs(tw.angular.z) < 0.03:
+                if abs(tw.linear.x) < 0.02 and abs(tw.angular.z) < 0.05:
                     still0 = still0 or time.monotonic()
                     if time.monotonic() - still0 >= need:
                         return True
@@ -1419,12 +1442,21 @@ class NavSupervisor(Node):
         # en cours pour un biais, la carte ESP32 est restee 2 s sans lire ses codeurs -> pose
         # du robot hors de la carte, carte dedoublee et tournee.
         since = time.monotonic() - self._lastRecalT
-        if since < self.auto_recal_min_interval_s:
-            recal_t, recal_msg = None, "gyro deja recalibre il y a %.0f s" % since
-        elif not self._waitStill():
-            recal_t, recal_msg = None, "gyro NON recalibre (robot en mouvement)"
+        still = self._waitStill()
+        # Roues immobiles mais gyro qui « tourne » : biais derive (ou recalibration ratee),
+        # recalibrer quel que soit l'intervalle.
+        rate = self._gyroRate() if still else None
+        drift = rate is not None and abs(rate) > self.auto_gyro_drift_rad_s
+        if not still:
+            recal_t, recal_msg = None, "gyro NON recalibre (roues en mouvement)"
             self.get_logger().warn("exploration auto : " + recal_msg)
+        elif since < self.auto_recal_min_interval_s and not drift:
+            recal_t, recal_msg = None, "gyro deja recalibre il y a %.0f s" % since
         else:
+            if drift:
+                self.get_logger().warn("exploration auto : gyro a %.3f rad/s roues immobiles "
+                                       "-> recalibration forcee" % rate)
+                self._event("gyro_derive", vitesse_rad_s=rate)
             recal_t, recal_msg = self._recalGyro()
             if recal_t is None:
                 self.get_logger().warn("exploration auto : " + recal_msg)
