@@ -50,11 +50,12 @@ def test_no_current_falls_back_on_commands():
     assert h.resistance is None and h.rest_voltage == 11.8
 
 
-def _rest(det, t0, t1, volt, events):
-    """Repos continu de t0 a t1 (s), un point par 0,25 s ; volt(t) -> tension."""
+def _rest(det, t0, t1, volt, events, cur=None, since=200.0):
+    """Repos continu de t0 a t1 (s), un point par 0,25 s ; volt(t) -> tension, cur(t) ->
+    courant (None : non mesure). Le repos a commence `since` s avant t0."""
     t = t0
     while t < t1:
-        ev = det.observe(t, volt(t), t - t0 + 200.0)       # repos commence bien avant t0
+        ev = det.observe(t, volt(t), t - t0 + since, cur(t) if cur else None)
         if ev:
             events.append((t, ev[0]))
         t += 0.25
@@ -62,7 +63,8 @@ def _rest(det, t0, t1, volt, events):
 
 def test_charger_plug_and_unplug_steps():
     det, ev = ChargerDetector(), []
-    _rest(det, 0, 300, lambda t: 11.91 if t < 100 else (12.02 if t < 200 else 11.92), ev)
+    # +0,11 V au branchement (mesure du 2026-10-12) ; -0,30 V au debranchement (idem).
+    _rest(det, 0, 300, lambda t: 11.91 if t < 100 else (12.02 if t < 200 else 11.72), ev)
     assert [e[1] for e in ev] == ["branche", "debranche"]
     assert 100 < ev[0][0] < 110 and 200 < ev[1][0] < 210          # detecte en < 10 s
     assert det.charging is False
@@ -82,8 +84,30 @@ def test_relaxation_after_driving_is_not_a_charger():
 
 def test_charger_already_plugged_seen_by_slope():
     det, ev = ChargerDetector(), []
-    _rest(det, 0, 300, lambda t: 11.90 + 0.02 * t / 60.0, ev)     # +0,02 V/min, sans saut
+    _rest(det, 0, 600, lambda t: 11.90 + 0.02 * t / 60.0, ev)     # +0,02 V/min, sans saut
     assert ev and ev[0][1] == "branche"
+
+
+def test_slow_relaxation_of_a_low_pack_is_not_a_charger():
+    """2026-10-13, chargeur DEBRANCHE : pack bas (11,2 V) qui remonte encore de +0,011 V/min
+    plusieurs minutes apres avoir roule -- mais de moins en moins vite."""
+    det, ev = ChargerDetector(), []
+    _rest(det, 0, 1500, lambda t: 11.30 - 0.15 * math.exp(-t / 600.0), ev, since=0.0)
+    assert ev == []
+
+
+def test_load_step_is_not_a_charger():
+    """Le lidar demarre au repos : -0,19 V et +0,3 A d'un coup (2026-10-13). Puis il s'arrete."""
+    det, ev = ChargerDetector(), []
+    _rest(det, 0, 300, lambda t: 11.65 if t < 100 or t >= 200 else 11.46, ev,
+          cur=lambda t: -0.60 if t < 100 or t >= 200 else -0.90)
+    assert ev == []
+
+
+def test_charger_step_with_unchanged_current_is_seen():
+    det, ev = ChargerDetector(), []
+    _rest(det, 0, 200, lambda t: 11.65 if t < 100 else 11.99, ev, cur=lambda t: -0.60)
+    assert [e[1] for e in ev] == ["branche"]
 
 
 def test_motion_resets_the_reference():

@@ -53,33 +53,63 @@ class ChargerDetector:
     branchement. On ne compare donc que sur un repos CONTINU d'au moins `quiet_s`.
     """
 
-    def __init__(self, step_v=0.08, quiet_s=60.0, slope_v_min=0.01, slope_span_s=120.0):
+    # Seuils releves le 2026-10-13 : en une journee SANS chargeur, 6 faux branchements -- des
+    # pentes de +0,010 / +0,011 V/min (relaxation lente d'un pack bas apres avoir roule) et des
+    # sauts de 0,08 a 0,19 V (le lidar ou Nav2 qui demarrent : la CHARGE change). Les vrais
+    # branchements mesures la veille : sauts de +0,34 / -0,30 / -0,58 V, courant INCHANGE (le
+    # chargeur ne passe pas par l'INA219).
+    def __init__(self, step_v=0.10, quiet_s=60.0, slope_v_min=0.015, slope_span_s=120.0,
+                 slope_rest_s=360.0, load_di_a=0.08):
         self.step_v = step_v
         self.quiet_s = quiet_s
         self.slope_v_min = slope_v_min
         self.slope_span_s = slope_span_s
-        self._hist = collections.deque()         # (t, v) au repos, un point par 0,5 s
+        self.slope_rest_s = slope_rest_s
+        self.load_di_a = load_di_a
+        self._hist = collections.deque()         # (t, v, i) au repos, un point par 0,5 s
         self.charging = None                     # None = inconnu
 
-    def observe(self, t, v, rest_age):
-        """`rest_age` = duree du repos continu (s), None en mouvement. Rend None, ou
-        ("branche" | "debranche", mesure, "saut V" | "pente V/min") quand l'etat change."""
+    def _di(self, a, b):
+        """Ecart des courants medians de deux tranches ; 0 si le courant n'est pas mesure."""
+        ia = [i for _, _, i in a if i is not None]
+        ib = [i for _, _, i in b if i is not None]
+        if len(ia) < 3 or len(ib) < 3:
+            return 0.0
+        return statistics.median(ia) - statistics.median(ib)
+
+    @staticmethod
+    def _slope(pts):
+        """Pente (V/min) par moindres carres de [(t, v, i)]."""
+        if len(pts) < 5:
+            return 0.0
+        mu = sum(u for u, _, _ in pts) / len(pts)
+        mx = sum(x for _, x, _ in pts) / len(pts)
+        den = sum((u - mu) ** 2 for u, _, _ in pts)
+        return 60.0 * sum((u - mu) * (x - mx) for u, x, _ in pts) / den if den else 0.0
+
+    def observe(self, t, v, rest_age, i=None):
+        """`rest_age` = duree du repos continu (s), None en mouvement ; `i` = courant du robot
+        (A, INA219), None si non mesure. Rend None, ou ("branche" | "debranche", mesure,
+        "saut V" | "pente V/min") quand l'etat change."""
         if rest_age is None:
             self._hist.clear()
             return None
         h = self._hist
         if h and t - h[-1][0] < 0.5:
             return None
-        h.append((t, v))
+        h.append((t, v, i))
         while h and t - h[0][0] > max(40.0, self.slope_span_s):
             h.popleft()
         # SAUT : 5 dernieres secondes contre la fenetre [t-30, t-25], repos continu depuis
-        # quiet_s AVANT cette fenetre (la relaxation apres conduite est alors finie).
+        # quiet_s AVANT cette fenetre (la relaxation apres conduite est alors finie). Un saut
+        # ACCOMPAGNE d'un saut de courant est un changement de CHARGE (lidar, Nav2...), pas le
+        # chargeur, qui ne passe pas par l'INA219.
         if rest_age >= self.quiet_s + 30.0:
-            rec = [x for u, x in h if t - u <= 5.0]
-            past = [x for u, x in h if 25.0 <= t - u <= 30.0]
-            if len(rec) >= 3 and len(past) >= 3:
-                dv = statistics.median(rec) - statistics.median(past)
+            rec = [p for p in h if t - p[0] <= 5.0]
+            past = [p for p in h if 25.0 <= t - p[0] <= 30.0]
+            if len(rec) >= 3 and len(past) >= 3 and abs(self._di(rec, past)) <= self.load_di_a:
+                dv = statistics.median(x for _, x, _ in rec) - \
+                    statistics.median(x for _, x, _ in past)
                 if dv > self.step_v and self.charging is not True:
                     return self._set(True, dv, "saut V")
                 if dv < -self.step_v and self.charging is not False:
@@ -87,17 +117,21 @@ class ChargerDetector:
         # PENTE : chargeur deja branche avant le debut du repos, sans saut vu. Seulement sur un
         # historique COMPLET de slope_span_s : juste apres un branchement la tension redescend
         # un peu (12,01 -> 11,98 V en 30 s, 2026-10-12), et une pente sur ces quelques secondes
-        # passait pour un debranchement.
+        # passait pour un debranchement. Et seulement apres `slope_rest_s` de repos, sur une
+        # pente qui NE FAIBLIT PAS (moitie recente >= 70 % de la moitie ancienne) a courant
+        # stable : la RELAXATION d'un pack, elle, ralentit sans cesse.
         span = (h[-1][0] - h[0][0]) if h else 0.0
-        if rest_age >= self.quiet_s + self.slope_span_s and span >= 0.9 * self.slope_span_s:
-            pts = [(u, x) for u, x in h if t - u <= self.slope_span_s]
-            if len(pts) >= 10:
-                mu = sum(u for u, _ in pts) / len(pts)
-                mx = sum(x for _, x in pts) / len(pts)
-                den = sum((u - mu) ** 2 for u, _ in pts)
-                slope = 60.0 * sum((u - mu) * (x - mx) for u, x in pts) / den if den else 0.0
-                if slope > self.slope_v_min and self.charging is not True:
-                    return self._set(True, slope, "pente V/min")
+        if rest_age >= self.slope_rest_s and span >= 0.9 * self.slope_span_s:
+            pts = [p for p in h if t - p[0] <= self.slope_span_s]
+            half = t - self.slope_span_s / 2.0
+            old = [p for p in pts if p[0] < half]
+            new = [p for p in pts if p[0] >= half]
+            slope = self._slope(pts)
+            s_old, s_new = self._slope(old), self._slope(new)
+            steady = s_old > 0 and s_new >= 0.7 * s_old
+            if slope > self.slope_v_min and steady and abs(self._di(new, old)) <= \
+                    self.load_di_a and self.charging is not True:
+                return self._set(True, slope, "pente V/min")
                 # Jamais de DEBRANCHEMENT sur une pente : un chargeur qui couvre mal la
                 # consommation du robot fait lui aussi baisser lentement la tension. Le
                 # debranchement se lit sur le SAUT vers le bas (ci-dessus) uniquement.
@@ -173,7 +207,7 @@ class BatteryHealth:
         while self._low and t - self._low[0][0] > 10.0:
             self._low.popleft()
         rest_age = (t - self._rest_since) if at_rest and self._rest_since is not None else None
-        ev = self.charger.observe(t, v, rest_age)
+        ev = self.charger.observe(t, v, rest_age, i)
         if ev:
             self._chgEvents.append(ev)
 
