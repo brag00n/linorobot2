@@ -1704,6 +1704,12 @@ class NavSupervisor(Node):
             self._clearCostmaps("%d gates sans chemin d'affilee" % len(bad))
             return
         prio_failed = prio is not None and prio in bad
+        if prio_failed:
+            # Le DIRE, meme si l'exploration continue avec une autre gate (essai G2 : la gate 14
+            # designee, deja inatteignable, a ete ignoree sans un mot).
+            self._event("gate_designee_refusee", n=prio["n"], raison="aucun chemin")
+            self.detail = "exploration auto : gate %d designee : aucun chemin" % prio["n"]
+            self.get_logger().warn(self.detail)
         for g in bad:
             self._gateSet(g, "inatteignable", "aucun chemin")
             if g is prio:
@@ -1812,6 +1818,18 @@ class NavSupervisor(Node):
                 self._autoStop("depart inconnu")
             return
         x, y, yaw = self._autoHome
+        # Pas de chemin JUSQU'AU DEPART : inutile d'user 3 fois 25 s de reprises Nav2 (essai G2,
+        # 2026-10-13 : 42 plans refuses depuis la piece du bas, porte etroite pour le
+        # planificateur alors que le robot y etait passe a l'aller). Un vidage des costmaps,
+        # un nouvel essai au tour suivant, puis arret sur place avec la raison.
+        if self._planOk(x, y) is False:
+            if time.monotonic() - self._autoClearT > 30.0:
+                self._clearCostmaps("aucun chemin vers le depart")
+                return
+            with self._lock:
+                self._autoStop("aucun chemin vers le depart (passage trop etroit pour le "
+                               "planificateur ?) : ramener le robot au stick")
+            return
         with self._lock:
             if self.auto != "homing":
                 return
