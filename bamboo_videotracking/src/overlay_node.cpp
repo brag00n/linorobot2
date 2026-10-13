@@ -1032,6 +1032,29 @@ private:
 
   /// Etat de la manette s'il est FRAIS (emis a 1 Hz au moins), sinon nul : une boite figee
   /// montrerait des touches qui ne sont peut-etre plus les bonnes.
+  /// CONFIRMATION demandee par la manette (TeleopState.confirm_text, ex. supprimer une carte) :
+  /// boite au CENTRE de l'image, fond assombri, A = oui, B = non (demande 2026-10-13).
+  void drawConfirm(cv::Mat & im, double u)
+  {
+    const auto st = teleopFresh();
+    if (!st || st->confirm_text.empty()) {return;}
+    const double sc = 0.55 * u;
+    int base = 0;
+    const int tw = cv::getTextSize(st->confirm_text, cv::FONT_HERSHEY_SIMPLEX, sc, 1, &base).width;
+    const int w = std::min(im.cols - iu(16, u), std::max(iu(300, u), tw + iu(32, u)));
+    const int h = iu(92, u);
+    const int x = (im.cols - w) / 2;
+    const int y = (im.rows - h) / 2;
+    const cv::Rect r = cv::Rect(x, y, w, h) & cv::Rect(0, 0, im.cols, im.rows);
+    if (r.width <= 0 || r.height <= 0) {return;}
+    cv::Mat roi = im(r);
+    roi *= 0.25;                                       // fond assombri : la boite se detache
+    cv::rectangle(im, r, kBad, std::max(2, iu(2, u)));
+    put(im, st->confirm_text, x + iu(16, u), y + iu(36, u), kVal, sc);
+    put(im, "A : supprimer", x + iu(16, u), y + iu(72, u), kOn, sc);
+    put(im, "B : annuler", x + w / 2 + iu(16, u), y + iu(72, u), kZoneOut, sc);
+  }
+
   bamboo_interfaces::msg::TeleopState::ConstSharedPtr teleopFresh()
   {
     const auto st = teleop_;
@@ -1713,6 +1736,8 @@ private:
         xr -= iu(14, u);
       }
     }
+
+    drawConfirm(im, u);                  // par-dessus TOUT : elle attend une reponse
 
     std::vector<unsigned char> buf;
     const std::vector<int> par{cv::IMWRITE_JPEG_QUALITY, jpeg_quality_};

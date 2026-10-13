@@ -331,6 +331,8 @@ class TeleopNode(Node):
         self._navState = None
         self._curAction = None        # action en cours d'execution (cf. _run)
         self._pendingActs = set()     # actions dont la commande attend sa reponse
+        self._confirm = None          # confirmation en cours (cf. _askConfirm)
+        self._confirmIgnore = set()   # touches qui y ont repondu, ignorees jusqu'au relache
         self.create_subscription(NavState, "/navigation/state",
                                  lambda m: setattr(self, "_navState", m),
                                  QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
@@ -637,6 +639,8 @@ class TeleopNode(Node):
             # une calibration en cours : le robot y tourne tout seul.
             self._calibCancel("STOP")
             self._stopMotion()
+            if self._confirm is not None:
+                self._confirmEnd("annulee (B)")
 
         # Armement. Sur cette manette le bouton est le MEME que le STOP (pas de clic de
         # stick a lui donner) : le STOP garde son front montant juste au-dessus et
@@ -674,10 +678,20 @@ class TeleopNode(Node):
         # --- touches du MODE et du GROUPE courants ---------------------------
         # Une touche qui a un appui LONG dans ce groupe passe par _holdEdge (son appui court
         # part alors au RELACHEMENT) ; sinon elle part au front, comme le prototype.
+        if self._confirm is not None:
+            self._confirmJoy(msg, now)
+            return
         bind = self._binding()
         for key in KEYS:
             value = self._keyValue(msg, key)
             tag = "key:" + key
+            if key in self._confirmIgnore:
+                # A repondu a une confirmation : ignoree jusqu'a son relachement.
+                self._prev[tag] = value
+                self._hold.pop(tag, None)
+                if not value:
+                    self._confirmIgnore.discard(key)
+                continue
             short, long_ = bind.get(key), bind.get(key + LONG)
             if long_ is not None:
                 ev = self._holdEdge(tag, value, now)
@@ -1068,7 +1082,8 @@ class TeleopNode(Node):
                              lambda: "carte %s >" % self._navMap(), None),
             "nav_map_prev": (lambda: self._nav("select", "map-"),
                              lambda: "< carte %s" % self._navMap(), None),
-            "nav_map_delete": (lambda: self._nav("delete_map"),
+            # Suppression de la carte : DEMANDE de confirmation (boite au centre du HUD).
+            "nav_map_delete": (self._askDeleteMap,
                                lambda: "supprimer carte %s" % self._navMap(), None),
             "nav_save_map": (lambda: self._nav("save_map"), lambda: "sauver la carte", None),
             "nav_idle": (lambda: self._nav("idle"), lambda: "arreter", None),
@@ -1190,6 +1205,8 @@ class TeleopNode(Node):
             st.active.append(bool(active()) if active is not None else False)
             st.pending.append(action in self._pendingActs)
         st.armed = self._motionOn
+        if hasattr(st, "confirm_text"):
+            st.confirm_text = self._confirm["text"] if self._confirm is not None else ""
         st.busy = self._calBusy()
         st.busy_text = self._calText if st.busy else ""
         self._statePub.publish(st)
@@ -1271,6 +1288,58 @@ class TeleopNode(Node):
 
     def _navSub(self):
         return self._navState.submode if self._navState is not None else ""
+
+    # ----------------------------------------------------------- confirmation
+    # Une action IRREVERSIBLE (supprimer une carte) passe par une demande : boite au centre
+    # du HUD (TeleopState.confirm_text), A = oui, B (ou toute autre touche) = non, 10 s sans
+    # reponse = non. Demande utilisateur 2026-10-13.
+    CONFIRM_TIMEOUT_S = 10.0
+
+    def _askDeleteMap(self):
+        st = self._navState
+        name = st.map_name if st is not None else ""
+        if not name:
+            self.get_logger().warn("navigation : aucune carte courante a supprimer")
+            return
+        if getattr(st, "selected_kind", "") == "map":
+            self.get_logger().warn("navigation : carte choisie au + / - pas encore appliquee")
+            return
+        self._askConfirm("Supprimer la carte %s ?" % name.replace("carte_", ""),
+                         lambda n=name: self._nav("delete_map", n))
+
+    def _askConfirm(self, text, fn):
+        self._confirm = {"text": text, "fn": fn, "t": time.monotonic(), "ready": False}
+        self.get_logger().info("confirmation demandee : %s (A = oui, B = non)" % text)
+        self._publishState()
+
+    def _confirmEnd(self, why):
+        self.get_logger().info("confirmation %s : %s" % (why, self._confirm["text"]))
+        self._confirm = None
+        self._publishState()
+
+    def _confirmJoy(self, msg, now):
+        """Touches pendant une confirmation : A seule = oui, toute autre = non. Les touches
+        encore TENUES a l'ouverture (le - long) doivent d'abord etre relachees ; celles qui
+        ont repondu sont ignorees jusqu'a leur relachement, sinon A partirait aussi en appui
+        court (exploration auto) au relachement."""
+        c = self._confirm
+        if now - c["t"] > self.CONFIRM_TIMEOUT_S:
+            self._confirmEnd("abandonnee (sans reponse)")
+            return
+        vals = {k: self._keyValue(msg, k) for k in KEYS}
+        pressed = [k for k, v in vals.items() if v]
+        if not c["ready"]:
+            c["ready"] = not pressed
+            return
+        if not pressed:
+            return
+        self._confirmIgnore = set(pressed)
+        if pressed == ["A"]:
+            fn = c["fn"]
+            self._confirmEnd("ACCEPTEE")
+            fn()
+        else:
+            self._confirmEnd("annulee")
 
     def _navMap(self):
         """Carte en cours de choix (+ / -), sinon la carte courante ; sans le prefixe."""

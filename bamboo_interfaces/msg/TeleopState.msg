@@ -12,5 +12,6 @@ string[] labels         # "acquisition", "tracker: mil"...
 bool[] active           # etat on/off de l'action (false pour une action sans etat)
 bool[] pending          # commande envoyee, reponse pas encore recue (demarrage / arret)
 bool armed              # traction armee a la manette (appui long sur B)
+string confirm_text     # CONFIRMATION demandee ("" = aucune) : A = oui, B = non (2026-10-13)
 bool busy               # un comportement long tourne (calibration)
 string busy_text        # "CALIB 3/12"
