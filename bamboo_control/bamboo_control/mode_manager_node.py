@@ -119,6 +119,12 @@ class ModeManager(Node):
         self._pubReq = self.create_publisher(RobotMode, "/bamboo/mode_request_info", latched)
         self._pubModeCmd = self.create_publisher(ModeCmd, modeCmdTopic, latched)
         self._seq = 0
+        # Reglages CHANGES A LA MANETTE pendant le mode (ex. detection coupee en TRACKING) : le
+        # controle de derive ne doit pas les « reparer » 3 s plus tard (2026-10-13 : la touche
+        # detection de TRACKING etait annulee aussitot). Rendus au mode au prochain changement.
+        self._userOwned = set()
+        self.create_subscription(ModeCmd, modeCmdTopic, self._onModeCmd, latched,
+                                 callback_group=self._cbg)
         self.create_service(ChangeMode, "/bamboo/change_mode", self._onChange,
                             callback_group=self._cbg)
         self.create_service(GetMode, "/bamboo/get_mode", self._onGet,
@@ -252,6 +258,7 @@ class ModeManager(Node):
             self._sendModeCmds(old["exit_modecmd"])
             faults += self._setParams(old["exit_params"])
         new = self._model[target]
+        self._userOwned.clear()          # nouveau mode : ses reglages reprennent la main
         self._odOnSwitch(previous, target)
         self._sendModeCmds(new["enter_modecmd"])
         faults += self._setParams(new["enter_params"])
@@ -384,6 +391,31 @@ class ModeManager(Node):
             except OSError:
                 pass
 
+    # Cible ModeCmd envoyee par la MANETTE -> parametre qu'elle change sur son noeud.
+    USER_TOGGLES = {"detect": ("/tracking_node", "detect_enabled")}
+
+    def _onModeCmd(self, m):
+        """Une commande de la manette sur un reglage du mode : il lui appartient jusqu'au
+        prochain changement de mode. Seules les cibles connues (USER_TOGGLES) comptent ; le
+        gestionnaire n'envoie lui-meme aucune de ces cibles."""
+        owned = self.USER_TOGGLES.get(m.target)
+        if not owned or self._mode is None or m.value not in ("on", "off"):
+            return
+        mode_val = next((v for n, p, v in self._model[self._mode]["enter_params"]
+                         if (n, p) == owned), None)
+        if mode_val is None:
+            return
+        # Seule une commande qui CONTREDIT le mode est un choix de l'utilisateur. La manette
+        # renvoie aussi « detect off » a chaque sortie de TRACKING : la compter ferait perdre
+        # la correction d'un noeud redemarre en NAV (detection rallumee, 190 % de CPU).
+        asked = _paramValue("true" if m.value == "on" else "false")
+        if _sameValue(_paramValue(mode_val), asked):
+            self._userOwned.discard(owned)
+        elif owned not in self._userOwned:
+            self._userOwned.add(owned)
+            self.get_logger().info("mode %s : %s:%s regle a la manette (%s), laisse tel quel"
+                                   % (self._mode, owned[0], owned[1], m.value))
+
     def _checkDrift(self):
         """RELIT les reglages du mode courant et reapplique ceux qui ont derive.
 
@@ -396,7 +428,7 @@ class ModeManager(Node):
         """
         byNode = {}
         for node, prm, val in self._model[self._mode]["enter_params"]:
-            if node not in self._pending:
+            if node not in self._pending and (node, prm) not in self._userOwned:
                 byNode.setdefault(node, []).append((prm, val))
         for node, items in byNode.items():
             cli = self._getClients.get(node)
