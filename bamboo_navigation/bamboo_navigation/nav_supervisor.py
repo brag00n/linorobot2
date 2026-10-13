@@ -94,6 +94,9 @@ class NavSupervisor(Node):
         self.reloc_local_r = float(d("reloc_local_radius_m", 1.5).value)
         self.reloc_turns = int(d("reloc_turns", 3).value)
         self.reloc_turn_speed = float(d("reloc_turn_speed", 0.5).value)
+        # Robot non reconnu sur la carte courante, en navigation : autres cartes essayees (au
+        # plus ce nombre, les plus recentes ; ~1 a 2 s chacune sur le RPi4).
+        self.reloc_other_maps_max = int(d("reloc_other_maps_max", 10).value)
         self.range_max = float(d("lidar_range_max_m", 8.0).value)
         self.match_period_s = float(d("match_period_s", 2.0).value)
         self.match_ok = float(d("match_ok", 0.45).value)
@@ -614,6 +617,42 @@ class NavSupervisor(Node):
         self._lmapKey = key
         return self._lmap
 
+    def _locateOtherMaps(self):
+        """Le robot n'est pas reconnu sur la carte courante : est-il sur une AUTRE carte ?
+        (demande utilisateur 2026-10-13, sous-mode navigation : robot emmene dans une autre
+        piece deja cartographiee). Les cartes a graphe de poses, la plus recente d'abord (au
+        plus `reloc_other_maps_max`), recherche GLOBALE sur chacune, sans rotation ; choix par
+        relocalize.pick_map. Rend (nom, pose, message) ou (None, None, raison)."""
+        pts, _st = self._scanPts()
+        if pts is None:
+            return None, None, "pas de scan lidar exploitable"
+        names = [m["name"] for m in self.store.list()
+                 if m["kind"] == "carte" and m["name"] != self.map_name and
+                 self.store.has_image(m["name"])][:self.reloc_other_maps_max]
+        if not names:
+            return None, None, "aucune autre carte"
+        t0, results = time.monotonic(), []
+        for k, name in enumerate(names):
+            self.detail = "relocalisation : carte %s (%d/%d)" % (name, k + 1, len(names))
+            try:
+                w, h, res, origin, data = map_io.read_map(self.store.path(name, "map.yaml"))
+            except (OSError, ValueError, KeyError) as e:
+                self.get_logger().warn("carte %s illisible : %s" % (name, e))
+                continue
+            lm = rl.LikelihoodMap.from_occupancy(data, w, h, res, origin)
+            ok, best, rival = rl.Relocalizer(lm, self.reloc_accept, self.reloc_margin).start(pts)
+            results.append((name, ok, best, rival))
+        got, why = rl.pick_map(results, self.reloc_margin)
+        dt = time.monotonic() - t0
+        self._event("recherche_autres_cartes", cartes=len(results), duree_s=round(dt, 1),
+                    trouvee=got[0] if got else None,
+                    score=round(got[1][0], 3) if got else None)
+        if got is None:
+            return None, None, why
+        name, best = got
+        return name, best[1], "robot retrouve sur la carte %s (score %.2f, %d carte(s) " \
+            "essayee(s), %.1f s)" % (name, best[0], len(results), dt)
+
     # ------------------------------------------------------------ relocalisation
     def _rotate(self, angle):
         """Rotation sur place de `angle` rad, mesuree par l'odometrie (gyro). False si le
@@ -833,6 +872,23 @@ class NavSupervisor(Node):
             # HORS du verrou : la recherche et les rotations durent jusqu'a ~15 s, et l'etat
             # doit continuer de partir (HUD), une commande (annuler) de passer.
             pose, msg = self._locate(prior)
+            if pose is None and self.submode == "navigation":
+                # Robot emmene dans une autre piece : peut-etre sur une AUTRE carte. Le but en
+                # cours n'est pas repris (il etait dans le repere de l'ancienne carte).
+                other, opose, omsg = self._locateOtherMaps()
+                if other is not None:
+                    with self._lock:
+                        self._event("carte_quittee", vers=other, raison="robot perdu")
+                        self._stopSlam()
+                        self._useMap(other)
+                        self._event("chargee", raison="robot retrouve sur cette carte")
+                        ok, why2 = self._startSlam("localization",
+                                                   self.store.posegraph_base(other), opose)
+                        self.loc = "ok" if ok else "perdue"
+                        self.detail = "%s ; %s" % (omsg, why2)
+                        self.get_logger().warn(self.detail)
+                    return
+                msg = "%s ; %s" % (msg, omsg)
             if pose is None:
                 self.loc, self.detail = "perdue", msg
                 self.get_logger().warn(msg)
@@ -944,7 +1000,14 @@ class NavSupervisor(Node):
         if pose is None:
             pose, how = self._locate(self.meta.get("last_pose") if self.meta else None)
             if pose is None:
-                return False, how
+                # Pas sur la carte courante : peut-etre sur une AUTRE carte enregistree.
+                other, pose, how2 = self._locateOtherMaps()
+                if other is None:
+                    return False, "%s ; %s" % (how, how2)
+                self._event("carte_quittee", vers=other, raison="robot sur une autre carte")
+                self._useMap(other)
+                self._event("chargee", raison="robot retrouve sur cette carte")
+                name, how = other, how2
         ok, why = self._startSlam("localization", self.store.posegraph_base(name), pose)
         if ok:
             self.loc, self.match, self._badT = "ok", math.nan, None

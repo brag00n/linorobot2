@@ -106,6 +106,23 @@ def test_rays_through_a_wall_condemn_a_pose():
     assert m.judge(pts, wrong) < m.judge(pts, (1.0, 1.5, 0.0)) - 0.2
 
 
+def test_pick_map_among_several():
+    p = (1.0, 2.0, 0.0)
+    # Aucune carte acceptee : refus.
+    assert rl.pick_map([("a", False, (0.5, p), None), ("b", False, None, None)])[0] is None
+    # Une seule acceptee : elle, meme si une autre (refusee) note presque autant.
+    got, _why = rl.pick_map([("a", False, (0.60, p), None), ("b", True, (0.62, p), None)])
+    assert got[0] == "b"
+    # Deux versions de la meme piece, notes voisines : la plus RECENTE (premiere) l'emporte.
+    got, _why = rl.pick_map([("recente", True, (0.70, p), None),
+                             ("ancienne", True, (0.75, p), None)])
+    assert got[0] == "recente"
+    # Ecart net : la meilleure l'emporte, meme plus ancienne.
+    got, _why = rl.pick_map([("recente", True, (0.58, p), None),
+                             ("ancienne", True, (0.90, p), None)])
+    assert got[0] == "ancienne"
+
+
 def test_compose_and_relative_are_inverse():
     p0, p1 = (1.0, 2.0, 0.5), (1.4, 2.3, 1.1)
     back = rl.compose(p0, rl.relative(p0, p1))

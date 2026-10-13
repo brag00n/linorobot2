@@ -265,6 +265,25 @@ def decide(hyps, accept=0.55, margin=0.08, distinct_m=0.5, distinct_rad=0.5):
     return ok, best, rival
 
 
+def pick_map(results, margin=0.10):
+    """Parmi plusieurs CARTES, laquelle reconnait l'endroit ? `results` = [(nom, acceptee,
+    meilleure, rivale)] dans l'ordre de preference (la plus RECENTE d'abord). Rend
+    ((nom, meilleure), "") ou (None, raison).
+
+    Seules comptent les cartes ou la pose a ete ACCEPTEE (seuil et marge sur sa propre
+    carte). Plusieurs cartes de la MEME piece se valent souvent (versions successives) : parmi
+    celles a moins de `margin` de la meilleure note, la premiere de la liste (la plus
+    recente, en general la meilleure) l'emporte."""
+    acc = [(k, n, b) for k, (n, ok, b, _r) in enumerate(results) if ok and b is not None]
+    if not acc:
+        tried = len(results)
+        return None, "aucune des %d autre(s) carte(s) ne reconnait l'endroit" % tried
+    top = max(b[0] for _k, _n, b in acc)
+    close = [(k, n, b) for k, n, b in acc if top - b[0] < margin]
+    _k, name, best = min(close, key=lambda c: c[0])
+    return (name, best), ""
+
+
 class Relocalizer:
     """Plusieurs scans pour lever une AMBIGUITE : chaque hypothese suit le deplacement de
     l'odometrie (rotation sur place surtout), est re-affinee sur le nouveau scan et garde
