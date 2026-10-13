@@ -33,7 +33,9 @@ slam_toolbox:
     # map_start_pose: [0.0, 0.0, 0.0]
     #map_start_at_dock: true
 
-    debug_logging: false
+    # true le temps de confirmer la cause des sauts (essai G1) : slam_toolbox journalise
+    # alors ses fermetures de boucle. A remettre a false ensuite (bavard).
+    debug_logging: true
     throttle_scans: 1
     # 0,1 s (10 Hz) et non 0,02 (50 Hz) : map->odom ne change qu'a chaque recalage (tous les
     # 0,2 m / 0,2 rad), et chaque publication part vers TOUS les auditeurs de /tf (Nav2,
@@ -57,12 +59,16 @@ slam_toolbox:
     scan_buffer_maximum_scan_distance: 10.0
     link_match_minimum_response_fine: 0.1  
     link_scan_maximum_distance: 1.5
-    loop_search_maximum_distance: 3.0
-    do_loop_closing: true 
-    loop_match_minimum_chain_size: 10           
-    loop_match_maximum_variance_coarse: 3.0  
-    loop_match_minimum_response_coarse: 0.35    
-    loop_match_minimum_response_fine: 0.45
+    # FERMETURES DE BOUCLE plus exigeantes (essai G1, 2026-10-13) : dans le bureau, petite
+    # piece aux murs droits, la pose a SAUTE de 4,6 m en 8 s (map->odom seul), probablement
+    # une fausse fermeture. Recherche 3,0 -> 2,0 m, reponses 0,35 / 0,45 -> 0,45 / 0,55.
+    # Le superviseur detecte aussi ces sauts lui-meme (exploration : retour en arriere).
+    loop_search_maximum_distance: 2.0
+    do_loop_closing: true
+    loop_match_minimum_chain_size: 10
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.45
+    loop_match_minimum_response_fine: 0.55
 
     # Correlation Parameters - Correlation Parameters
     correlation_search_space_dimension: 0.5

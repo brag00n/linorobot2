@@ -51,6 +51,22 @@ def test_grid_and_posegraph_commit():
     assert not [f for f in os.listdir(s.path(n)) if f.endswith(".tmp")]
 
 
+def test_backup_keeps_the_last_versions():
+    s = _store()
+    n = s.create(name="c")
+    assert s.backup(n) == ""                         # rien encore a copier
+    for k in range(7):
+        with open(s.path(n, "slam.posegraph"), "w") as fh:
+            fh.write("v%d" % k)
+        s.backup(n, keep=5)
+    hist = s.history(n)
+    assert len(hist) == 5
+    with open(os.path.join(hist[0], "slam.posegraph")) as fh:
+        assert fh.read() == "v6"                     # la plus recente en tete
+    with open(os.path.join(hist[-1], "slam.posegraph")) as fh:
+        assert fh.read() == "v2"
+
+
 def test_events_skip_a_truncated_last_line():
     s = _store()
     n = s.create(name="c")

@@ -20,6 +20,7 @@ import datetime
 import json
 import math
 import os
+import shutil
 
 import yaml
 
@@ -330,6 +331,34 @@ class MapStore:
     def write_grid(self, name, width, height, resolution, origin_xyz_yaw, data):
         return write_map(self.path(name, "map"), width, height, resolution, origin_xyz_yaw,
                          data)
+
+    def backup(self, name, keep=5):
+        """Copie le graphe et l'image ACTUELS dans <carte>/historique/<horodatage>/ avant
+        qu'une sauvegarde ne les remplace ; garde les `keep` dernieres copies. Essai G1
+        (2026-10-13) : apres un saut de localisation, les sauvegardes periodiques avaient
+        ECRASE la derniere bonne carte. Rend le dossier cree ("" si rien a copier)."""
+        src = [f for f in ("slam.posegraph", "slam.data", "map.pgm", "map.yaml")
+               if os.path.isfile(self.path(name, f))]
+        if not src:
+            return ""
+        hist = self.path(name, "historique")
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        dst = os.path.join(hist, stamp)
+        os.makedirs(dst, exist_ok=True)
+        for f in src:
+            shutil.copy2(self.path(name, f), os.path.join(dst, f))
+        olds = sorted(d for d in os.listdir(hist) if os.path.isdir(os.path.join(hist, d)))
+        for d in olds[:-keep] if keep > 0 else []:
+            shutil.rmtree(os.path.join(hist, d), ignore_errors=True)
+        return dst
+
+    def history(self, name):
+        """Copies de l'historique, de la plus RECENTE a la plus ancienne (chemins)."""
+        hist = self.path(name, "historique")
+        if not os.path.isdir(hist):
+            return []
+        return [os.path.join(hist, d) for d in sorted(os.listdir(hist), reverse=True)
+                if os.path.isdir(os.path.join(hist, d))]
 
     def commit_posegraph(self, name):
         """Remplace le graphe par celui que slam_toolbox vient d'ecrire dans posegraph_tmp().

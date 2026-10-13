@@ -99,6 +99,10 @@ class NavSupervisor(Node):
         self.match_ok = float(d("match_ok", 0.45).value)
         self.match_lost = float(d("match_lost", 0.25).value)
         self.match_lost_s = float(d("match_lost_s", 5.0).value)
+        # SAUT de la correction map->odom entre deux controles (2 s) au-dela duquel la pose
+        # est jugee sur la carte sauvee (exploration, cf. _jumpCheck).
+        self.jump_m = float(d("jump_m", 0.5).value)
+        self.jump_rad = float(d("jump_rad", 0.35).value)
         # --- exploration AUTOMATIQUE (gates) : reglages, cf. _autoTick ---
         self.auto_min_frontier_m = float(d("auto_min_frontier_m", 0.30).value)
         # Delai SANS PROGRES (la distance restante ne baisse plus) avant d'abandonner un but ;
@@ -156,6 +160,7 @@ class NavSupervisor(Node):
         self._badT = None                # debut d'un accord scan/carte sous match_lost
         self._doubtLogged = False
         self._relocBusy = False
+        self._m2o = None                 # derniere correction map->odom jugee saine
         # Etat de l'exploration automatique : off | running | paused | homing | finishing |
         # done.
         self.auto = "off"
@@ -438,6 +443,7 @@ class NavSupervisor(Node):
             cmd += ["-p", "map_file_name:=%s" % graph,
                     "-p", "map_start_pose:=[%.4f, %.4f, %.4f]" % tuple(pose)]
         self.tf.clear()                # sinon l'ANCIEN map->odom reste quelques secondes
+        self._m2o = None               # nouveau repere : rien a comparer
         self.slam = subprocess.Popen(cmd, start_new_session=True)
         self.slamMode = mode
         t = time.monotonic()
@@ -529,6 +535,14 @@ class NavSupervisor(Node):
             return True, "carte %s deja sauvee" % self.map_name
         parts, known = [], math.nan
         if self.slamMode == "mapping" and self._slamAlive():
+            # JAMAIS une carte douteuse par-dessus une bonne (essai G1, 2026-10-13 : apres un
+            # saut de la pose, les sauvegardes periodiques avaient ecrase la derniere bonne
+            # carte). Controle du saut juste avant d'ecrire, en plus de celui des 2 s.
+            if self.loc != "ok" or self._jumpCheck()[0] == "saut":
+                self._event("sauvegarde_refusee", raison=why, localisation=self.loc)
+                return False, "carte %s NON sauvee : localisation %s" % (
+                    self.map_name, self.loc)
+            self.store.backup(self.map_name)
             m = self._getMap()
             if m is None:
                 parts.append("image NON sauvee (GetMap muet)")
@@ -689,13 +703,71 @@ class NavSupervisor(Node):
             return math.nan
         return lm.judge(pts, pose)
 
+    def _tf2d(self, parent, child):
+        """(x, y, cap) de la TF parent -> child, derniere connue, ou None."""
+        if self.tfl is None:
+            return None
+        try:
+            t = self.tf.lookup_transform(parent, child, Time(), timeout=Duration(seconds=0.2))
+        except Exception:                                   # noqa: BLE001
+            return None
+        q = t.transform.rotation
+        return (t.transform.translation.x, t.transform.translation.y,
+                map_io.yaw_of(q.z, q.w, q.x, q.y))
+
+    def _jumpCheck(self):
+        """SAUT de localisation en cartographie ? Essai G1 (2026-10-13) : la correction
+        map->odom de slam_toolbox a saute de 4,6 m en 8 s (fausse fermeture de boucle
+        probable), et la carte s'est dedoublee, tournee. Une correction normale fait quelques
+        cm. Au-dela de `jump_m` / `jump_rad` depuis le controle precedent, on juge sur l'image
+        SAUVEE quel repere colle au scan : le nouveau (vraie correction, acceptee) ou l'ancien
+        (saut faux). Rend ("ok",) ou ("saut", pose dans l'ancien repere, score ancien, nouveau)."""
+        cur = self._tf2d("map", "odom")
+        if cur is None:
+            return ("ok",)
+        prev = self._m2o
+        if prev is None or (math.hypot(cur[0] - prev[0], cur[1] - prev[1]) < self.jump_m and
+                            abs(rl.angdiff(cur[2], prev[2])) < self.jump_rad):
+            self._m2o = cur
+            return ("ok",)
+        lm = self._mapModel()
+        pts, _st = self._scanPts()
+        ob = self._tf2d("odom", "base_footprint")
+        if lm is None or pts is None or ob is None:
+            self._m2o = cur                    # rien pour juger : on accepte, et on le dit
+            self._event("correction_slam", jugee=False, saut_m=math.hypot(
+                cur[0] - prev[0], cur[1] - prev[1]))
+            return ("ok",)
+        new, old = rl.compose(cur, ob), rl.compose(prev, ob)
+        s_new, s_old = lm.judge(pts, new), lm.judge(pts, old)
+        jump = math.hypot(cur[0] - prev[0], cur[1] - prev[1])
+        if s_new >= s_old - 0.05:
+            self._m2o = cur
+            self._event("correction_slam", jugee=True, saut_m=jump, score_ancien=s_old,
+                        score_nouveau=s_new)
+            return ("ok",)
+        return ("saut", old, s_old, s_new)
+
     def _locTick(self):
-        """CONTROLE CONTINU en navigation : la carte correspond-elle a ce que voit le lidar ?
+        """CONTROLE CONTINU. En navigation : la carte correspond-elle a ce que voit le lidar ?
         Bon accord : rien. Accord moyen : « carte modifiee ? » (meuble deplace, porte...).
         Accord mauvais pendant `match_lost_s` : le robot est PERDU (souleve, glissade) ->
-        pause du but, relocalisation, reprise."""
-        if self.submode != "navigation" or self.slamMode != "localization" or \
-                self._relocBusy:
+        pause du but, relocalisation, reprise. En exploration : SAUT de la pose de slam ->
+        retour en arriere sur le dernier graphe sain (_rollbackJob)."""
+        if self._relocBusy:
+            return
+        if self.submode == "exploration" and self.slamMode == "mapping":
+            r = self._jumpCheck()
+            if r[0] == "saut":
+                self.get_logger().warn(
+                    "exploration : SAUT de localisation (accord %.2f dans l'ancien repere, "
+                    "%.2f dans le nouveau) -> retour au dernier graphe sain" % (r[2], r[3]))
+                self._relocBusy = True
+                self.loc = "relocalisation"
+                threading.Thread(target=self._rollbackJob, args=(r[1], r[2], r[3]),
+                                 daemon=True, name="nav_rollback").start()
+            return
+        if self.submode != "navigation" or self.slamMode != "localization":
             return
         s = self._matchNow()
         self.match = s
@@ -763,6 +835,42 @@ class NavSupervisor(Node):
                     self.detail += " ; reprise vers %s" % resume["name"]
         finally:
             self._badT = None
+            self._relocBusy = False
+
+    def _rollbackJob(self, pose_old, s_old, s_new):
+        """RETOUR EN ARRIERE apres un saut de localisation en exploration : l'exploration est
+        mise en pause, slam_toolbox repart du DERNIER GRAPHE SAUVE (sauve avant le saut : les
+        sauvegardes sont refusees des que la localisation est douteuse), a la pose du robot
+        dans l'ancien repere, affinee par une relocalisation LOCALE sur l'image sauvee. Puis
+        l'exploration reprend d'elle-meme (_autoTick attend la fin de ce travail)."""
+        name = self.map_name
+        try:
+            with self._lock:
+                self._event("saut_localisation", pose_ancien_repere=pose_old,
+                            score_ancien=s_old, score_nouveau=s_new)
+                if self.auto in ("running", "homing"):
+                    self._autoResumeTo, self.auto = self.auto, "paused"
+                    self._autoOwnCancel = True
+                    self._gateSet(self._autoGate, "ouverte", "saut de localisation")
+                    self._autoGate, self._autoTarget = None, None
+                self._cancelGoal()
+                if not self.store.has_posegraph(name):
+                    self.loc = "perdue"
+                    self.detail = "saut de localisation et aucun graphe sauve : nouvelle carte"
+                    return
+                self._stopSlam()
+            pose, msg = self._locate(pose_old)
+            if pose is None:
+                # Pose de l'ancien repere telle quelle : l'odometrie n'a derive que de
+                # quelques secondes depuis le dernier controle.
+                pose, msg = pose_old, "pose de l'ancien repere (%s)" % msg
+            with self._lock:
+                ok, why = self._startSlam("mapping", self.store.posegraph_base(name), pose)
+                self.loc = "ok" if ok else "perdue"
+                self.detail = "retour au dernier graphe sain : %s ; %s" % (msg, why)
+                self._event("retour_arriere", ok=ok, pose=pose, detail=msg)
+                self.get_logger().warn(self.detail)
+        finally:
             self._relocBusy = False
 
     # ------------------------------------------------------------ sous-modes
@@ -1256,6 +1364,9 @@ class NavSupervisor(Node):
         if time.monotonic() - self._teleopT < self.auto_still_s:
             return False, ("exploration auto refusee : robot en mouvement (lacher le stick "
                            "%.0f s)" % self.auto_still_s)
+        if self._relocBusy or self.loc in ("douteuse", "perdue", "relocalisation"):
+            return False, ("exploration auto refusee : localisation %s (attendre, ou "
+                           "nouvelle carte : + long)" % self.loc)
         # La carte COURANTE est completee, a la pose RETROUVEE du robot (relocalisation au
         # passage en exploration). Avant le 2026-10-12, chaque lancement repartait d'une carte
         # neuve : reprendre l'ancienne session sans relocaliser etait dangereux (robot deplace
@@ -1337,6 +1448,11 @@ class NavSupervisor(Node):
 
     def _autoTick(self):
         if self.auto in ("off", "done", "finishing"):
+            return
+        if self._relocBusy:
+            # Retour en arriere / relocalisation en cours : slam_toolbox redemarre, rien a
+            # envoyer ; l'exploration reprend apres.
+            self.detail = "exploration auto : PAUSE (relocalisation en cours)"
             return
         now = time.monotonic()
         # --- garde-fous, du plus grave au moins grave ---
@@ -1495,6 +1611,7 @@ class NavSupervisor(Node):
         if len(bad) >= 3 and time.monotonic() - self._autoClearT > 60.0:
             self._clearCostmaps("%d gates sans chemin d'affilee" % len(bad))
             return
+        prio_failed = prio is not None and prio in bad
         for g in bad:
             self._gateSet(g, "inatteignable", "aucun chemin")
             if g is prio:
@@ -1504,6 +1621,13 @@ class NavSupervisor(Node):
         if f is None:
             if any(g["status"] == "ouverte" for g in live):
                 return                         # d'autres candidates : au tour suivant
+            if prio_failed:
+                # La gate DESIGNEE n'a pas de chemin et il n'y a rien d'autre : le dire et
+                # RESTER sur place, plutot que de rentrer au depart (essai G1 : quatre
+                # designations de suite, quatre retours au depart pour rien).
+                with self._lock:
+                    self._autoStop("gate %d designee inatteignable" % prio["n"])
+                return
             retry = [g for g in live if g["status"] == "abandonnee" and
                      int(g.get("tries", 0)) < 2]
             if not self._autoSecond and retry:
