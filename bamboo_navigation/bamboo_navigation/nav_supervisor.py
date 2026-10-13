@@ -97,6 +97,10 @@ class NavSupervisor(Node):
         # Robot non reconnu sur la carte courante, en navigation : autres cartes essayees (au
         # plus ce nombre, les plus recentes ; ~1 a 2 s chacune sur le RPi4).
         self.reloc_other_maps_max = int(d("reloc_other_maps_max", 10).value)
+        # Choix de carte a la manette (+ / -) : applique apres ce delai sans nouvel appui.
+        self.map_select_delay_s = float(d("map_select_delay_s", 2.0).value)
+        self._mapSel, self._mapSelT = None, 0.0
+        self._forcedMap = False          # carte FORCEE : pas de recherche sur les autres
         self.range_max = float(d("lidar_range_max_m", 8.0).value)
         self.match_period_s = float(d("match_period_s", 2.0).value)
         self.match_ok = float(d("match_ok", 0.45).value)
@@ -293,6 +297,7 @@ class NavSupervisor(Node):
         self.create_timer(1.0, self._publish, callback_group=self._cbg)
         self.create_timer(1.0, self._autoTick, callback_group=self._cbg)
         self.create_timer(5.0, self._saveTick, callback_group=self._cbg)
+        self.create_timer(0.5, self._mapSelTick, callback_group=self._cbg)
         self.create_timer(self.match_period_s, self._locTick, callback_group=self._cbg)
         self._useMap(self._initialMap())
         self.get_logger().info("superviseur de navigation : cartes dans %s, carte courante %s, "
@@ -973,7 +978,10 @@ class NavSupervisor(Node):
             pose, how = self._locate(self.meta.get("last_pose") if self.meta else None)
             if pose is None:
                 # Pas sur la carte courante : peut-etre sur une AUTRE carte, qu'on completera.
-                other, pose, how2 = self._locateOtherMaps()
+                if self._forcedMap:        # carte choisie au + / - : elle, et elle seule
+                    other, pose, how2 = None, None, "carte forcee : autres cartes non essayees"
+                else:
+                    other, pose, how2 = self._locateOtherMaps()
                 if other is None:
                     return False, "carte %s : %s ; %s -- ou nouvelle carte (+ long)" % (
                         name, how, how2)
@@ -1009,7 +1017,10 @@ class NavSupervisor(Node):
             pose, how = self._locate(self.meta.get("last_pose") if self.meta else None)
             if pose is None:
                 # Pas sur la carte courante : peut-etre sur une AUTRE carte enregistree.
-                other, pose, how2 = self._locateOtherMaps()
+                if self._forcedMap:        # carte choisie au + / - : elle, et elle seule
+                    other, pose, how2 = None, None, "carte forcee : autres cartes non essayees"
+                else:
+                    other, pose, how2 = self._locateOtherMaps()
                 if other is None:
                     return False, "%s ; %s" % (how, how2)
                 self._event("carte_quittee", vers=other, raison="robot sur une autre carte")
@@ -1297,9 +1308,50 @@ class NavSupervisor(Node):
         ok2, why2 = self.setSubmode(prev)
         return ok2, "%s ; %s" % (why, why2)
 
+    def _selectMap(self, step):
+        """+ / - de la manette : carte enregistree suivante / precedente (a graphe de poses, la
+        plus recente d'abord), APPLIQUEE `map_select_delay_s` apres le dernier appui (on peut
+        faire defiler sans relancer slam a chaque carte). Demande utilisateur 2026-10-13."""
+        names = [m["name"] for m in self.store.list() if m["kind"] == "carte"]
+        if not names:
+            return False, "aucune carte enregistree"
+        cur = self._mapSel or self.map_name
+        k = names.index(cur) if cur in names else -1
+        k = (k + step) % len(names) if k >= 0 else (0 if step > 0 else len(names) - 1)
+        self._mapSel, self._mapSelT = names[k], time.monotonic()
+        tag = " (courante)" if names[k] == self.map_name else ""
+        return True, "carte %d/%d : %s%s -- appliquee dans %.0f s" % (
+            k + 1, len(names), names[k], tag, self.map_select_delay_s)
+
+    def _mapSelTick(self):
+        """Applique la carte choisie au + / - : simple changement en idle ; sinon arret,
+        changement, et reprise du sous-mode avec relocalisation sur CETTE carte seulement."""
+        name = self._mapSel
+        if not name or time.monotonic() - self._mapSelT < self.map_select_delay_s:
+            return
+        if not self._lock.acquire(blocking=False):
+            return
+        try:
+            self._mapSel = None
+            if name == self.map_name:
+                self.detail = "carte %s gardee" % name
+                return
+            self._forcedMap = True
+            ok, why = self._loadMap(name)
+            self._forcedMap = False
+            self._event("carte_forcee", carte=name, ok=ok)
+            self.detail = ("carte forcee %s : %s" % (name, why)) if ok else \
+                ("carte forcee %s : ECHEC, %s" % (name, why))
+            self.get_logger().info(self.detail)
+        finally:
+            self._lock.release()
+
     def _select(self, arg):
-        """gate+ gate- dest+ dest- | gate <n> | dest <n> : la selection de la manette."""
+        """gate+ gate- dest+ dest- | gate <n> | dest <n> | map+ map- : la selection de la
+        manette."""
         a = arg.replace(" ", "")
+        if a in ("map+", "map-"):
+            return self._selectMap(+1 if a == "map+" else -1)
         kind = "gate" if a.startswith("gate") else "dest" if a.startswith("dest") else ""
         if not kind or self.meta is None:
             return False, "usage : select gate+|gate-|dest+|dest-|gate <n>|dest <n>"
@@ -2001,6 +2053,9 @@ class NavSupervisor(Node):
             m.selected_kind, m.selected_n = (kind if n else ""), int(n or 0)
             d = map_io.dest_find(meta, n) if kind == "dest" and n else None
             m.selected_name = d["name"] if d else ""
+            if self._mapSel:
+                # Carte en cours de choix (+ / -) : affichee a la place de la selection.
+                m.selected_kind, m.selected_n, m.selected_name = "map", 1, self._mapSel
             gs = [g for g in meta.get("gates", []) if g["status"] != "exploree"]
             m.gate_n = [int(g["n"]) for g in gs]
             m.gate_x = [float(g["x"]) for g in gs]

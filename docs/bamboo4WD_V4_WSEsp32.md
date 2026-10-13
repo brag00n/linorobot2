@@ -454,8 +454,8 @@ Le défaut vaut quel que soit le producteur de `cmd_vel` : manette, navigation, 
 | TRACKING | cible | A = détecteur, Y = apprentissage, L/R = taille de la cible, ZL/ZR = plafond |
 | CALIB | mesure | **A long = lancer**, X = contrôle IMU seul, Y = arcs on/off, R = variante suivante |
 | CALIB | essai | A = appliquer le candidat **en RAM**, X = revenir au fichier, Y = PI de lacet on/off |
-| NAV | exploration | A = exploration auto marche / arrêt, **A long = cartographier** (complète la carte courante), L / R = gate précédente / suivante, X = explorer la gate sélectionnée, X long = sauver la carte, Y long = arrêter, **+ long = nouvelle carte vierge**, ZR long = miroir |
-| NAV | navigation | **A long = naviguer** (carte courante), L / R = destination précédente / suivante, A = aller à la destination sélectionnée, Y long = nouvelle destination, **− long = supprimer la destination sélectionnée**, X long = retour au départ, Y = annuler le but, + long = relocaliser |
+| NAV | exploration | A = exploration auto marche / arrêt, **A long = cartographier** (complète la carte courante), L / R = gate précédente / suivante, X = explorer la gate sélectionnée, X long = sauver la carte, Y long = arrêter, **+ long = nouvelle carte vierge**, + / − = carte enregistrée suivante / précédente (forcée), ZR long = miroir |
+| NAV | navigation | **A long = naviguer** (carte courante), L / R = destination précédente / suivante, A = aller à la destination sélectionnée, Y long = nouvelle destination, **− long = supprimer la destination sélectionnée**, X long = retour au départ, Y = annuler le but, + long = relocaliser, + / − = carte enregistrée suivante / précédente (forcée) |
 
 Une carte de touches fausse est **refusée au démarrage** : touche, action ou groupe inconnu, ou B réaffecté. La manette se replie alors sur la conduite seule, et le diagnostic `bamboo_teleop: modes` passe en ERROR avec la raison.
 
@@ -571,7 +571,7 @@ docker compose --profile nav   up -d navigation
 En passant d'exploration à navigation (ou l'inverse), la pose courante est transmise : pas de relocalisation, pas de saut.
 
 **Commandes** — service unique `/nav_supervisor/command` (`bamboo_interfaces/srv/NavCommand`, liste complète dans le `.srv`) :
-`exploration [new]`, `navigation [carte]`, `idle`, `new_map`, `load_map <carte>`, `save_map`, `auto_explore`, `explore_gate [n]`, `select gate+|gate-|dest+|dest-|gate n|dest n`, `dest_add [nom]`, `dest_del [n|nom]`, `dest_rename <n|nom> <nouveau>`, `goto [n|nom|home|next]`, `relocalize [global]`, `cancel`, `list`, `events [n]`.
+`exploration [new]`, `navigation [carte]`, `idle`, `new_map`, `load_map <carte>`, `save_map`, `auto_explore`, `explore_gate [n]`, `select gate+|gate-|dest+|dest-|gate n|dest n|map+|map-`, `dest_add [nom]`, `dest_del [n|nom]`, `dest_rename <n|nom> <nouveau>`, `goto [n|nom|home|next]`, `relocalize [global]`, `cancel`, `list`, `events [n]`.
 
 **État** : `/navigation/state` (`NavState`, latché) — sous-mode, carte, but, distance restante, reprises, **localisation** (`loc_state`, accord scan/carte `map_match`), **sélection**, **gates** et **destinations** (tableaux, pour la mini-carte), capteurs manquants. Lu par le HUD (carte NAV, mini-carte), la manette et le MCP. Le détail part aussi en JSON sur `/navigation/objects`.
 
@@ -621,6 +621,8 @@ slam_toolbox ne sait pas faire de **localisation globale** : il lui faut une pos
 - sous `match_lost` pendant 5 s : le robot est **perdu**. Le but est mis en pause, le robot est relocalisé (localement, puis globalement), puis le but **reprend**.
 
 Les seuils sont à caler sur de vrais scans pris à des poses connues (essai G4).
+
+**Plusieurs cartes** (2026-10-13) : si le robot n'est pas reconnu sur la carte courante, en entrant en exploration ou en navigation, ou s'il est perdu en navigation, les **autres cartes** à graphe de poses sont essayées une à une, la plus récente d'abord (`reloc_other_maps_max` = 10). Parmi les cartes qui le reconnaissent et dont les scores sont voisins, la plus récente l'emporte, et elle devient la carte courante. Un but en cours n'est pas repris. À la manette, **+ / −** (appuis courts) parcourent les cartes enregistrées : la carte choisie est **forcée** 2 s après le dernier appui (relocalisation sur elle seule).
 
 ### 10.4 Arbitrage des consignes
 

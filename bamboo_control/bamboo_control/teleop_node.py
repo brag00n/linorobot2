@@ -1062,6 +1062,12 @@ class TeleopNode(Node):
                               lambda: "< gate %s" % self._navSel("gate"), None),
             "nav_explore_gate": (lambda: self._nav("explore_gate"),
                                  lambda: "explorer la gate %s" % self._navSel("gate"), None),
+            # Choix de la CARTE (+ / -) parmi les cartes enregistrees, appliquee 2 s apres le
+            # dernier appui : carte FORCEE (relocalisation sur elle seule).
+            "nav_map_next": (lambda: self._nav("select", "map+"),
+                             lambda: "carte %s >" % self._navMap(), None),
+            "nav_map_prev": (lambda: self._nav("select", "map-"),
+                             lambda: "< carte %s" % self._navMap(), None),
             "nav_save_map": (lambda: self._nav("save_map"), lambda: "sauver la carte", None),
             "nav_idle": (lambda: self._nav("idle"), lambda: "arreter", None),
             "nav_navigate": (lambda: self._nav("navigation"),
@@ -1263,6 +1269,14 @@ class TeleopNode(Node):
 
     def _navSub(self):
         return self._navState.submode if self._navState is not None else ""
+
+    def _navMap(self):
+        """Carte en cours de choix (+ / -), sinon la carte courante ; sans le prefixe."""
+        st = self._navState
+        if st is None:
+            return "-"
+        name = st.selected_name if getattr(st, "selected_kind", "") == "map" else st.map_name
+        return (name or "-").replace("carte_", "")
 
     def _navSel(self, kind):
         """Libelle de la selection du superviseur (gate ou destination) pour le HUD : numero
