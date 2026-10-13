@@ -42,7 +42,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from action_msgs.srv import CancelGoal
-from diagnostic_msgs.msg import DiagnosticStatus
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from diagnostic_updater import Updater
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import GetParameters, SetParameters
@@ -154,6 +154,11 @@ class ModeManager(Node):
         self._diag = Updater(self)
         self._diag.setHardwareID("bamboo_control")
         self._diag.add("modes du robot", self._diagModes)
+        # Diagnostics TENANT LIEU des noeuds d'une pile A LA DEMANDE eteinte a dessein (cf.
+        # _odDiagTick) : sans eux, l'arbre /diagnostics_agg les marquait PERIMES (rouge) des que
+        # la pile NAV etait arretee -- c'est pourtant son etat normal (2026-10-13).
+        self._pubDiag = self.create_publisher(DiagnosticArray, "/diagnostics", 10)
+        self.create_timer(1.0, self._odDiagTick, callback_group=self._cbg)
 
         self._default = default
         self._startTimer = self.create_timer(startDelay, self._enterDefault,
@@ -372,6 +377,41 @@ class ModeManager(Node):
         new_g = self._model[target]["ondemand"]
         if new_g:
             self._odOffAt.pop(new_g, None)
+
+    # Pour chaque groupe a la demande : (noeud, nom EXACT de son diagnostic) a remplacer
+    # tant que le noeud est absent -- memes noms, donc memes cases de l'agregateur.
+    OD_DIAGS = {"nav": (("/scan_monitor", "scan_monitor: lidar", "lidar"),
+                        ("/nav_supervisor", "nav_supervisor: navigation", "navigation"))}
+
+    def _odDiagTick(self):
+        """Pile a la demande ETEINTE (ou en demarrage) : publie a la place de ses noeuds
+        absents un diagnostic qui le DIT -- OK eteinte ou en demarrage, ERROR si le demarrage
+        a echoue. Des que le vrai noeud est la, son propre diagnostic prend le relais."""
+        if not self._odUsable():
+            return
+        nodes = None
+        arr = DiagnosticArray()
+        arr.header.stamp = self.get_clock().now().to_msg()
+        for g, items in self.OD_DIAGS.items():
+            st = self._odState(g)
+            for node, name, hwid in items:
+                if nodes is None:
+                    nodes = self._nodeNames()
+                if node in nodes:
+                    continue
+                d = DiagnosticStatus(name=name, hardware_id=hwid)
+                if st.startswith("error"):
+                    d.level, d.message = DiagnosticStatus.ERROR, "demarrage a la demande en " \
+                        "ECHEC (%s)" % st
+                elif st.startswith(("starting", "running")):
+                    d.level, d.message = DiagnosticStatus.OK, "demarrage a la demande en cours"
+                else:
+                    d.level = DiagnosticStatus.OK
+                    d.message = "arrete (pile %s eteinte : A long en mode NAV)" % g
+                d.values.append(KeyValue(key="a_la_demande", value=st or "aucun"))
+                arr.status.append(d)
+        if arr.status:
+            self._pubDiag.publish(arr)
 
     def _onNavStack(self, req, resp):
         """Lancer (data=true) ou arreter le groupe A LA DEMANDE du mode courant (A long de la
