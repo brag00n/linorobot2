@@ -88,6 +88,24 @@ def test_charger_already_plugged_seen_by_slope():
     assert ev and ev[0][1] == "branche"
 
 
+def test_weak_noisy_charge_is_seen_by_slope():
+    """2026-10-13 (soir) : +0,02 V/min, tension bruitee +-0,02 V (charge sur la base)."""
+    import random
+    rnd = random.Random(3)
+    det, ev = ChargerDetector(), []
+    _rest(det, 0, 1200, lambda t: 11.88 + 0.02 * t / 60.0 + rnd.uniform(-0.02, 0.02), ev,
+          cur=lambda t: -0.66)
+    assert ev and ev[0][1] == "branche"
+
+
+def test_plug_soon_after_parking_is_seen():
+    """Gare, puis branche 40 s plus tard : +0,5 V d'un coup pendant la relaxation."""
+    det, ev = ChargerDetector(), []
+    _rest(det, 0, 120, lambda t: 11.40 - 0.10 * math.exp(-t / 15.0) + (0.5 if t >= 40 else 0),
+          ev, since=0.0)
+    assert [e[1] for e in ev] == ["branche"]
+
+
 def test_slow_relaxation_of_a_low_pack_is_not_a_charger():
     """2026-10-13, chargeur DEBRANCHE : pack bas (11,2 V) qui remonte encore de +0,011 V/min
     plusieurs minutes apres avoir roule -- mais de moins en moins vite."""

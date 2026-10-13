@@ -58,15 +58,22 @@ class ChargerDetector:
     # sauts de 0,08 a 0,19 V (le lidar ou Nav2 qui demarrent : la CHARGE change). Les vrais
     # branchements mesures la veille : sauts de +0,34 / -0,30 / -0,58 V, courant INCHANGE (le
     # chargeur ne passe pas par l'INA219).
-    def __init__(self, step_v=0.10, quiet_s=60.0, slope_v_min=0.015, slope_span_s=120.0,
-                 slope_rest_s=360.0, load_di_a=0.08):
+    # 2026-10-13 (soir) : chargeur branche PEU APRES avoir gare le robot (saut ignore : repos
+    # trop court) puis charge faible (+0,02 V/min) sur une tension bruitee (+-0,02 V) -> jamais
+    # vu. D'ou : un GROS saut (big_step_v) compte des 35 s de repos -- la relaxation n'en fait
+    # pas autant en quelques secondes ; et la pente, sur 3 min, doit TENIR `slope_hold_s`.
+    def __init__(self, step_v=0.10, quiet_s=60.0, slope_v_min=0.015, slope_span_s=180.0,
+                 slope_rest_s=360.0, load_di_a=0.08, big_step_v=0.25, slope_hold_s=180.0):
         self.step_v = step_v
         self.quiet_s = quiet_s
         self.slope_v_min = slope_v_min
         self.slope_span_s = slope_span_s
         self.slope_rest_s = slope_rest_s
         self.load_di_a = load_di_a
+        self.big_step_v = big_step_v
+        self.slope_hold_s = slope_hold_s
         self._hist = collections.deque()         # (t, v, i) au repos, un point par 0,5 s
+        self._slopeSince = None                  # (debut, pente) d'une pente au-dessus du seuil
         self.charging = None                     # None = inconnu
 
     def _di(self, a, b):
@@ -93,6 +100,7 @@ class ChargerDetector:
         "saut V" | "pente V/min") quand l'etat change."""
         if rest_age is None:
             self._hist.clear()
+            self._slopeSince = None
             return None
         h = self._hist
         if h and t - h[-1][0] < 0.5:
@@ -104,22 +112,26 @@ class ChargerDetector:
         # quiet_s AVANT cette fenetre (la relaxation apres conduite est alors finie). Un saut
         # ACCOMPAGNE d'un saut de courant est un changement de CHARGE (lidar, Nav2...), pas le
         # chargeur, qui ne passe pas par l'INA219.
-        if rest_age >= self.quiet_s + 30.0:
+        if rest_age >= 35.0:
+            # Seuil ordinaire apres quiet_s de repos ; avant, seul un GROS saut compte.
+            need = self.step_v if rest_age >= self.quiet_s + 30.0 else self.big_step_v
             rec = [p for p in h if t - p[0] <= 5.0]
             past = [p for p in h if 25.0 <= t - p[0] <= 30.0]
             if len(rec) >= 3 and len(past) >= 3 and abs(self._di(rec, past)) <= self.load_di_a:
                 dv = statistics.median(x for _, x, _ in rec) - \
                     statistics.median(x for _, x, _ in past)
-                if dv > self.step_v and self.charging is not True:
+                if dv > need and self.charging is not True:
                     return self._set(True, dv, "saut V")
-                if dv < -self.step_v and self.charging is not False:
+                if dv < -need and self.charging is not False:
                     return self._set(False, dv, "saut V")
         # PENTE : chargeur deja branche avant le debut du repos, sans saut vu. Seulement sur un
         # historique COMPLET de slope_span_s : juste apres un branchement la tension redescend
         # un peu (12,01 -> 11,98 V en 30 s, 2026-10-12), et une pente sur ces quelques secondes
-        # passait pour un debranchement. Et seulement apres `slope_rest_s` de repos, sur une
-        # pente qui NE FAIBLIT PAS (moitie recente >= 70 % de la moitie ancienne) a courant
-        # stable : la RELAXATION d'un pack, elle, ralentit sans cesse.
+        # passait pour un debranchement. Et seulement apres `slope_rest_s` de repos, a courant
+        # stable, sur une pente qui TIENT : au-dessus du seuil a chaque mesure pendant
+        # `slope_hold_s`, et encore a 60 % au moins de sa valeur du debut. La RELAXATION d'un
+        # pack, elle, ralentit sans cesse. (Le test « moitie recente contre moitie ancienne »
+        # d'une seule fenetre echouait sur une tension bruitee, 2026-10-13.)
         span = (h[-1][0] - h[0][0]) if h else 0.0
         if rest_age >= self.slope_rest_s and span >= 0.9 * self.slope_span_s:
             pts = [p for p in h if t - p[0] <= self.slope_span_s]
@@ -127,11 +139,14 @@ class ChargerDetector:
             old = [p for p in pts if p[0] < half]
             new = [p for p in pts if p[0] >= half]
             slope = self._slope(pts)
-            s_old, s_new = self._slope(old), self._slope(new)
-            steady = s_old > 0 and s_new >= 0.7 * s_old
-            if slope > self.slope_v_min and steady and abs(self._di(new, old)) <= \
-                    self.load_di_a and self.charging is not True:
-                return self._set(True, slope, "pente V/min")
+            if slope > self.slope_v_min and abs(self._di(new, old)) <= self.load_di_a:
+                if self._slopeSince is None:
+                    self._slopeSince = (t, slope)
+                elif t - self._slopeSince[0] >= self.slope_hold_s and \
+                        slope >= 0.6 * self._slopeSince[1] and self.charging is not True:
+                    return self._set(True, slope, "pente V/min")
+            else:
+                self._slopeSince = None
                 # Jamais de DEBRANCHEMENT sur une pente : un chargeur qui couvre mal la
                 # consommation du robot fait lui aussi baisser lentement la tension. Le
                 # debranchement se lit sur le SAUT vers le bas (ci-dessus) uniquement.
@@ -143,6 +158,7 @@ class ChargerDetector:
     def _set(self, state, value, kind):
         self.charging = state
         self._hist.clear()                       # le meme saut ne doit pas compter deux fois
+        self._slopeSince = None
         return ("branche" if state else "debranche", value, kind)
 
 
