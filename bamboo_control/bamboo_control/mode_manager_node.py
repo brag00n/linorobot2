@@ -367,21 +367,20 @@ class ModeManager(Node):
         # demande (A long en NAV, service /bamboo/nav_stack) -- passer par NAV pour aller en
         # SANTE ne coute plus 30 s de demarrage ni la CPU de la pile. En SORTIR l'arrete
         # toujours apres le delai.
+        # En SORTIR ne l'arrete plus non plus (demande utilisateur 2026-10-13) : la pile NAV
+        # reste allumee dans les autres modes ; seul A long, de retour en NAV, l'eteint.
         new_g = self._model[target]["ondemand"]
         if new_g:
-            self._odOffAt.pop(new_g, None)         # on y revient : pas d'arret
-        old_g = self._model[previous]["ondemand"] if previous else ""
-        if old_g and old_g != new_g:
-            self._odOffAt[old_g] = time.monotonic() + self._odDelay
-            self.get_logger().info("a la demande : %s arrete dans %.0f s si on ne revient pas"
-                                   % (old_g, self._odDelay))
+            self._odOffAt.pop(new_g, None)
 
     def _onNavStack(self, req, resp):
         """Lancer (data=true) ou arreter le groupe A LA DEMANDE du mode courant (A long de la
         manette en NAV). Arret IMMEDIAT : la manette a deja fait sauver la carte."""
+        groups = sorted({m["ondemand"] for m in self._model.values() if m["ondemand"]})
         g = self._model[self._mode]["ondemand"] if self._mode else ""
+        g = g or (groups[0] if len(groups) == 1 else "")
         if not g:
-            resp.success, resp.message = False, "le mode %s n'a pas de pile a la demande" % (
+            resp.success, resp.message = False, "aucune pile a la demande pour %s" % (
                 self._mode or "-")
             return resp
         self._odOffAt.pop(g, None)
@@ -401,13 +400,14 @@ class ModeManager(Node):
                 self._odWant(g, False)
 
     def _odAtStart(self):
-        """Un `on` reste d'une vie precedente (gestionnaire relance en mode NAV) : il sera
-        arrete apres le delai si on n'entre pas dans son mode."""
+        """Un `on` reste d'une vie precedente : il est GARDE (2026-10-13 : la pile NAV ne
+        s'arrete plus qu'a la demande, A long en NAV), et seulement signale."""
         for g in {m["ondemand"] for m in self._model.values() if m["ondemand"]}:
             try:
                 with open(os.path.join(self._odDir, "%s.want" % g)) as fh:
                     if fh.read().strip() == "on":
-                        self._odOffAt[g] = time.monotonic() + self._odDelay
+                        self.get_logger().info("a la demande : %s reste allume (vie "
+                                               "precedente)" % g)
             except OSError:
                 pass
 

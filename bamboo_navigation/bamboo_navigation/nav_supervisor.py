@@ -1479,12 +1479,23 @@ class NavSupervisor(Node):
             if name == self.map_name:
                 self.detail = "carte %s gardee" % name
                 return
+            prev_map, prev_sub = self.map_name, self.submode
             self._forcedMap = True
             ok, why = self._loadMap(name)
             self._forcedMap = False
             self._event("carte_forcee", carte=name, ok=ok)
-            self.detail = ("carte forcee %s : %s" % (name, why)) if ok else \
-                ("carte forcee %s : ECHEC, %s" % (name, why))
+            if not ok and prev_sub != "idle" and prev_map and self.submode == "idle":
+                # Carte REFUSEE (robot non reconnu, ou ambigu) : retour a la carte precedente,
+                # ou le robot etait localise -- la navigation ne doit pas s'eteindre pour un
+                # mauvais choix de carte (demande utilisateur 2026-10-13).
+                ok2, why2 = self._loadMap(prev_map)
+                self._event("carte_forcee_refusee", carte=name, retour=prev_map, ok=ok2)
+                self.detail = "carte %s refusee (%s) ; retour a %s : %s" % (
+                    name, why.split(";")[-1].strip(), prev_map,
+                    "ok" if ok2 else "ECHEC, " + why2)
+            else:
+                self.detail = ("carte forcee %s : %s" % (name, why)) if ok else \
+                    ("carte forcee %s : ECHEC, %s" % (name, why))
             self.get_logger().info(self.detail)
         finally:
             self._lock.release()

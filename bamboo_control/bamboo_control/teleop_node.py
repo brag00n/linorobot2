@@ -642,7 +642,14 @@ class TeleopNode(Node):
         court = not st["fired"]
         st["t0"] = None
         st["fired"] = False
-        return "short" if court else None
+        if not court:
+            return None
+        # ANTI-REBOND, comme _edge : un bouton qui rebondit au relachement donnait deux
+        # appuis courts a 0,1 s (2026-10-13 : deux changements de carte pour un appui sur +).
+        if now - self._lastFire.get(name, 0.0) < self._debounce:
+            return None
+        self._lastFire[name] = now
+        return "short"
 
     def _onJoy(self, msg):
         self._joyCount += 1
@@ -1229,10 +1236,9 @@ class TeleopNode(Node):
     def _onRobotMode(self, m):
         """Le mode APPLIQUE, tenu par le gestionnaire : le seul qui fasse foi ici."""
         if m.mode != self._mode:
-            if self._mode == "navigation":
-                # Sortir de NAV = comme A long eteint : le superviseur sauve la carte a la
-                # sortie, le gestionnaire arrete la pile apres son delai.
-                self._navWant = False
+            # Sortir de NAV ne l'ETEINT PAS (demande utilisateur 2026-10-13) : la pile reste
+            # allumee ; seul A long, de retour en NAV, l'arrete. (Le superviseur arrete tout de
+            # meme ses buts et automatismes hors du mode NAV, et sauve la carte.)
             self._group = 0
             # Le gestionnaire vient de poser detect_enabled -- FAUX dans tous les modes depuis
             # le 2026-10-13, TRACKING compris : la detection ne part qu'a la touche ACQ. On le
@@ -1264,7 +1270,8 @@ class TeleopNode(Node):
             st.pending.append(action in self._pendingActs)
         st.armed = self._motionOn
         if hasattr(st, "nav_stack"):
-            st.nav_stack = self._navStackState() if self._mode == "navigation" else "off"
+            # Dans TOUS les modes : la pile NAV reste allumee hors du mode NAV.
+            st.nav_stack = self._navStackState()
         if hasattr(st, "confirm_text"):
             st.confirm_text = self._confirm["text"] if self._confirm is not None else ""
         st.busy = self._calBusy()
