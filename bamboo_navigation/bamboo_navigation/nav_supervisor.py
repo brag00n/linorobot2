@@ -126,6 +126,7 @@ class NavSupervisor(Node):
         self.auto_recal_service = str(d("auto_recal_service", "").value)
         self.auto_recal_settle_s = float(d("auto_recal_settle_s", 4.0).value)
         self.auto_still_s = float(d("auto_still_s", 2.0).value)
+        self.auto_recal_min_interval_s = float(d("auto_recal_min_interval_s", 600.0).value)
         teleop_topic = str(d("teleop_topic", "/cmd_vel_teleop").value)
         battery_topic = str(d("battery_topic", "/battery").value)
         mode_topic = str(d("mode_topic", "/bamboo/mode").value)
@@ -161,6 +162,7 @@ class NavSupervisor(Node):
         self._doubtLogged = False
         self._relocBusy = False
         self._m2o = None                 # derniere correction map->odom jugee saine
+        self._lastRecalT = -1e9          # derniere recalibration du gyro (monotonic)
         # Etat de l'exploration automatique : off | running | paused | homing | finishing |
         # done.
         self.auto = "off"
@@ -1358,6 +1360,23 @@ class NavSupervisor(Node):
         finally:
             self.destroy_client(cli)
 
+    def _waitStill(self, timeout=4.0, need=1.0):
+        """Le robot est-il IMMOBILE selon l'odometrie (EKF) pendant `need` s ? Attend jusqu'a
+        `timeout` (un but vient d'etre annule : le robot s'arrete en moins d'une seconde)."""
+        t0, still0 = time.monotonic(), None
+        while time.monotonic() - t0 < timeout:
+            raw = self._odomRaw
+            if raw is not None:
+                tw = deserialize_message(raw, Odometry).twist.twist
+                if abs(tw.linear.x) < 0.02 and abs(tw.angular.z) < 0.03:
+                    still0 = still0 or time.monotonic()
+                    if time.monotonic() - still0 >= need:
+                        return True
+                else:
+                    still0 = None
+            time.sleep(0.1)
+        return False
+
     def _autoStart(self):
         # Le robot doit etre IMMOBILE : la carte moyenne le gyro ~2 s, et un mouvement
         # pendant ce temps deviendrait un biais.
@@ -1367,6 +1386,21 @@ class NavSupervisor(Node):
         if self._relocBusy or self.loc in ("douteuse", "perdue", "relocalisation"):
             return False, ("exploration auto refusee : localisation %s (attendre, ou "
                            "nouvelle carte : + long)" % self.loc)
+        if not math.isnan(self._battPct) and self._battPct < self.auto_battery_min_pct:
+            # Sinon la session part et repart aussitot au depart (essai G1b : gate designee a
+            # 15 %, retour immediat).
+            return False, "exploration auto refusee : batterie %.0f %% (recharger)" % \
+                self._battPct
+        # Session RELANCEE en cours de route (gate designee pendant un retour au depart) :
+        # on garde son DEPART. Essai G1b (2026-10-13) : le depart de la nouvelle session
+        # etait pris la ou le robot se trouvait.
+        prev_home = self._autoHome if self.auto in ("running", "paused", "homing") else None
+        if self.auto in ("running", "paused", "homing"):
+            self.auto = "off"              # la boucle n'envoie plus rien
+            self._autoOwnCancel = True
+            self._gateSet(self._autoGate, "ouverte", "session relancee")
+            self._autoGate, self._autoTarget = None, None
+        self._cancelGoal()
         # La carte COURANTE est completee, a la pose RETROUVEE du robot (relocalisation au
         # passage en exploration). Avant le 2026-10-12, chaque lancement repartait d'une carte
         # neuve : reprendre l'ancienne session sans relocaliser etait dangereux (robot deplace
@@ -1379,9 +1413,23 @@ class NavSupervisor(Node):
             ok, why = self._enterMapping()
             if not ok:
                 return False, "exploration auto impossible : " + why
-        recal_t, recal_msg = self._recalGyro()
-        if recal_t is None:
+        # Recalibration du gyro SEULEMENT robot IMMOBILE (odometrie, pas seulement le stick) et
+        # pas plus d'une fois par `auto_recal_min_interval_s`. Essais G1 et G1b (2026-10-13) :
+        # recalibre pendant que Nav2 ramenait le robot au depart, le gyro a pris la rotation
+        # en cours pour un biais, la carte ESP32 est restee 2 s sans lire ses codeurs -> pose
+        # du robot hors de la carte, carte dedoublee et tournee.
+        since = time.monotonic() - self._lastRecalT
+        if since < self.auto_recal_min_interval_s:
+            recal_t, recal_msg = None, "gyro deja recalibre il y a %.0f s" % since
+        elif not self._waitStill():
+            recal_t, recal_msg = None, "gyro NON recalibre (robot en mouvement)"
             self.get_logger().warn("exploration auto : " + recal_msg)
+        else:
+            recal_t, recal_msg = self._recalGyro()
+            if recal_t is None:
+                self.get_logger().warn("exploration auto : " + recal_msg)
+            else:
+                self._lastRecalT = recal_t
         # Le demarrage de Nav2 (~10 s) recouvre l'attente de la recalibration.
         ok, why = self._nav2(True)
         if not ok:
@@ -1392,7 +1440,7 @@ class NavSupervisor(Node):
                 time.sleep(rest)
         self.auto, self._autoResumeTo = "running", "running"
         self._autoT0 = time.monotonic()
-        self._autoHome, self._autoTarget, self._autoGate = None, None, None
+        self._autoHome, self._autoTarget, self._autoGate = prev_home, None, None
         self._autoNoFront, self._autoHomeTries, self._autoSecond = 0, 0, False
         # Nouvelle session : les gates en echec d'hier ont droit a un nouvel essai.
         map_io.gates_reopen(self.meta)
