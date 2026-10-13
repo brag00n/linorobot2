@@ -1681,13 +1681,17 @@ private:
     // TRK-P (suivi physique) -> RECO (reconnaissance) ; puis CAPT (capture) et GEN
     // (apprentissage). RECO avant CAPT (demande utilisateur 2026-10-13) : elle fait partie de
     // la chaine allumee d'un geste (A long), CAPT et GEN non.
+    // Sans ACQ (detection), les autres fonctions de la chaine ne sont ni montrees ni
+    // actives -- meme logique que NAV et ses automatismes (demande utilisateur 2026-10-13).
     x = modePill(im, x, row1, "ACQ", detect_on_, u);
-    x = modePill(im, x, row1, "TRK-V", track_mode_ != "none" && !track_mode_.empty(), u);
-    x = modePill(im, x, row1, "TRK-P", tracking_on_, u);
-    x = modePill(
-      im, x, row1, "RECO", recog_mode_ == "recognition" || recog_mode_ == "acquisition", u);
-    x = modePill(im, x, row1, "CAPT", recog_mode_ == "acquisition", u);
-    modePill(im, x, row1, "GEN", gen_on_, u);
+    if (detect_on_) {
+      x = modePill(im, x, row1, "TRK-V", track_mode_ != "none" && !track_mode_.empty(), u);
+      x = modePill(im, x, row1, "TRK-P", tracking_on_, u);
+      x = modePill(
+        im, x, row1, "RECO", recog_mode_ == "recognition" || recog_mode_ == "acquisition", u);
+      x = modePill(im, x, row1, "CAPT", recog_mode_ == "acquisition", u);
+      modePill(im, x, row1, "GEN", gen_on_, u);
+    }
 
     // MANETTE + SANTE. MANETTE grise si l'etat se tait depuis 4 periodes (2 Hz) ; SANTE
     // grise apres 3 s de silence (agregateur a 1 Hz).

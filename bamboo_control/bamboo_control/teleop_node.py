@@ -1031,12 +1031,17 @@ class TeleopNode(Node):
         """nom -> (execution, libelle, etat on/off ou None). Le libelle peut etre dynamique."""
         step = self._targetStep
         return {
-            "tracking": (self._actTracking, lambda: "TRK-P suivi physique",
+            # TRK-P, RECO, CAPT, GEN, TRK-V n'agissent qu'ACQ ALLUMEE (2026-10-13) : elles
+            # suivent ce que la detection trouve ; le HUD ne les montre pas sans elle.
+            "tracking": (lambda: self._needAcq(self._actTracking, "TRK-P"),
+                         lambda: "TRK-P suivi physique",
                          lambda: self._trackingOn),
             "recenter": (lambda: self._sendMode("recenter", "now"), lambda: "recentrage", None),
-            "recognition": (self._actRecognition, lambda: "RECO reconnaissance",
+            "recognition": (lambda: self._needAcq(self._actRecognition, "RECO"),
+                            lambda: "RECO reconnaissance",
                             lambda: self._recog in ("recognition", "acquisition")),
-            "acquisition": (self._actAcquisition, lambda: "CAPT capture",
+            "acquisition": (lambda: self._needAcq(self._actAcquisition, "CAPT"),
+                            lambda: "CAPT capture",
                             lambda: self._recog == "acquisition"),
             "tracker": (lambda: self._actTracker(+1),
                         lambda: "tracker %s >" % self._trkvAlgo, None),
@@ -1044,7 +1049,8 @@ class TeleopNode(Node):
                         lambda: "prediction %s >" % self._predict, None),
             "detector": (lambda: self._actDetector(+1),
                          lambda: "detecteur %s >" % self._detector, None),
-            "training": (self._startTraining, lambda: "GEN apprentissage",
+            "training": (lambda: self._needAcq(self._startTraining, "GEN"),
+                         lambda: "GEN apprentissage",
                          lambda: self._genOn),
             "target_grow": (lambda: self._sendMode("deadzone", "%+.3f" % step),
                             lambda: "cible +", None),
@@ -1088,7 +1094,8 @@ class TeleopNode(Node):
             # tourne, sinon tout ALLUME.
             "chain_all": (self._actChainAll, lambda: "ACQ+TRK-V+TRK-P+RECO",
                           lambda: self._chainAny()),
-            "trkv": (self._actTrkv, lambda: "TRK-V suivi video", lambda: self._trkvOn),
+            "trkv": (lambda: self._needAcq(self._actTrkv, "TRK-V"), lambda: "TRK-V suivi video",
+                     lambda: self._trkvOn),
             # --- chaine de TRACKING : algorithme du sous-mode (ZL / ZR) ----------------
             "detector_prev": (lambda: self._actDetector(-1),
                               lambda: "< detecteur %s" % self._detector, None),
@@ -1348,8 +1355,24 @@ class TeleopNode(Node):
             self._sendMode("recognition", "off")
         self.get_logger().info("chaine de tracking %s" % ("ALLUMEE" if on else "COUPEE"))
 
+    def _needAcq(self, fn, name):
+        """Une fonction de la chaine ne part qu'ACQ allumee (demande utilisateur 2026-10-13)."""
+        if not self._acqOn:
+            self.get_logger().warn("%s : allumer d'abord ACQ (A)" % name)
+            return
+        fn()
+
     def _actAcq(self):
-        """ACQ on/off : `detect_enabled` de tracking_node, puis ModeCmd `detect` pour le HUD."""
+        """ACQ on/off : `detect_enabled` de tracking_node, puis ModeCmd `detect` pour le HUD.
+        Couper ACQ coupe aussi TRK-V, TRK-P, RECO et CAPT, qui en dependent."""
+        if self._acqOn:
+            if self._trkvOn:
+                self._actTrkv()
+            if self._trackingOn:
+                self._actTracking()
+            if self._recog != "off":
+                self._recog = "off"
+                self._sendMode("recognition", "off")
         self._setAcq(not self._acqOn)
 
     def _setAcq(self, on):
