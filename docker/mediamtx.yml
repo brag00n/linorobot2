@@ -57,6 +57,6 @@ paths:
     # ffmpeg lit le H.264 natif de la webcam et le RECOPIE (pas de re-encodage) vers MediaMTX.
     runOnDemand: >
       ffmpeg -f v4l2 -input_format h264 -video_size 640x480 -framerate 30
-      -i /dev/video0 -c:v copy -f rtsp rtsp://localhost:8554/$MTX_PATH
+      -i /dev/bamboocam -c:v copy -f rtsp rtsp://localhost:8554/$MTX_PATH
     runOnDemandRestart: yes
     runOnDemandCloseAfter: 15s

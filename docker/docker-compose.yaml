@@ -427,9 +427,10 @@ services:
       - "8080:8080"
     volumes:
       - /dev:/dev
-    # BAMBOO_CAM n'est PAS /dev/bamboocam par defaut, et c'est une mesure : la regle udev
-    # 99-bambooSTM32YB.rules n'est pas encore posee sur ce RPi (constate a T10, le symlink
-    # etait absent). Poser la regle puis mettre BAMBOO_CAM=/dev/bamboocam dans .env.
+    # BAMBOO_CAM : mettre /dev/bamboocam dans .env des que la regle udev 99-bambooSTM32YB
+    # est posee (lien qui SUIT la webcam 05a3:9331). /dev/video0 en dur est un piege : le
+    # 2026-10-13 la webcam a decroche de l'USB (chaine de tracking complete, CPU au maximum)
+    # et est revenue en /dev/video1 -- plus aucune image jusqu'a intervention.
       # Build PERSISTANT et PARTAGE par les services de ce robot : voir ws_build en tete
       # de fichier. Sans lui, build/ et install/ vivent dans la couche inscriptible du
       # conteneur -- toute recreation jette la compilation, et la compilation A LA DEMANDE
