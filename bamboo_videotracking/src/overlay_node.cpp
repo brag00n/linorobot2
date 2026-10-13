@@ -2000,7 +2000,9 @@ private:
   };
   std::vector<HealthItem> health_items_;
   std::string recog_mode_{"off"};
-  std::string track_mode_{"mil"};
+  // `none` : tracking_node demarre SANS suivi video (videotracking.yaml, 2026-10-13) ; la
+  // pastille TRK-V etait verte au demarrage alors que rien ne tournait.
+  std::string track_mode_{"none"};
   std::string predict_mode_{"off"};
   std::string detector_{"yunet"};
   bool tracking_on_{false};

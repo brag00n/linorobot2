@@ -359,6 +359,10 @@ class TeleopNode(Node):
             TeleopState, self.declare_parameter("teleop_state_topic", "/teleop/state").value,
             latched)
         self._stateTimer = self.create_timer(1.0, self._publishState)
+        # Etat de DEPART du suivi video annonce aux autres (HUD : pastille TRK-V), qui
+        # supposaient sinon un tracker `mil` actif (2026-10-13). Une fois, un peu apres le
+        # demarrage : tracking_node est parti en track_mode `none` (videotracking.yaml).
+        self._startTimer = self.create_timer(3.0, self._announceStart)
         self._modeStateSub = self.create_subscription(
             RobotMode, self.declare_parameter("robot_mode_topic", "/bamboo/mode").value,
             self._onRobotMode, latched)
@@ -838,6 +842,11 @@ class TeleopNode(Node):
             return values[0]
 
     # ---------------------------------------------------------------- sorties
+    def _announceStart(self):
+        self._startTimer.cancel()
+        if not self._trkvOn:
+            self._sendMode("tracker", "none")
+
     def _sendMode(self, target, value):
         self._seq += 1
         m = ModeCmd()
