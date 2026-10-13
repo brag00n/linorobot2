@@ -972,7 +972,15 @@ class NavSupervisor(Node):
         else:
             pose, how = self._locate(self.meta.get("last_pose") if self.meta else None)
             if pose is None:
-                return False, "carte %s : %s -- ou nouvelle carte (+ long)" % (name, how)
+                # Pas sur la carte courante : peut-etre sur une AUTRE carte, qu'on completera.
+                other, pose, how2 = self._locateOtherMaps()
+                if other is None:
+                    return False, "carte %s : %s ; %s -- ou nouvelle carte (+ long)" % (
+                        name, how, how2)
+                self._event("carte_quittee", vers=other, raison="robot sur une autre carte")
+                self._useMap(other)
+                self._event("chargee", raison="robot retrouve sur cette carte")
+                name, how = other, how2
         ok, why = self._startSlam("mapping", self.store.posegraph_base(name), pose)
         if ok:
             self.loc, self.match = "ok", math.nan
