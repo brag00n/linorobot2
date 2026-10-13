@@ -110,6 +110,7 @@ class NavSupervisor(Node):
         self.map_select_delay_s = float(d("map_select_delay_s", 2.0).value)
         self._mapSel, self._mapSelT = None, 0.0
         self._forcedMap = False          # carte FORCEE : pas de recherche sur les autres
+        self._wantSub = None             # sous-mode demande (exploration | navigation)
         self.range_max = float(d("lidar_range_max_m", 8.0).value)
         self.match_period_s = float(d("match_period_s", 2.0).value)
         # Controle CONTINU en navigation : CALES le 2026-10-13 sur une session reelle (8 buts,
@@ -1319,6 +1320,10 @@ class NavSupervisor(Node):
 
     def command(self, cmd, arg):
         if cmd in ("exploration", "navigation", "idle"):
+            # Le sous-mode DEMANDE (A long, croix) est retenu ; seul un arret explicite
+            # l'oublie. Une carte forcee qui echoue retombe en idle, et la carte suivante
+            # choisie au + / - relance ce sous-mode (essai du 2026-10-13 : NAV restait eteinte).
+            self._wantSub = None if cmd == "idle" else cmd
             return self.setSubmode(cmd, arg)
         if cmd == "new_map":
             return self._newMap()
@@ -1435,8 +1440,10 @@ class NavSupervisor(Node):
     def _loadMap(self, name):
         if not name:
             return False, "usage : load_map <carte> (cf. list)"
-        prev = self.submode
-        if prev != "idle":
+        # Sous-mode a reprendre : celui qui tourne, sinon celui que l'utilisateur a demande
+        # (idle apres l'echec d'une carte forcee precedente).
+        prev = self.submode if self.submode != "idle" else (self._wantSub or "idle")
+        if self.submode != "idle":
             self.setSubmode("idle")
         ok, why = self._switchMap(name)
         if not ok or prev == "idle":
