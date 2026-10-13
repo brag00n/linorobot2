@@ -46,6 +46,7 @@ from diagnostic_msgs.msg import DiagnosticStatus
 from diagnostic_updater import Updater
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import GetParameters, SetParameters
+from std_srvs.srv import SetBool
 
 from bamboo_interfaces.msg import ModeCmd, RobotMode
 from bamboo_interfaces.srv import ChangeMode, GetAvailableModes, GetMode
@@ -126,6 +127,8 @@ class ModeManager(Node):
         self.create_subscription(ModeCmd, modeCmdTopic, self._onModeCmd, latched,
                                  callback_group=self._cbg)
         self.create_service(ChangeMode, "/bamboo/change_mode", self._onChange,
+                            callback_group=self._cbg)
+        self.create_service(SetBool, "/bamboo/nav_stack", self._onNavStack,
                             callback_group=self._cbg)
         self.create_service(GetMode, "/bamboo/get_mode", self._onGet,
                             callback_group=self._cbg)
@@ -360,15 +363,32 @@ class ModeManager(Node):
             return ""
 
     def _odOnSwitch(self, previous, target):
+        # ENTRER dans le mode ne lance plus son groupe (2026-10-13) : c'est la manette qui le
+        # demande (A long en NAV, service /bamboo/nav_stack) -- passer par NAV pour aller en
+        # SANTE ne coute plus 30 s de demarrage ni la CPU de la pile. En SORTIR l'arrete
+        # toujours apres le delai.
         new_g = self._model[target]["ondemand"]
         if new_g:
             self._odOffAt.pop(new_g, None)         # on y revient : pas d'arret
-            self._odWant(new_g, True)
         old_g = self._model[previous]["ondemand"] if previous else ""
         if old_g and old_g != new_g:
             self._odOffAt[old_g] = time.monotonic() + self._odDelay
             self.get_logger().info("a la demande : %s arrete dans %.0f s si on ne revient pas"
                                    % (old_g, self._odDelay))
+
+    def _onNavStack(self, req, resp):
+        """Lancer (data=true) ou arreter le groupe A LA DEMANDE du mode courant (A long de la
+        manette en NAV). Arret IMMEDIAT : la manette a deja fait sauver la carte."""
+        g = self._model[self._mode]["ondemand"] if self._mode else ""
+        if not g:
+            resp.success, resp.message = False, "le mode %s n'a pas de pile a la demande" % (
+                self._mode or "-")
+            return resp
+        self._odOffAt.pop(g, None)
+        self._odWant(g, bool(req.data))
+        resp.success = True
+        resp.message = "%s : %s demande" % (g, "demarrage" if req.data else "arret")
+        return resp
 
     def _odTick(self):
         now = time.monotonic()

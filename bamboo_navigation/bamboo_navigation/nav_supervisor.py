@@ -190,6 +190,11 @@ class NavSupervisor(Node):
         self._autoProgT = 0.0            # dernier progres du but (distance restante en baisse)
         self._autoBestD = math.inf
         self._autoPrio = None            # gate DESIGNEE (numero), visee avant les autres
+        # X de la manette (2026-10-13) : aller a la gate designee PUIS s'arreter.
+        self._autoOnce = False
+        # RONDE des destinations (A en navigation, 2026-10-13) : off | running | paused.
+        self.patrol = "off"
+        self._patrolOrder, self._patrolIdx, self._patrolSent = [], 0, False
         self._autoNoFront = 0
         self._autoHomeTries = 0
         self._autoFronts = 0
@@ -302,6 +307,7 @@ class NavSupervisor(Node):
         self.diag.add("navigation", self._diagNav)
         self.create_timer(1.0, self._publish, callback_group=self._cbg)
         self.create_timer(1.0, self._autoTick, callback_group=self._cbg)
+        self.create_timer(1.0, self._patrolTick, callback_group=self._cbg)
         self.create_timer(5.0, self._saveTick, callback_group=self._cbg)
         self.create_timer(0.5, self._mapSelTick, callback_group=self._cbg)
         self.create_timer(self.match_period_s, self._locTick, callback_group=self._cbg)
@@ -1052,6 +1058,8 @@ class NavSupervisor(Node):
             return True, "deja en %s (%s)" % (mode, self.map_name or "aucune carte")
         if mode != "exploration" and self.auto != "off":
             self._autoStop("sous-mode %s" % mode, nav_reset=False)
+        if self.patrol != "off":
+            self._patrolStop("sous-mode %s" % mode)
         self._cancelGoal()
         if mode == "idle":
             if self.slamMode:
@@ -1198,7 +1206,7 @@ class NavSupervisor(Node):
         self.detail = "but %s : %s" % (self.goal_name, self.goal_status)
         self._goal = None
         kind = self._goalInfo.get("kind")
-        if kind in ("dest", "home"):
+        if kind in ("dest", "home", "patrol"):
             self._event("destination", nom=self.goal_name, resultat=self.goal_status)
         self.get_logger().info(self.detail)
 
@@ -1271,6 +1279,12 @@ class NavSupervisor(Node):
         if cmd == "cancel":
             self._cancelGoal()
             return True, "but annule"
+        if cmd == "cancel_all":
+            return self._cancelAll()
+        if cmd == "patrol":
+            if self.patrol != "off":
+                return self._patrolStop("demande")
+            return self._patrolStart()
         if cmd == "list":
             maps = ["%s (%s)" % (m["name"], m["kind"]) for m in self.store.list()]
             dests = ["%d:%s" % (x["n"], x["name"]) for x in (self.meta or {}).get(
@@ -1516,7 +1530,9 @@ class NavSupervisor(Node):
                 self._autoGate, self._autoTarget = None, None
             return True, "gate %d designee : visee tout de suite" % g["n"]
         ok, why = self._autoStart()
-        return ok, ("gate %d designee ; %s" % (g["n"], why)) if ok else why
+        if ok:
+            self._autoOnce = True          # X : cette gate, puis arret (2026-10-13)
+        return ok, ("gate %d visee, arret a l'arrivee ; %s" % (g["n"], why)) if ok else why
 
     # ------------------------------------------------------------ exploration automatique
     # Strategie (choisie le 2026-10-11, gates le 2026-10-12) : aller de GATE en gate (limite
@@ -1525,6 +1541,167 @@ class NavSupervisor(Node):
     # s'arreter. Le stick met en PAUSE (le multiplexeur lui donne deja la main) ;
     # l'exploration repart seule `auto_resume_s` apres le relachement. Une gate DESIGNEE
     # (explore_gate) passe avant les autres.
+    def _autoState(self):
+        """Pour les pastilles EXP-AUTO / NAV-AUTO du HUD (NavState.auto_state)."""
+        if self.auto in ("running", "paused", "homing", "finishing"):
+            if self.auto == "homing":
+                return "homing"
+            return "gate" if self._autoOnce else "exploration"
+        if self.patrol != "off":
+            return "patrol"
+        if self.goal_status == "active":
+            kind = self._goalInfo.get("kind")
+            return "home" if kind == "home" else "goal" if kind == "dest" else "off"
+        return "off"
+
+    def _cancelAll(self):
+        """B court de la manette en NAV (2026-10-13) : tout but annule, exploration auto et
+        ronde arretees, le robot s'arrete."""
+        what = []
+        if self.auto in ("running", "paused", "homing"):
+            self._autoStop("B (manette)")
+            what.append("exploration auto")
+        if self.patrol != "off":
+            self._patrolStop("B (manette)")
+            what.append("ronde")
+        if self.goal_status == "active":
+            what.append("but %s" % self.goal_name)
+        self._cancelGoal()
+        self._event("annulation", objets=what)
+        return True, "arret : %s" % (", ".join(what) or "rien en cours")
+
+    # ------------------------------------------------------------ ronde des destinations
+    # A en navigation (demande utilisateur 2026-10-13) : le robot va de destination en
+    # destination, EN BOUCLE, dans l'ordre le plus COURT (longueurs de trajet du
+    # planificateur, pas a vol d'oiseau), jusqu'a un nouvel A ou B. Le stick met en pause,
+    # comme l'exploration auto ; une destination en echec est sautee.
+    PATROL_EXACT_MAX = 7                  # au-dela : plus proche voisin (7! = 5040 ordres)
+
+    def _planLen(self, a, b):
+        """Longueur (m) du trajet planifie de a a b (x, y), None si aucun chemin."""
+        if not self.planner.wait_for_server(timeout_sec=1.0):
+            return None
+        g = ComputePathToPose.Goal()
+        g.use_start = True
+        for ps, pt in ((g.start, a), (g.goal, b)):
+            ps.header.frame_id = "map"
+            ps.header.stamp = self.get_clock().now().to_msg()
+            ps.pose.position.x, ps.pose.position.y = float(pt[0]), float(pt[1])
+            ps.pose.orientation.w = 1.0
+        fut = self.planner.send_goal_async(g)
+        if not self._wait(fut, 3.0) or not fut.result().accepted:
+            return None
+        res = fut.result().get_result_async()
+        if not self._wait(res, 5.0) or res.result().status != 4:
+            return None
+        pts = [(p.pose.position.x, p.pose.position.y) for p in res.result().result.path.poses]
+        if len(pts) < 2:
+            return math.hypot(b[0] - a[0], b[1] - a[1])
+        return sum(math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1])
+                   for k in range(len(pts) - 1))
+
+    def _patrolPlan(self, pose, ds):
+        """Ordre (numeros) de la ronde : le CYCLE le plus court, entame par la destination la
+        plus proche du robot. Longueurs du planificateur ; sans chemin, vol d'oiseau x 3."""
+        import itertools
+        pts = [(pose[0], pose[1])] + [(d["x"], d["y"]) for d in ds]
+        n = len(pts)
+        L = [[0.0] * n for _ in range(n)]
+        for i in range(n):
+            for j in range(i + 1, n):
+                v = self._planLen(pts[i], pts[j])
+                if v is None:
+                    v = 3.0 * math.hypot(pts[j][0] - pts[i][0], pts[j][1] - pts[i][1])
+                L[i][j] = L[j][i] = v
+        idx = list(range(1, n))
+        if len(idx) <= self.PATROL_EXACT_MAX:
+            def cost(order):
+                return sum(L[order[k]][order[(k + 1) % len(order)]] for k in range(len(order)))
+            best = min(itertools.permutations(idx), key=cost)
+            k0 = min(range(len(best)), key=lambda k: L[0][best[k]])   # entree la plus proche
+            order = list(best[k0:]) + list(best[:k0])
+        else:
+            order, left, cur = [], set(idx), 0
+            while left:
+                cur = min(left, key=lambda j: L[cur][j])
+                order.append(cur)
+                left.remove(cur)
+        return [ds[k - 1]["n"] for k in order]
+
+    def _patrolStart(self):
+        if self.submode != "navigation":
+            return False, "ronde : en navigation seulement"
+        if self.loc in ("perdue", "relocalisation"):
+            return False, "ronde refusee : localisation %s" % self.loc
+        ds = (self.meta or {}).get("destinations", [])
+        if not ds:
+            return False, "ronde : aucune destination (Y pour en creer)"
+        pose = self._robotPose()
+        if pose is None:
+            return False, "ronde : pose inconnue"
+        ok, why = self._nav2(True)
+        if not ok:
+            return False, "ronde : Nav2 " + why
+        self._cancelGoal()
+        self._patrolOrder = self._patrolPlan(pose, ds)
+        self._patrolIdx, self._patrolSent = 0, False
+        self.patrol = "running"
+        names = [map_io.dest_find(self.meta, n)["name"] for n in self._patrolOrder]
+        self._event("ronde", etat="debut", ordre=names)
+        self.get_logger().info("ronde : %s" % " -> ".join(names))
+        return True, "ronde lancee : %s (en boucle)" % " -> ".join(names)
+
+    def _patrolStop(self, why):
+        self.patrol = "off"
+        if self._goalInfo.get("kind") == "patrol":
+            self._cancelGoal()
+        self._event("ronde", etat="arret", raison=why)
+        self.detail = "ronde arretee (%s)" % why
+        return True, self.detail
+
+    def _patrolTick(self):
+        if self.patrol == "off" or self._relocBusy:
+            return
+        if self.submode != "navigation" or (self._robotMode and
+                                             self._robotMode != "navigation"):
+            with self._lock:
+                self._patrolStop("sortie de la navigation")
+            return
+        now = time.monotonic()
+        stick = now - self._teleopT < self.auto_resume_s
+        if stick or self._armed is False:
+            if self.patrol == "running":
+                with self._lock:
+                    self.patrol = "paused"
+                    if self._goalInfo.get("kind") == "patrol":
+                        self._cancelGoal()
+                    self._patrolSent = False       # la destination en cours sera reprise
+            self.detail = "ronde : PAUSE (%s)" % (
+                "manette" if stick else "traction desarmee : B long pour reprendre")
+            return
+        if self.patrol == "paused":
+            self.patrol = "running"
+        if self.goal_status == "active":
+            return
+        with self._lock:
+            if self.patrol != "running" or not self._patrolOrder:
+                return
+            if self._patrolSent:               # destination precedente finie (ou en echec)
+                self._patrolIdx = (self._patrolIdx + 1) % len(self._patrolOrder)
+            d = None
+            for _k in range(len(self._patrolOrder)):
+                d = map_io.dest_find(self.meta, self._patrolOrder[self._patrolIdx])
+                if d is not None:
+                    break                      # (une destination supprimee est sautee)
+                self._patrolIdx = (self._patrolIdx + 1) % len(self._patrolOrder)
+            if d is None:
+                self._patrolStop("plus aucune destination")
+                return
+            ok, why = self._goto(d, "patrol")
+            self._patrolSent = ok
+            self.detail = "ronde : vers %s (%d/%d)" % (d["name"], self._patrolIdx + 1,
+                                                       len(self._patrolOrder))
+
     def _recalService(self):
         """Service `recalibrate_imu` du driver : le parametre, sinon le premier du graphe."""
         if self.auto_recal_service:
@@ -1655,6 +1832,9 @@ class NavSupervisor(Node):
             rest = self.auto_recal_settle_s - (time.monotonic() - recal_t)
             if rest > 0:
                 time.sleep(rest)
+        self._autoOnce = False             # A : continu (X le repasse a vrai)
+        if self.patrol != "off":
+            self._patrolStop("exploration auto")
         self.auto, self._autoResumeTo = "running", "running"
         self._autoT0 = time.monotonic()
         self._autoHome, self._autoTarget, self._autoGate = prev_home, None, None
@@ -1678,6 +1858,7 @@ class NavSupervisor(Node):
             self._gateSet(self._autoGate, "ouverte", "exploration arretee")
             self._autoGate = None
         self._autoPrio = None
+        self._autoOnce = False
         self._event("exploration_auto", etat="arret", raison=why)
         # TOUT arret sauve la carte (essai E2d : arret sur "retour au depart impossible", puis
         # relance -> carte de la 1re exploration PERDUE).
@@ -1827,6 +2008,11 @@ class NavSupervisor(Node):
                         g["n"], self.goal_status))
                 if self._autoPrio == g["n"]:
                     self._autoPrio = None
+                if self._autoOnce:
+                    # X : la gate visee est traitee (atteinte ou en echec) -> arret.
+                    with self._lock:
+                        self._autoStop("gate %d %s" % (g["n"], g["status"]))
+                    return
             self._autoTarget = None
             self._autoGate = None
         if self.auto == "homing":
@@ -1859,11 +2045,16 @@ class NavSupervisor(Node):
                 self._event("gate", n=self._autoPrio, statut="exploree",
                             raison="designee, deja connue")
                 self._autoPrio = None
+        if self._autoOnce and prio is None:
+            with self._lock:
+                self._autoStop("gate visee deja connue")
+            return
         # On ne vise qu'une gate ATTEIGNABLE : demander d'abord un chemin au planificateur
         # (< 1 s). Essai E2 (2026-10-11) : 4 frontieres sur 6 etaient sous des meubles (le
         # lidar, a 17 cm, voit sous un canape ; le robot n'y passe pas) ; Nav2 y perdait ~30 s
         # chacune en manoeuvres de reprise avant d'abandonner.
-        cands = [g for g in live if g["status"] == "ouverte"]
+        # X (une seule gate) : aucune autre candidate.
+        cands = [] if self._autoOnce else [g for g in live if g["status"] == "ouverte"]
         f, bad = None, []
         for _try in range(4):
             if prio is not None and prio not in bad:
@@ -2150,6 +2341,8 @@ class NavSupervisor(Node):
             m.dest_name = [x["name"] for x in ds]
             m.dest_x = [float(x["x"]) for x in ds]
             m.dest_y = [float(x["y"]) for x in ds]
+        if hasattr(m, "auto_state"):
+            m.auto_state = self._autoState()
         self.pubState.publish(m)
         self._publishObjects()
         self._publishPreview()

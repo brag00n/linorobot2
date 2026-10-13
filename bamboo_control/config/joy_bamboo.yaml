@@ -162,7 +162,8 @@ bamboo_teleop:
     # nav_explore nav_auto_explore nav_new_map nav_gate_next nav_gate_prev nav_explore_gate
     # nav_save_map nav_idle nav_navigate nav_save_wp nav_dest_next nav_dest_prev
     # nav_goto_sel nav_dest_del nav_relocalize nav_goto_next nav_goto_home nav_cancel
-    # nav_map_next nav_map_prev nav_map_delete chain_all
+    # nav_map_next nav_map_prev nav_map_delete chain_all nav_toggle nav_patrol
+    # nav_dest_del_confirm
     # nav_unavailable
     #
     # ZR LONG = MIROIR HORIZONTAL de l'image (flip de tracking_node, h <-> none), dans
@@ -313,38 +314,45 @@ bamboo_teleop:
       # le service /nav_supervisor/command (bamboo_navigation). On CONDUIT au stick dans les
       # deux ; en navigation, pousser le stick reprend la main sur Nav2 (multiplexeur).
       # Appuis LONGS pour ce qui demarre une pile ou enregistre quelque chose.
-      # Carte COURANTE gardee d'un groupe a l'autre (2026-10-13). L / R parcourent les GATES
-      # (zones inconnues numerotees) en exploration et les DESTINATIONS en navigation ; la
-      # selection est surlignee sur la mini-carte du HUD. Ce qui efface ou cree une carte est
-      # sur un appui LONG d'une touche peu utilisee (PLUS / MINUS).
+      # Touches revues le 2026-10-13 (demande utilisateur). Dans les DEUX groupes :
+      #   A long  allumer / eteindre la NAVIGATION : la pile (lidar, slam, Nav2) demarre a la
+      #           demande, dans le sous-mode du GROUPE ; eteinte, carte sauvee, robot arrete.
+      #   croix haut/bas  NAV allumee : change de SOUS-MODE (carte et pose transmises)
+      #   B court (global)  STOP + annulation du but, de l'exploration auto et de la ronde
+      #   L / R   choix : « depart » d'abord, puis les gates (exploration) ou les destinations
+      #   - / +   cartes enregistrees (appliquee 2 s apres le dernier appui)
+      #   Y       nouvelle destination a la pose courante
+      # Exploration : A = exploration auto (gate en gate), X = aller a la gate choisie puis
+      # s'arreter, - long = supprimer la carte (confirmation), + long = carte vierge.
+      # Navigation : A = RONDE des destinations (en boucle, ordre le plus court), X = aller a
+      # la destination choisie, Y long = supprimer la destination (confirmation), + long =
+      # relocaliser (carte courante, puis les autres).
       navigation:
         groups: "exploration;navigation"
         exploration:
           ZR_long: "flip_image"
+          A_long: "nav_toggle"
           A: "nav_auto_explore"
-          A_long: "nav_explore"
+          X: "nav_explore_gate"
+          Y: "nav_save_wp"
           L: "nav_gate_prev"
           R: "nav_gate_next"
-          X: "nav_explore_gate"
-          X_long: "nav_save_map"
-          Y_long: "nav_idle"
-          PLUS_long: "nav_new_map"
-          PLUS: "nav_map_next"
           MINUS: "nav_map_prev"
+          PLUS: "nav_map_next"
           MINUS_long: "nav_map_delete"
+          PLUS_long: "nav_new_map"
         navigation:
           ZR_long: "flip_image"
-          A_long: "nav_navigate"
-          A: "nav_goto_sel"
+          A_long: "nav_toggle"
+          A: "nav_patrol"
+          X: "nav_goto_sel"
+          Y: "nav_save_wp"
+          Y_long: "nav_dest_del_confirm"
           L: "nav_dest_prev"
           R: "nav_dest_next"
-          Y_long: "nav_save_wp"
-          MINUS_long: "nav_dest_del"
-          X_long: "nav_goto_home"
-          Y: "nav_cancel"
-          PLUS_long: "nav_relocalize"
-          PLUS: "nav_map_next"
           MINUS: "nav_map_prev"
+          PLUS: "nav_map_next"
+          PLUS_long: "nav_relocalize"
 
     # Calibration : variantes proposees par R (groupe mesure), separees par ';'.
     # Le nom devient celui du fichier candidat ET de l'entree calib.<nom> a

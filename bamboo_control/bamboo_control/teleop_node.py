@@ -337,12 +337,20 @@ class TeleopNode(Node):
         self._navCli = self.create_client(NavCommand, str(self.declare_parameter(
             "nav_command_service", "/nav_supervisor/command").value))
         self._navState = None
+        self._navStateT = 0.0
+        # PILE NAV lancee / arretee a la manette (A long, 2026-10-13) : l'utilisateur la VEUT
+        # (True / False), la commande de sous-mode est-elle partie, et l'arret en cours.
+        self._navWant = False
+        self._navStartSent = False
+        self._navStopT = None
+        self._navStackCli = self.create_client(SetBool, "/bamboo/nav_stack")
+        self.create_timer(1.0, self._navStackTick)
         self._curAction = None        # action en cours d'execution (cf. _run)
         self._pendingActs = set()     # actions dont la commande attend sa reponse
         self._confirm = None          # confirmation en cours (cf. _askConfirm)
         self._confirmIgnore = set()   # touches qui y ont repondu, ignorees jusqu'au relache
         self.create_subscription(NavState, "/navigation/state",
-                                 lambda m: setattr(self, "_navState", m),
+                                 self._onNavState,
                                  QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                             durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self._flipGet = self.create_client(GetParameters, self._trackNode + "/get_parameters")
@@ -653,6 +661,10 @@ class TeleopNode(Node):
             self._stopMotion()
             if self._confirm is not None:
                 self._confirmEnd("annulee (B)")
+            if self._mode == "navigation" and self._navCli.service_is_ready():
+                # B en NAV = STOP + annulation du but, de l'exploration auto et de la ronde
+                # (2026-10-13) : sans cela Nav2 reprenait 0,5 s apres le STOP.
+                self._nav("cancel_all")
 
         # Armement. Sur cette manette le bouton est le MEME que le STOP (pas de clic de
         # stick a lui donner) : le STOP garde son front montant juste au-dessus et
@@ -1091,12 +1103,24 @@ class TeleopNode(Node):
                                  lambda: bool(self._navState and self._navState.detail
                                               .startswith("exploration auto :"))),
             "nav_new_map": (lambda: self._nav("new_map"), lambda: "nouvelle carte", None),
+            # A long (2026-10-13) : allumer / eteindre la NAVIGATION (pile a la demande).
+            "nav_toggle": (self._actNavToggle,
+                           lambda: "eteindre NAV" if self._navOn() else "allumer NAV",
+                           self._navOn),
+            # A en navigation : RONDE des destinations, en boucle, dans l'ordre le plus court.
+            "nav_patrol": (lambda: self._nav("patrol"), lambda: "ronde des destinations",
+                           lambda: bool(self._navState and getattr(
+                               self._navState, "auto_state", "") == "patrol")),
+            "nav_dest_del_confirm": (self._askDeleteDest,
+                                     lambda: "supprimer %s" % self._navSel("dest"), None),
             "nav_gate_next": (lambda: self._nav("select", "gate+"),
                               lambda: "gate %s >" % self._navSel("gate"), None),
             "nav_gate_prev": (lambda: self._nav("select", "gate-"),
                               lambda: "< gate %s" % self._navSel("gate"), None),
             "nav_explore_gate": (lambda: self._nav("explore_gate"),
-                                 lambda: "explorer la gate %s" % self._navSel("gate"), None),
+                                 lambda: "aller a %s" % self._navSel("gate"),
+                                 lambda: bool(self._navState and getattr(
+                                     self._navState, "auto_state", "") in ("gate", "home"))),
             # Choix de la CARTE (+ / -) parmi les cartes enregistrees, appliquee 2 s apres le
             # dernier appui : carte FORCEE (relocalisation sur elle seule).
             "nav_map_next": (lambda: self._nav("select", "map+"),
@@ -1169,6 +1193,11 @@ class TeleopNode(Node):
         if len(g) > 1:
             self._group = (self._group + step) % len(g)
             self.get_logger().info("groupe %s / %s" % (self._mode, self._groupName()))
+            # NAV allumee : le groupe EST le sous-mode (exploration <-> navigation, carte et
+            # pose transmises, sans relocalisation).
+            if self._mode == "navigation" and self._navOn() and \
+                    self._groupName() in ("exploration", "navigation"):
+                self._nav(self._groupName())
         self._publishState()
 
     def _requestMode(self, which):
@@ -1197,6 +1226,10 @@ class TeleopNode(Node):
     def _onRobotMode(self, m):
         """Le mode APPLIQUE, tenu par le gestionnaire : le seul qui fasse foi ici."""
         if m.mode != self._mode:
+            if self._mode == "navigation":
+                # Sortir de NAV = comme A long eteint : le superviseur sauve la carte a la
+                # sortie, le gestionnaire arrete la pile apres son delai.
+                self._navWant = False
             self._group = 0
             # Le gestionnaire vient de poser detect_enabled -- FAUX dans tous les modes depuis
             # le 2026-10-13, TRACKING compris : la detection ne part qu'a la touche ACQ. On le
@@ -1227,6 +1260,8 @@ class TeleopNode(Node):
             st.active.append(bool(active()) if active is not None else False)
             st.pending.append(action in self._pendingActs)
         st.armed = self._motionOn
+        if hasattr(st, "nav_stack"):
+            st.nav_stack = self._navStackState() if self._mode == "navigation" else "off"
         if hasattr(st, "confirm_text"):
             st.confirm_text = self._confirm["text"] if self._confirm is not None else ""
         st.busy = self._calBusy()
@@ -1404,7 +1439,78 @@ class TeleopNode(Node):
             return "%d %s" % (st.selected_n, st.selected_name)
         return ("p%d" if kind == "dest" else "%d") % st.selected_n
 
-    def _nav(self, command, arg=""):
+    def _onNavState(self, m):
+        self._navState = m
+        self._navStateT = time.monotonic()
+
+    def _navOn(self):
+        """Pile NAV allumee : superviseur vivant et en exploration ou en navigation."""
+        st = self._navState
+        return st is not None and time.monotonic() - self._navStateT < 3.0 and \
+            st.submode in ("exploration", "navigation")
+
+    def _navStackState(self):
+        """off | starting | on | stopping, pour la pastille NAV du HUD."""
+        if self._navStopT is not None:
+            return "stopping"
+        if self._navOn():
+            return "on"
+        return "starting" if self._navWant else "off"
+
+    def _navStackCall(self, on):
+        if not self._navStackCli.service_is_ready():
+            self.get_logger().warn("navigation : %s absent (gestionnaire de modes ?)"
+                                   % self._navStackCli.srv_name)
+            return
+
+        def done(f):
+            try:
+                r = f.result()
+                self.get_logger().info("pile NAV : %s" % r.message)
+            except Exception as exc:                                # noqa: BLE001
+                self.get_logger().warn("pile NAV : %s" % exc)
+        self._navStackCli.call_async(SetBool.Request(data=bool(on))).add_done_callback(done)
+
+    def _actNavToggle(self):
+        """A long en NAV : allumer la navigation (pile a la demande + sous-mode du GROUPE
+        courant, le robot attend un ordre) ou l'eteindre (carte sauvee, robot arrete, pile
+        arretee)."""
+        if self._navOn() or (self._navWant and self._navStartSent):
+            self._navWant, self._navStopT = False, time.monotonic()
+            if self._navCli.service_is_ready():
+                self._nav("idle", then=lambda _r: self._navStackCall(False))
+            else:
+                self._navStackCall(False)
+        else:
+            self._navWant, self._navStartSent, self._navStopT = True, False, None
+            self._navStackCall(True)
+            self._navStackTick()
+        self._publishState()
+
+    def _navStackTick(self):
+        """Demarrage : des que le superviseur repond, lui demander le sous-mode du groupe.
+        Arret : fini quand le superviseur s'est tu."""
+        if self._navWant and not self._navStartSent and self._navCli.service_is_ready():
+            group = self._groupName() if self._mode == "navigation" else "exploration"
+            self._navStartSent = True
+            self._nav(group if group in ("exploration", "navigation") else "exploration")
+        if self._navStopT is not None and (not self._navCli.service_is_ready() or
+                                           time.monotonic() - self._navStopT > 20.0):
+            self._navStopT = None
+            self._publishState()
+
+    def _askDeleteDest(self):
+        st = self._navState
+        if st is None or getattr(st, "selected_kind", "") != "dest" or not st.selected_n:
+            self.get_logger().warn("navigation : aucune destination choisie (L / R)"
+                                   if st is None or st.selected_name != "depart"
+                                   else "navigation : le depart ne se supprime pas")
+            return
+        n, name = st.selected_n, st.selected_name or "p%d" % st.selected_n
+        self._askConfirm("Supprimer la destination %s ?" % name,
+                         lambda k=n: self._nav("dest_del", str(k)))
+
+    def _nav(self, command, arg="", then=None):
         """Commande au superviseur de navigation ; reponse au journal (et donc au HUD).
 
         L'action est EN COURS (voyant clignotant au HUD) jusqu'a la reponse : le superviseur
@@ -1430,7 +1536,10 @@ class TeleopNode(Node):
                 else:
                     self.get_logger().warn("navigation %s : %s" % (command, r.message))
             except Exception as exc:                                # noqa: BLE001
+                r = None
                 self.get_logger().warn("navigation %s echouee : %s" % (command, exc))
+            if then is not None:
+                then(r)
             self._publishState()
         self._navCli.call_async(NavCommand.Request(command=command, arg=arg)) \
             .add_done_callback(done)

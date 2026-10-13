@@ -1631,7 +1631,7 @@ private:
       // peut pas distinguer un visage sorti du champ d'un tracker qui a decroche.
       putShadowed(
         im, "perdu: " + ts.lost_reason,
-        cv::Point(iu(8, u), im.rows - iu(8 + 22 + 2 * 26 + 10, u)), 0.45 * u);
+        cv::Point(iu(8, u), im.rows - iu(8 + 22 + 3 * 26 + 10, u)), 0.45 * u);
     }
 
     if (draw_prediction_) {drawPrediction(im, ts, u);}
@@ -1652,7 +1652,30 @@ private:
     const int row3 = im.rows - iu(8, u) - iu(22, u);
     const int row2 = row3 - row_h;
     const int row1 = row2 - row_h;
+    const int row0 = row1 - row_h;
     const int pill_x0 = iu(8, u);
+    // --- NAVIGATION (demande utilisateur 2026-10-13), AU-DESSUS de la chaine de tracking :
+    // NAV = la pile (A long) -- verte allumee, clignotante pendant le lancement / l'arret ;
+    // puis, NAV allumee seulement, NAV-AUTO (ronde ou destination), EXP-AUTO (exploration
+    // auto ou gate), RELOC (clignote pendant une relocalisation).
+    {
+      const auto tst = teleopFresh();
+      const auto nst = fresh(last_nav_, 3.0) ? nav_ : nullptr;
+      const std::string stack = tst ? tst->nav_stack : "";
+      const bool blink = (now_steady_.now().nanoseconds() / 250000000LL) % 2 == 0;
+      const bool nav_on = stack == "on";
+      const bool nav_busy = stack == "starting" || stack == "stopping";
+      int xn = modePill(im, pill_x0, row0, "NAV", nav_on || (nav_busy && blink), u);
+      if (nav_on && nst) {
+        const std::string & a = nst->auto_state;
+        xn = modePill(im, xn, row0, "NAV-AUTO", a == "patrol" || a == "goal" ||
+            (a == "home" && nst->submode == "navigation"), u);
+        xn = modePill(im, xn, row0, "EXP-AUTO", a == "exploration" || a == "gate" ||
+            a == "homing" || (a == "home" && nst->submode == "exploration"), u);
+        modePill(im, xn, row0, "RELOC", nst->loc_state == "relocalisation" && blink, u,
+          kZoneOut);
+      }
+    }
     int x = pill_x0;
     // La CHAINE DE TRACKING, dans son ordre : ACQ (detection) -> TRK-V (tracker video) ->
     // TRK-P (suivi physique) -> RECO (reconnaissance) ; puis CAPT (capture) et GEN

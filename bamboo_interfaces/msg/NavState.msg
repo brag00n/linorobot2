@@ -33,3 +33,8 @@ int32[] dest_n            # DESTINATIONS
 string[] dest_name
 float32[] dest_x
 float32[] dest_y
+
+# --- automatismes (2026-10-13) : pastilles EXP-AUTO / NAV-AUTO du HUD ---
+string auto_state         # off | exploration (gate en gate) | gate (X : une gate) | homing
+                          # | patrol (A en navigation : ronde des destinations) | goal (X :
+                          # une destination) | home (vers le depart)
