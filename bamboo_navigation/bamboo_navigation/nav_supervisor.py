@@ -1526,9 +1526,8 @@ class NavSupervisor(Node):
 
     def _homePose(self):
         """Depart de la carte (meta), sinon de la session d'exploration ; None si inconnu."""
-        home = (self.meta or {}).get("home") or (list(self._autoHome) if self._autoHome
-                                                  else None)
-        return home or None
+        session = list(self._autoHome) if self._autoHome else None
+        return (self.meta or {}).get("home") or session or None
 
     def _exploreGate(self, arg):
         if self.meta is None:
@@ -1687,8 +1686,8 @@ class NavSupervisor(Node):
     def _patrolTick(self):
         if self.patrol == "off" or self._relocBusy:
             return
-        if self.submode != "navigation" or (self._robotMode and
-                                             self._robotMode != "navigation"):
+        left_nav = bool(self._robotMode) and self._robotMode != "navigation"
+        if self.submode != "navigation" or left_nav:
             with self._lock:
                 self._patrolStop("sortie de la navigation")
             return
