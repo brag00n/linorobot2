@@ -27,6 +27,18 @@ def test_create_never_overwrites_and_current_survives():
     assert {m["name"]: m["kind"] for m in s.list()} == {"salon": "image", "salon_2": "image"}
 
 
+def test_list_order_is_creation_not_modification():
+    s = _store()
+    old = s.create(name="ancienne")
+    meta = s.load_meta(old)
+    meta["created"] = "2026-10-01T10:00:00"
+    s.save_meta(old, meta)
+    new = s.create(name="recente")
+    meta = s.load_meta(old)                      # l'ancienne est MODIFIEE en dernier
+    s.save_meta(old, meta)
+    assert [m["name"] for m in s.list()] == [new, old]
+
+
 def test_current_pointing_to_a_missing_map_is_empty():
     s = _store()
     s.set_current("disparue")

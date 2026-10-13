@@ -216,18 +216,36 @@ class MapStore:
         """[{name, kind, mtime}], la plus RECENTE d'abord. kind : "carte" (graphe de poses :
         se complete et se charge), "image" (dossier sans graphe), "ancienne" (fichiers a
         plat, a importer)."""
+        # Ordre de CREATION (champ `created` de la meta), pas de modification : charger une
+        # carte la touche, et la liste changeait d'ordre pendant qu'on la parcourait au + / -
+        # (2026-10-13 : une vieille carte corrompue passait pour « la derniere »).
         out = []
         for n in os.listdir(self.dir):
             meta = os.path.join(self.dir, n, "meta.yaml")
             if os.path.isfile(meta):
                 out.append({"name": n, "kind": "carte" if self.has_posegraph(n) else "image",
-                            "mtime": os.path.getmtime(meta)})
+                            "mtime": self._created(meta)})
         for n in list_maps(self.dir):
             if not self.exists(n):
                 out.append({"name": n, "kind": "ancienne",
                             "mtime": os.path.getmtime(os.path.join(self.dir, n + ".yaml"))})
         out.sort(key=lambda m: m["mtime"], reverse=True)
         return out
+
+    @staticmethod
+    def _created(meta_path):
+        """Date de creation (epoch) d'une carte-dossier, lue dans sa meta ; repli : la date
+        du fichier."""
+        try:
+            with open(meta_path, encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("created:"):
+                        stamp = line.split(":", 1)[1].strip().strip("'\"")
+                        return datetime.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%S") \
+                            .timestamp()
+        except (OSError, ValueError):
+            pass
+        return os.path.getmtime(meta_path)
 
     def current(self):
         try:
