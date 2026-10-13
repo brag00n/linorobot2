@@ -99,6 +99,13 @@ class NavSupervisor(Node):
         # Robot non reconnu sur la carte courante, en navigation : autres cartes essayees (au
         # plus ce nombre, les plus recentes ; ~1 a 2 s chacune sur le RPi4).
         self.reloc_other_maps_max = int(d("reloc_other_maps_max", 10).value)
+        # Score sous lequel une pose trouvee sur la carte COURANTE ne suffit pas : les autres
+        # cartes sont aussi essayees, et une nettement meilleure (+ reloc_margin) l'emporte.
+        # Essai du 2026-10-13 : 0,63 accepte sur la grande carte alors que la petite donnait
+        # 0,94 au meme endroit.
+        self.reloc_good = float(d("reloc_good", 0.80).value)
+        self._lastLocScore = None
+        self._lastOtherScore = None
         # Choix de carte a la manette (+ / -) : applique apres ce delai sans nouvel appui.
         self.map_select_delay_s = float(d("map_select_delay_s", 2.0).value)
         self._mapSel, self._mapSelT = None, 0.0
@@ -662,6 +669,21 @@ class NavSupervisor(Node):
         self._lmapKey = key
         return self._lmap
 
+    def _otherIfBetter(self):
+        """Pose trouvee sur la carte courante avec un score MOYEN (< reloc_good) : une autre
+        carte la reconnait-elle NETTEMENT mieux ? (nom, pose, message) ou None. Jamais pour une
+        carte forcee au + / -."""
+        score = self._lastLocScore
+        if self._forcedMap or score is None or score >= self.reloc_good:
+            return None
+        other, pose, msg = self._locateOtherMaps()
+        if other is None or self._lastOtherScore is None or \
+                self._lastOtherScore < score + self.reloc_margin:
+            return None
+        self.get_logger().info("relocalisation : %s mieux que la carte courante (%.2f contre "
+                               "%.2f)" % (other, self._lastOtherScore, score))
+        return other, pose, "%s (carte courante : %.2f seulement)" % (msg, score)
+
     def _locateOtherMaps(self):
         """Le robot n'est pas reconnu sur la carte courante : est-il sur une AUTRE carte ?
         (demande utilisateur 2026-10-13, sous-mode navigation : robot emmene dans une autre
@@ -695,6 +717,7 @@ class NavSupervisor(Node):
         if got is None:
             return None, None, why
         name, best = got
+        self._lastOtherScore = best[0]
         return name, best[1], "robot retrouve sur la carte %s (score %.2f, %d carte(s) " \
             "essayee(s), %.1f s)" % (name, best[0], len(results), dt)
 
@@ -776,6 +799,7 @@ class NavSupervisor(Node):
             self._event("relocalisation_echec", raison=why, **info)
             return None, "relocalisation impossible : " + why
         self._event("relocalisation", pose=best[1], **info)
+        self._lastLocScore = best[0]
         return best[1], "relocalise (%s, score %.2f, %d rotation(s), %.1f s)" % (
             how, best[0], turns, dt)
 
@@ -917,10 +941,14 @@ class NavSupervisor(Node):
             # HORS du verrou : la recherche et les rotations durent jusqu'a ~15 s, et l'etat
             # doit continuer de partir (HUD), une commande (annuler) de passer.
             pose, msg = self._locate(prior)
-            if pose is None and self.submode == "navigation":
-                # Robot emmene dans une autre piece : peut-etre sur une AUTRE carte. Le but en
-                # cours n'est pas repris (il etait dans le repere de l'ancienne carte).
-                other, opose, omsg = self._locateOtherMaps()
+            better = self._otherIfBetter() if pose is not None and \
+                self.submode == "navigation" else None
+            if (pose is None or better is not None) and self.submode == "navigation":
+                # Robot emmene dans une autre piece : peut-etre sur une AUTRE carte (ou une
+                # autre carte le reconnait nettement mieux). Le but en cours n'est pas repris
+                # (il etait dans le repere de l'ancienne carte).
+                other, opose, omsg = better if better is not None else \
+                    self._locateOtherMaps()
                 if other is not None:
                     with self._lock:
                         self._event("carte_quittee", vers=other, raison="robot perdu")
@@ -1029,6 +1057,14 @@ class NavSupervisor(Node):
                 self._useMap(other)
                 self._event("chargee", raison="robot retrouve sur cette carte")
                 name, how = other, how2
+            else:
+                better = self._otherIfBetter()
+                if better is not None:
+                    other, pose, how = better
+                    self._event("carte_quittee", vers=other, raison="autre carte meilleure")
+                    self._useMap(other)
+                    self._event("chargee", raison="robot mieux reconnu sur cette carte")
+                    name = other
         ok, why = self._startSlam("mapping", self.store.posegraph_base(name), pose)
         if ok:
             self.loc, self.match = "ok", math.nan
@@ -1067,6 +1103,14 @@ class NavSupervisor(Node):
                 self._useMap(other)
                 self._event("chargee", raison="robot retrouve sur cette carte")
                 name, how = other, how2
+            else:
+                better = self._otherIfBetter()
+                if better is not None:
+                    other, pose, how = better
+                    self._event("carte_quittee", vers=other, raison="autre carte meilleure")
+                    self._useMap(other)
+                    self._event("chargee", raison="robot mieux reconnu sur cette carte")
+                    name = other
         ok, why = self._startSlam("localization", self.store.posegraph_base(name), pose)
         if ok:
             self.loc, self.match, self._badT = "ok", math.nan, None
