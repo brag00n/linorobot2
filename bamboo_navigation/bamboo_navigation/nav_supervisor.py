@@ -1095,21 +1095,32 @@ class NavSupervisor(Node):
             self.loc, self.match = "inconnue", math.nan
             why = "carte %s gardee" % (self.map_name or "-")
         elif mode == "exploration":
+            t0 = time.monotonic()
             ok, why = self._enterMapping(new=(arg == "new"))
             if not ok:
                 return False, why
-            self._nav2(False)
+            # Nav2 ACTIF des l'entree, comme en navigation (demande utilisateur 2026-10-13) :
+            # le premier ordre (A, X) attendait sinon 20 a 40 s son demarrage. Cout : ~0,5
+            # coeur tant que NAV est allumee, y compris en cartographie manuelle.
+            t1 = time.monotonic()
+            ok2, why2 = self._nav2(True)
+            if not ok2:
+                why += " ; Nav2 " + why2
+            why += " [slam %.0f s, Nav2 %.0f s]" % (t1 - t0, time.monotonic() - t1)
         else:
             if arg and arg != self.map_name:
                 ok, why = self._switchMap(arg)
                 if not ok:
                     return False, why
+            t0 = time.monotonic()
             ok, why = self._enterLocalization()
             if not ok:
                 return False, why
+            t1 = time.monotonic()
             ok2, why2 = self._nav2(True)
             if not ok2:
                 why += " ; Nav2 " + why2
+            why += " [slam %.0f s, Nav2 %.0f s]" % (t1 - t0, time.monotonic() - t1)
         old, self.submode = self.submode, mode
         self._event("sous_mode", de=old, vers=mode)
         self.detail = "sous-mode %s : %s" % (mode, why)
@@ -1887,9 +1898,7 @@ class NavSupervisor(Node):
         # TOUT arret sauve la carte (essai E2d : arret sur "retour au depart impossible", puis
         # relance -> carte de la 1re exploration PERDUE).
         self._saveMap("arret de l'exploration auto (%s)" % why, force=True)
-        if nav_reset and self.submode == "exploration":
-            # Exploration MANUELLE ensuite : Nav2 n'y sert a rien.
-            self._nav2(False)
+        # Nav2 reste ACTIF : il est demarre avec le sous-mode et arrete avec lui (idle).
         self.detail = "exploration auto arretee (%s)" % why
         self.get_logger().info(self.detail)
         return True, self.detail
@@ -2244,7 +2253,6 @@ class NavSupervisor(Node):
             return
         self.auto = "finishing"
         _ok, msg = self._saveMap("exploration terminee", force=True)
-        self._nav2(False)
         self.auto, self._autoTarget = "done", None
         self._event("exploration_auto", etat="terminee",
                     duree_s=round(time.monotonic() - self._autoT0))

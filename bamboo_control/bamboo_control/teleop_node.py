@@ -343,7 +343,7 @@ class TeleopNode(Node):
         self._navWant = False
         self._navStartSent = False
         self._navStopT = None
-        self._navWantT, self._navRetryAt = 0.0, 0.0
+        self._navWantT, self._navRetryAt, self._navSentT = 0.0, 0.0, 0.0
         self._navStackCli = self.create_client(SetBool, "/bamboo/nav_stack")
         self.create_timer(1.0, self._navStackTick)
         self._curAction = None        # action en cours d'execution (cf. _run)
@@ -1495,15 +1495,25 @@ class TeleopNode(Node):
         if self._navWant and not self._navStartSent and self._navCli.service_is_ready() \
                 and time.monotonic() >= self._navRetryAt:
             group = self._groupName() if self._mode == "navigation" else "exploration"
-            self._navStartSent = True
+            self._navStartSent, self._navSentT = True, time.monotonic()
             self._nav(group if group in ("exploration", "navigation") else "exploration",
                       then=self._onNavStarted)
+        elif self._navWant and self._navStartSent and not self._navOn():
+            now = time.monotonic()
+            if now - self._navWantT > self.NAV_START_TIMEOUT_S:
+                self._onNavStarted(None)           # abandon, avec le message
+            elif now - self._navSentT > self.NAV_ANSWER_TIMEOUT_S:
+                # Pas de reponse (superviseur redemarre pendant la commande, 2026-10-13) :
+                # on redemande.
+                self._navStartSent = False
         if self._navStopT is not None and (not self._navCli.service_is_ready() or
                                            time.monotonic() - self._navStopT > 20.0):
             self._navStopT = None
             self._publishState()
 
-    NAV_START_TIMEOUT_S = 90.0
+    # Demarrage complet : slam + relocalisation + Nav2 (~1 min sur un RPi4 charge).
+    NAV_START_TIMEOUT_S = 180.0
+    NAV_ANSWER_TIMEOUT_S = 75.0
 
     def _onNavStarted(self, r):
         """Le superviseur refuse tant que le lidar demarre (« pas de scan lidar ») : on
