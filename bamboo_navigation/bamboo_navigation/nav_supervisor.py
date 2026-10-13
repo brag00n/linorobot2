@@ -149,6 +149,7 @@ class NavSupervisor(Node):
         self._goalSeq = 0
         self._cancelPending = False
         self._lock = threading.Lock()
+        self._autoTickLock = threading.Lock()
         self._last = {"scan": None, "imu": None, "odom": None}
         self._scanRaw, self._odomRaw = None, None
         self._imuRaw, self._wheelRaw = None, None
@@ -1527,6 +1528,17 @@ class NavSupervisor(Node):
         return fut.result().map
 
     def _autoTick(self):
+        # UN SEUL tour a la fois : un tour (carte + verification des chemins) depasse parfois
+        # 1 s, et l'executeur multi-fils lancait alors le suivant EN PARALLELE -- deux gates
+        # envoyees a 0,7 s d'intervalle, la premiere restee `en_cours` (essai G1d, 2026-10-13).
+        if not self._autoTickLock.acquire(blocking=False):
+            return
+        try:
+            self._autoTickOnce()
+        finally:
+            self._autoTickLock.release()
+
+    def _autoTickOnce(self):
         if self.auto in ("off", "done", "finishing"):
             return
         if self._relocBusy:
