@@ -111,6 +111,10 @@ class NavSupervisor(Node):
         self.map_select_delay_s = float(d("map_select_delay_s", 2.0).value)
         self._mapSel, self._mapSelT = None, 0.0
         self._forcedMap = False          # carte FORCEE : pas de recherche sur les autres
+        self._forcedName = None          # derniere carte choisie au + / - (R long : elle seule)
+        # Exploration EN ATTENTE : sous-mode exploration, carte existante NON reprise (pas de
+        # relocalisation a l'entree, 2026-10-14) -- R long la reprend, + long en ouvre une neuve.
+        self._mapWait = False
         self._wantSub = None             # sous-mode demande (exploration | navigation)
         self.range_max = float(d("lidar_range_max_m", 8.0).value)
         self.match_period_s = float(d("match_period_s", 2.0).value)
@@ -961,6 +965,12 @@ class NavSupervisor(Node):
         relancee a cette pose -- le mecanisme du retour en arriere."""
         if self._relocBusy:
             return False, "relocalisation deja en cours"
+        if self.slamMode != "mapping":
+            if not self.map_name:
+                return False, "aucune carte : + long pour une carte vierge"
+            self._relocBusy, self.loc = True, "relocalisation"
+            threading.Thread(target=self._resumeJob, daemon=True, name="nav_resume").start()
+            return True, "relocalisation sur %s lancee (pour la completer)" % self.map_name
         prior = self._jumpPending[1] if self._jumpPending else self._robotPose()
         if prior is None:
             return False, "relocalisation : pose inconnue"
@@ -1096,42 +1106,77 @@ class NavSupervisor(Node):
             pose, how = self._robotPose(), "a la pose courante"
             if pose is None:
                 return False, "pose inconnue (TF map->base_footprint)"
-        else:
-            switched = False
-            pose, how = self._locate(self.meta.get("last_pose") if self.meta else None)
-            if pose is None:
-                # Pas sur la carte courante : peut-etre sur une AUTRE carte, qu'on completera.
-                if self._forcedMap:        # carte choisie au + / - : elle, et elle seule
-                    other, pose, how2 = None, None, "carte forcee : autres cartes non essayees"
-                else:
-                    other, pose, how2 = self._locateOtherMaps()
-                if other is None:
-                    return False, "carte %s : %s ; %s -- ou nouvelle carte (+ long)" % (
-                        name, how, how2)
-                self._event("carte_quittee", vers=other, raison="robot sur une autre carte")
-                self._useMap(other)
-                self._event("chargee", raison="robot retrouve sur cette carte")
-                name, how, switched = other, how2, True
+            ok, why = self._startSlam("mapping", self.store.posegraph_base(name), pose)
+            if ok:
+                self.loc, self.match, self._mapWait = "ok", math.nan, False
+                self._event("cartographie", reprise=True, pose=pose)
+            return ok, "carte %s completee (%s) : %s" % (name, how, why)
+        # PAS de relocalisation a l'entree (demande utilisateur 2026-10-14) : hors automatisme
+        # elle ne part que sur R long. Essai du 14/10 : chaque reessai de la manette relancait
+        # une recherche sur toutes les cartes (refusee a 0,70 < 0,80), sans fin.
+        self._mapWait = True
+        self.loc, self.match = "inconnue", math.nan
+        return True, ("carte %s en attente : R long = relocaliser pour la completer, + long = "
+                      "carte vierge" % name)
+
+    def _resumeMapping(self):
+        """R long en exploration EN ATTENTE : robot retrouve sur la carte courante (ou sur une
+        autre, sauf carte forcee), et cartographie reprise a cette pose si le score est net."""
+        name = self.map_name
+        switched = False
+        pose, how = self._locate(self.meta.get("last_pose") if self.meta else None)
+        if pose is None:
+            # Pas sur la carte courante : peut-etre sur une AUTRE carte, qu'on completera.
+            if self._forcedMap:        # carte choisie au + / - : elle, et elle seule
+                other, pose, how2 = None, None, "carte forcee : autres cartes non essayees"
             else:
-                better = self._otherIfBetter()
-                if better is not None:
-                    other, pose, how = better
-                    self._event("carte_quittee", vers=other, raison="autre carte meilleure")
-                    self._useMap(other)
-                    self._event("chargee", raison="robot mieux reconnu sur cette carte")
-                    name, switched = other, True
-            final = self._lastOtherScore if switched else self._lastLocScore
-            if final is None or final < self.complete_min_score:
-                self._event("completion_refusee", score=final)
-                return False, ("carte %s : relocalisation trop faible pour la COMPLETER "
-                               "(score %.2f < %.2f) -- nouvelle carte (+ long), ou rapprocher "
-                               "le robot d'une zone bien cartographiee"
-                               % (name, final or 0.0, self.complete_min_score))
+                other, pose, how2 = self._locateOtherMaps()
+            if other is None:
+                return False, "carte %s : %s ; %s -- ou nouvelle carte (+ long)" % (
+                    name, how, how2)
+            self._event("carte_quittee", vers=other, raison="robot sur une autre carte")
+            self._useMap(other)
+            self._event("chargee", raison="robot retrouve sur cette carte")
+            name, how, switched = other, how2, True
+        else:
+            better = self._otherIfBetter()
+            if better is not None:
+                other, pose, how = better
+                self._event("carte_quittee", vers=other, raison="autre carte meilleure")
+                self._useMap(other)
+                self._event("chargee", raison="robot mieux reconnu sur cette carte")
+                name, switched = other, True
+        final = self._lastOtherScore if switched else self._lastLocScore
+        if final is None or final < self.complete_min_score:
+            self._event("completion_refusee", score=final)
+            return False, ("carte %s : relocalisation trop faible pour la COMPLETER "
+                           "(score %.2f < %.2f) -- nouvelle carte (+ long), ou rapprocher "
+                           "le robot d'une zone bien cartographiee"
+                           % (name, final or 0.0, self.complete_min_score))
         ok, why = self._startSlam("mapping", self.store.posegraph_base(name), pose)
         if ok:
-            self.loc, self.match = "ok", math.nan
+            self.loc, self.match, self._mapWait = "ok", math.nan, False
             self._event("cartographie", reprise=True, pose=pose)
         return ok, "carte %s completee (%s) : %s" % (name, how, why)
+
+    def _resumeJob(self):
+        try:
+            with self._lock:
+                self._forcedMap = self._forcedName == self.map_name
+                ok, why = self._resumeMapping()
+                self._forcedMap = False
+                if ok:
+                    ok2, why2 = self._nav2(True)
+                    if not ok2:
+                        why += " ; Nav2 " + why2
+                else:
+                    self.loc = "inconnue"
+                self.detail = why
+                self._event("reprise_carte", ok=ok, detail=why)
+                (self.get_logger().info if ok else self.get_logger().warn)(why)
+        finally:
+            self._forcedMap = False
+            self._relocBusy = False
 
     def _enterLocalization(self):
         """slam_toolbox en localisation sur le graphe de la carte courante."""
@@ -1198,6 +1243,7 @@ class NavSupervisor(Node):
         if mode == "idle":
             if self.slamMode:
                 self._saveMap("sous-mode idle", force=True)
+            self._mapWait = False
             self._nav2(False)
             self._stopSlam()
             self._tfListen(False)
@@ -1212,10 +1258,11 @@ class NavSupervisor(Node):
             # le premier ordre (A, X) attendait sinon 20 a 40 s son demarrage. Cout : ~0,5
             # coeur tant que NAV est allumee, y compris en cartographie manuelle.
             t1 = time.monotonic()
-            ok2, why2 = self._nav2(True)
-            if not ok2:
-                why += " ; Nav2 " + why2
-            why += " [slam %.0f s, Nav2 %.0f s]" % (t1 - t0, time.monotonic() - t1)
+            if not self._mapWait:          # en attente : pas de repere map, Nav2 plus tard
+                ok2, why2 = self._nav2(True)
+                if not ok2:
+                    why += " ; Nav2 " + why2
+                why += " [slam %.0f s, Nav2 %.0f s]" % (t1 - t0, time.monotonic() - t1)
         else:
             if arg and arg != self.map_name:
                 ok, why = self._switchMap(arg)
@@ -1225,6 +1272,7 @@ class NavSupervisor(Node):
             ok, why = self._enterLocalization()
             if not ok:
                 return False, why
+            self._mapWait = False
             t1 = time.monotonic()
             ok2, why2 = self._nav2(True)
             if not ok2:
@@ -1458,8 +1506,15 @@ class NavSupervisor(Node):
         old = self.map_name
         if self.slamMode:
             self._saveMap("nouvelle carte", force=True)
-        self._nav2(False)
+        # Nav2 RESTE ACTIF (il suit la nouvelle /map, comme _loadMap) : l'eteindre puis le
+        # rallumer faisait croire a un arret de NAV (essai du 2026-10-14).
+        if self.submode == "idle":
+            self._nav2(False)
         self._stopSlam()
+        # Un + court parti juste avant (rebond du bouton) ne doit pas remplacer la carte
+        # vierge 2 s plus tard (essai du 2026-10-14).
+        self._mapSel, self._forcedName, self._mapWait = None, None, False
+        self._jumpPending = None
         self._useMap(self.store.create())
         self._event("nouvelle_carte", precedente=old)
         if self.submode == "idle":
@@ -1553,7 +1608,7 @@ class NavSupervisor(Node):
                 self.detail = "carte %s gardee" % name
                 return
             prev_map, prev_sub = self.map_name, self.submode
-            self._forcedMap = True
+            self._forcedMap, self._forcedName = True, name
             ok, why = self._loadMap(name)
             self._forcedMap = False
             self._event("carte_forcee", carte=name, ok=ok)
@@ -1959,10 +2014,11 @@ class NavSupervisor(Node):
             self._gateSet(self._autoGate, "ouverte", "session relancee")
             self._autoGate, self._autoTarget = None, None
         self._cancelGoal()
-        # La carte COURANTE est completee, a la pose RETROUVEE du robot (relocalisation au
-        # passage en exploration). Avant le 2026-10-12, chaque lancement repartait d'une carte
-        # neuve : reprendre l'ancienne session sans relocaliser etait dangereux (robot deplace
-        # a la main, essai E2 : « il part sur une ancienne carte »).
+        # La carte COURANTE est completee, a la pose RETROUVEE du robot (R long sur une carte
+        # en attente, depuis le 2026-10-14 ; plus de relocalisation implicite ici). Avant le
+        # 2026-10-12, chaque lancement repartait d'une carte neuve : reprendre l'ancienne
+        # session sans relocaliser etait dangereux (robot deplace a la main, essai E2 : « il
+        # part sur une ancienne carte »).
         if self.submode != "exploration":
             ok, why = self.setSubmode("exploration")
             if not ok:
@@ -1971,6 +2027,9 @@ class NavSupervisor(Node):
             ok, why = self._enterMapping()
             if not ok:
                 return False, "exploration auto impossible : " + why
+        if self._mapWait:
+            return False, ("exploration auto : carte %s pas reprise -- R long (relocaliser) ou "
+                           "+ long (carte vierge)" % self.map_name)
         # Recalibration du gyro SEULEMENT robot IMMOBILE (odometrie, pas seulement le stick) et
         # pas plus d'une fois par `auto_recal_min_interval_s`. Essais G1 et G1b (2026-10-13) :
         # recalibre pendant que Nav2 ramenait le robot au depart, le gyro a pris la rotation

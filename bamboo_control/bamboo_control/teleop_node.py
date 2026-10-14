@@ -196,6 +196,7 @@ class TeleopNode(Node):
         if not self._hasGimbal:
             self._nudgeOn = False
         self._debounce = float(self.declare_parameter("debounce_s", 0.25).value)
+        self._holdBounce = float(self.declare_parameter("hold_bounce_s", 0.12).value)
         # Loi d'axe du proto (RobotMain._axis) : memes noms, memes defauts.
         self._deadzone = min(0.9, max(0.0, float(
             self.declare_parameter("deadzone", 0.12).value)))
@@ -349,6 +350,7 @@ class TeleopNode(Node):
         self._navStopT = None
         self._navWantT, self._navRetryAt, self._navSentT = 0.0, 0.0, 0.0
         self._navStarted = False      # allumee au moins une fois depuis le dernier A long
+        self._navBusy = 0             # commandes au superviseur sans reponse encore
         self._navOffSince = None      # retombee a l'arret depuis (grace, cf. _navStackTick)
         self._navStackCli = self.create_client(SetBool, "/bamboo/nav_stack")
         self.create_timer(1.0, self._navStackTick)
@@ -633,8 +635,11 @@ class TeleopNode(Node):
         action qui ne doit JAMAIS etre retardee (le STOP) reste sur le front montant et
         n emprunte pas ce chemin.
         """
-        st = self._hold.setdefault(name, {"t0": None, "fired": False})
+        st = self._hold.setdefault(name, {"t0": None, "fired": False, "rel": None})
         if value:
+            # Relache moins de `hold_bounce_s` (coupure Bluetooth, rebond) : c'est le MEME appui
+            # qui continue. Essai du 2026-10-14 : un + long avait donne un + court PUIS le long.
+            st["rel"] = None
             if st["t0"] is None:
                 st["t0"] = now
             elif not st["fired"] and now - st["t0"] >= self._longPress:
@@ -643,9 +648,12 @@ class TeleopNode(Node):
             return None
         if st["t0"] is None:
             return None
+        if st["rel"] is None:
+            st["rel"] = now
+        if now - st["rel"] < self._holdBounce:
+            return None                    # joy republie a 25 Hz : on revient vite ici
         court = not st["fired"]
-        st["t0"] = None
-        st["fired"] = False
+        st["t0"], st["fired"], st["rel"] = None, False, None
         if not court:
             return None
         # ANTI-REBOND, comme _edge : un bouton qui rebondit au relachement donnait deux
@@ -1510,6 +1518,8 @@ class TeleopNode(Node):
             return "stopping"
         if self._navOn():
             return "on"
+        if self._navWant and self._navStarted and self._navBusy > 0:
+            return "on"                    # commande en cours (carte vierge, autre carte)
         return "starting" if self._navWant else "off"
 
     def _navStackCall(self, on):
@@ -1612,9 +1622,11 @@ class TeleopNode(Node):
         act = self._curAction
         if act:
             self._pendingActs.add(act)
+        self._navBusy += 1
 
         def done(f):
             self._pendingActs.discard(act)
+            self._navBusy = max(0, self._navBusy - 1)
             try:
                 r = f.result()
                 # DEUX appels distincts, pas `(info if ok else warn)(...)` : rclpy refuse qu'un
