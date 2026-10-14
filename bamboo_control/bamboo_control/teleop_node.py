@@ -217,6 +217,10 @@ class TeleopNode(Node):
         self._speedMax = int(self.declare_parameter("speed_max_level", 3).value)
         self._cmdHz = max(1.0, float(self.declare_parameter("cmd_vel_rate_hz", 10.0).value))
         self._motionOn = bool(self.declare_parameter("motion_enabled", False).value)
+        # Traction VERROUILLEE armee (B long + L long, demande utilisateur 2026-10-13) : la
+        # perte de la manette ne la desarme plus -- exploration en milieu controle, hors de
+        # portee Bluetooth. Securite levee ASSUMEE ; B long la retablit (desarme).
+        self._armLatched = False
         # VIBRATION de la manette a l'armement (1 impulsion) et au desarmement (2) : un retour
         # LOCAL, qui ne depend pas du Wi-Fi. Le HUD arrive par le reseau ; quand il est en
         # retard, l'operateur croit l'appui rate, rappuie et rebascule (constat du
@@ -685,15 +689,24 @@ class TeleopNode(Node):
                                 now) == "long") if self._sharedMotion else \
             self._edge("motion", self._button(msg, self._btn["motion"]), now)
         if armer:
-            self._motionOn = not self._motionOn
-            if not self._motionOn:
-                self._calibCancel("desarmement")
-                self._stopMotion()               # desarmer ARRETE, il ne fige pas
+            if self._keyValue(msg, "L") and not self._armLatched:
+                # B long AVEC L tenue : armement VERROUILLE, sans controle de presence de la
+                # manette. B long seul (plus bas) le retire.
+                self._motionOn, self._armLatched = True, True
+                self.get_logger().error(
+                    "traction VERROUILLEE ARMEE : la perte de la manette ne desarme PLUS "
+                    "(securite levee, assumee) -- B long pour desarmer")
+            else:
+                self._motionOn = not self._motionOn
+                self._armLatched = False
+                if not self._motionOn:
+                    self._calibCancel("desarmement")
+                    self._stopMotion()           # desarmer ARRETE, il ne fige pas
+                self.get_logger().warning(
+                    "moteurs %s a la manette (le verrou `enable_cmd_vel` du driver reste "
+                    "maitre)" % ("ARMES" if self._motionOn else "desarmes"))
             self._publishState()
             self._rumble(1 if self._motionOn else 2)
-            self.get_logger().warning(
-                "moteurs %s a la manette (le verrou `enable_cmd_vel` du driver reste "
-                "maitre)" % ("ARMES" if self._motionOn else "desarmes"))
 
         # --- croix : GLOBALE, dans tous les modes -----------------------------
         # SIGNE RELEVE, et il est CONTRE-INTUITIF : sur l'axe 7 le HAUT vaut -1 et le BAS
@@ -719,6 +732,12 @@ class TeleopNode(Node):
         for key in KEYS:
             value = self._keyValue(msg, key)
             tag = "key:" + key
+            if key == "L" and self._button(msg, self._btn["motion"]):
+                # L tenue AVEC B : c'est le geste de verrouillage de la traction, pas l'action
+                # de L dans le mode (qui partirait sinon au relachement).
+                self._prev[tag] = value
+                self._hold.pop(tag, None)
+                continue
             if key in self._confirmIgnore:
                 # A repondu a une confirmation : ignoree jusqu'a son relachement.
                 self._prev[tag] = value
@@ -843,7 +862,8 @@ class TeleopNode(Node):
         TENU, donc ne plus rien recevoir ne peut pas vouloir dire "stick immobile".
         """
         silence = time.monotonic() - self._lastJoy
-        if self._motionOn and self._lastJoy > 0.0 and silence > self._disarmOnLoss:
+        if self._motionOn and self._lastJoy > 0.0 and silence > self._disarmOnLoss and \
+                not self._armLatched:
             # Manette PERDUE : desarmement, arret, annulation d'une calibration. Le rearmement
             # exige un appui LONG sur B, une fois la manette revenue.
             self._motionOn = False
@@ -1276,6 +1296,8 @@ class TeleopNode(Node):
             st.active.append(bool(active()) if active is not None else False)
             st.pending.append(action in self._pendingActs)
         st.armed = self._motionOn
+        if hasattr(st, "armed_latched"):
+            st.armed_latched = self._armLatched
         if hasattr(st, "nav_stack"):
             # Dans TOUS les modes : la pile NAV reste allumee hors du mode NAV.
             st.nav_stack = self._navStackState()

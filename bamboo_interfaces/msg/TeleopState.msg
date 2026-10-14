@@ -12,6 +12,8 @@ string[] labels         # "acquisition", "tracker: mil"...
 bool[] active           # etat on/off de l'action (false pour une action sans etat)
 bool[] pending          # commande envoyee, reponse pas encore recue (demarrage / arret)
 bool armed              # traction armee a la manette (appui long sur B)
+bool armed_latched      # armement VERROUILLE (B long + L long) : la perte de la manette ne
+                        # desarme plus ; pastille ARME B clignotante (2026-10-13)
 string confirm_text     # CONFIRMATION demandee ("" = aucune) : A = oui, B = non (2026-10-13)
 string nav_stack        # pile NAV (A long) : off | starting | on | stopping -- pastille NAV
 bool busy               # un comportement long tourne (calibration)

@@ -1715,7 +1715,12 @@ private:
     const auto tst = teleopFresh();
     x = modePill(im, pill_x0, row3, cst ? "ARME SYS" : "ARME SYS ?", cst && cst->armed, u,
       kZoneOut);
-    modePill(im, x, row3, tst ? "ARME B" : "ARME B ?", tst && tst->armed, u, kZoneOut);
+    // ARME B CLIGNOTE quand l'armement est VERROUILLE (B long + L long) : la perte de la
+    // manette ne desarme plus -- securite levee, il faut que ca se voie (2026-10-13).
+    const bool latched = tst && tst->armed_latched;
+    const bool blink_b = (now_steady_.now().nanoseconds() / 250000000LL) % 2 == 0;
+    modePill(im, x, row3, tst ? (latched ? "ARME B VERROU" : "ARME B") : "ARME B ?",
+      tst && tst->armed && (!latched || blink_b), u, kZoneOut);
 
     const double lat_ms = latencyMs(f.stamp_ns);
     if (lat_ms > lat_max_ms_) {lat_max_ms_ = lat_ms;}
