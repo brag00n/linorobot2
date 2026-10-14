@@ -441,6 +441,7 @@ Le défaut vaut quel que soit le producteur de `cmd_vel` : manette, navigation, 
 |---|---|
 | **B court** | STOP. Annule aussi une calibration en cours. |
 | **B long** | Armer / désarmer la traction. |
+| **B long + L tenue** | Armement **VERROUILLÉ** : la perte de la manette ne désarme plus (sécurité levée, assumée) ; pastille « ARME B VERROU » clignotante. B long seul désarme et retire le verrou. |
 | **Stick gauche** | Conduite. Le pousser **annule** une calibration en cours. |
 | **Croix gauche/droite** | Mode précédent / suivant. Les modes indisponibles sont sautés. |
 | **Croix haut/bas** | Groupe d'actions du mode. |
@@ -453,9 +454,9 @@ Le défaut vaut quel que soit le producteur de `cmd_vel` : manette, navigation, 
 | TRACKING | tous les sous-modes | **A long = ACQ + TRK-V + TRK-P + RECO ensemble** (tout coupé si l'une tourne), A = ACQ (détection) seule, X = TRK-V (suivi vidéo), X long = RECO, Y = TRK-P (servos), Y long = recentrage, L long = CAPT, R long = GEN, ZL/ZR = réglage du sous-mode. **Tout est coupé au démarrage et à l'entrée dans le mode** (2026-10-13) |
 | CALIB | mesure | **A long = lancer**, X = contrôle IMU seul, Y = arcs on/off, R = variante suivante |
 | CALIB | essai | A = appliquer le candidat **en RAM**, X = revenir au fichier, Y = PI de lacet on/off |
-| NAV | exploration | **A long = allumer / éteindre la navigation** (pile à la demande ; pastille NAV verte, clignotante au lancement), A = exploration auto, X = aller à la gate choisie puis s'arrêter, Y = nouvelle destination, L / R = départ puis gates, − / + = cartes, − long = supprimer la carte (confirmation), + long = carte vierge, ZR long = miroir |
-| NAV | navigation | **A long = allumer / éteindre la navigation**, A = **ronde** des destinations (en boucle, ordre le plus court), X = aller à la destination choisie, Y = nouvelle destination, Y long = la supprimer (confirmation), L / R = départ puis destinations, − / + = cartes, + long = relocaliser (carte courante puis les autres), ZR long = miroir |
-| NAV | les deux | **B court = STOP + annulation** du but, de l'exploration auto et de la ronde ; croix haut / bas, NAV allumée = changer de sous-mode (carte et pose transmises) ; sortir du mode NAV = comme A long éteint. Pastilles au-dessus d'ACQ : NAV, NAV-AUTO, EXP-AUTO, RELOC |
+| NAV | exploration | **A long = allumer / éteindre la navigation** (pile à la demande ; pastille NAV verte, clignotante au lancement), A = exploration auto, X = aller à la gate choisie puis s'arrêter, Y = nouvelle destination, L / R = départ puis gates, − / + = cartes, − long = supprimer la carte (confirmation), + long = carte vierge, R long = relocaliser (sauve la carte si la localisation est saine, puis reprend la cartographie à la pose retrouvée), ZR long = miroir |
+| NAV | navigation | **A long = allumer / éteindre la navigation**, A = **ronde** des destinations (en boucle, ordre le plus court), X = aller à la destination choisie, Y = nouvelle destination, Y long = la supprimer (confirmation), L / R = départ puis destinations, − / + = cartes, R long = relocaliser (carte courante puis les autres), ZR long = miroir |
+| NAV | les deux | **B court = STOP + annulation** du but, de l'exploration auto et de la ronde ; croix haut / bas, NAV allumée = changer de sous-mode (carte et pose transmises) ; sortir du mode NAV ne l’éteint pas (seul A long l’éteint). Relocalisation AUTOMATIQUE seulement pendant un automatisme (exploration auto, gate, retour, ronde, but X) ; sinon une localisation perdue est signalée (« R long pour relocaliser ») et les sauvegardes sont refusées jusque-là. Pastilles au-dessus d'ACQ : NAV, NAV-AUTO, EXP-AUTO, RELOC |
 
 Une carte de touches fausse est **refusée au démarrage** : touche, action ou groupe inconnu, ou B réaffecté. La manette se replie alors sur la conduite seule, et le diagnostic `bamboo_teleop: modes` passe en ERROR avec la raison.
 

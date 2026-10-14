@@ -106,6 +106,7 @@ class NavSupervisor(Node):
         self.reloc_good = float(d("reloc_good", 0.80).value)
         self._lastLocScore = None
         self._lastOtherScore = None
+        self._jumpPending = None         # saut vu HORS automatisme, en attente de R long
         # Choix de carte a la manette (+ / -) : applique apres ce delai sans nouvel appui.
         self.map_select_delay_s = float(d("map_select_delay_s", 2.0).value)
         self._mapSel, self._mapSelT = None, 0.0
@@ -520,6 +521,7 @@ class NavSupervisor(Node):
                     "-p", "map_start_pose:=[%.4f, %.4f, %.4f]" % tuple(pose)]
         self.tf.clear()                # sinon l'ANCIEN map->odom reste quelques secondes
         self._m2o = None               # nouveau repere : rien a comparer
+        self._jumpPending = None
         self.slam = subprocess.Popen(cmd, start_new_session=True)
         self.slamMode = mode
         t = time.monotonic()
@@ -891,6 +893,20 @@ class NavSupervisor(Node):
         if self.submode == "exploration" and self.slamMode == "mapping":
             r = self._jumpCheck()
             if r[0] == "saut":
+                if not self._autoActive():
+                    # HORS automatisme (demande utilisateur 2026-10-13) : pas de retour en
+                    # arriere automatique. La localisation passe « perdue » -- les sauvegardes
+                    # sont alors refusees, la carte est protegee -- et R long relocalise.
+                    if self._jumpPending is None:
+                        self._jumpPending = r
+                        self.loc = "perdue"
+                        self._event("saut_localisation", pose_ancien_repere=r[1],
+                                    score_ancien=r[2], score_nouveau=r[3], auto=False)
+                        self.detail = "saut de localisation : R long pour relocaliser"
+                        self.get_logger().warn("exploration : SAUT de localisation (%.2f / "
+                                               "%.2f) -- R long pour relocaliser"
+                                               % (r[2], r[3]))
+                    return
                 self.get_logger().warn(
                     "exploration : SAUT de localisation (accord %.2f dans l'ancien repere, "
                     "%.2f dans le nouveau) -> retour au dernier graphe sain" % (r[2], r[3]))
@@ -921,10 +937,40 @@ class NavSupervisor(Node):
             if self._badT is None:
                 self._badT = now
             elif now - self._badT > self.match_lost_s:
+                if not self._autoActive():
+                    # HORS automatisme : signale seulement ; R long relocalise.
+                    if self.loc != "perdue":
+                        self.loc = "perdue"
+                        self._event("robot_perdu", score=s, auto=False)
+                        self.detail = "robot perdu (accord %.2f) : R long pour relocaliser" % s
+                        self.get_logger().warn(self.detail)
+                    return
                 self.get_logger().warn("navigation : robot PERDU (accord %.2f depuis %.0f s), "
                                        "relocalisation" % (s, now - self._badT))
                 self._event("robot_perdu", score=s)
                 self._relocStart(False, "decalage carte / lidar")
+
+    def _autoActive(self):
+        """Un AUTOMATISME tourne-t-il ? (exploration auto, gate, retour, ronde, but X) -- seul
+        cas ou la relocalisation part d'elle-meme (demande utilisateur 2026-10-13)."""
+        return self._autoState() != "off"
+
+    def _relocExplore(self):
+        """R long en exploration : carte sauvee si la localisation est saine, robot retrouve
+        sur l'image sauvee (autour de la pose d'avant un saut s'il y en a eu un), cartographie
+        relancee a cette pose -- le mecanisme du retour en arriere."""
+        if self._relocBusy:
+            return False, "relocalisation deja en cours"
+        prior = self._jumpPending[1] if self._jumpPending else self._robotPose()
+        if prior is None:
+            return False, "relocalisation : pose inconnue"
+        if self.loc == "ok":
+            self._saveMap("avant relocalisation", force=True)
+        self._jumpPending = None
+        self._relocBusy, self.loc = True, "relocalisation"
+        threading.Thread(target=self._rollbackJob, args=(prior, None, None),
+                         daemon=True, name="nav_reloc_explo").start()
+        return True, "relocalisation lancee (exploration)"
 
     def _relocStart(self, global_only, why):
         if self._relocBusy:
@@ -1375,9 +1421,11 @@ class NavSupervisor(Node):
         if cmd == "goto":
             return self._gotoCmd(arg)
         if cmd == "relocalize":
-            if self.submode != "navigation":
-                return False, "relocalisation : en navigation seulement"
-            return self._relocStart(arg == "global", "demande")
+            if self.submode == "navigation":
+                return self._relocStart(arg == "global", "demande")
+            if self.submode == "exploration" and self.slamMode == "mapping":
+                return self._relocExplore()
+            return False, "relocalisation : en exploration ou en navigation"
         if cmd == "cancel":
             self._cancelGoal()
             return True, "but annule"

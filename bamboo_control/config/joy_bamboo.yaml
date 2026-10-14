@@ -325,8 +325,10 @@ bamboo_teleop:
       # Exploration : A = exploration auto (gate en gate), X = aller a la gate choisie puis
       # s'arreter, - long = supprimer la carte (confirmation), + long = carte vierge.
       # Navigation : A = RONDE des destinations (en boucle, ordre le plus court), X = aller a
-      # la destination choisie, Y long = supprimer la destination (confirmation), + long =
-      # relocaliser (carte courante, puis les autres).
+      # la destination choisie, Y long = supprimer la destination (confirmation).
+      # R long (les deux groupes) = relocaliser -- carte courante, puis les autres. Hors
+      # automatisme (exploration auto, ronde, but X), la relocalisation n'est JAMAIS
+      # automatique : une localisation perdue est signalee, R long la relance.
       navigation:
         groups: "exploration;navigation"
         exploration:
@@ -341,6 +343,7 @@ bamboo_teleop:
           PLUS: "nav_map_next"
           MINUS_long: "nav_map_delete"
           PLUS_long: "nav_new_map"
+          R_long: "nav_relocalize"
         navigation:
           ZR_long: "flip_image"
           A_long: "nav_toggle"
@@ -352,7 +355,7 @@ bamboo_teleop:
           R: "nav_dest_next"
           MINUS: "nav_map_prev"
           PLUS: "nav_map_next"
-          PLUS_long: "nav_relocalize"
+          R_long: "nav_relocalize"
 
     # Calibration : variantes proposees par R (groupe mesure), separees par ';'.
     # Le nom devient celui du fichier candidat ET de l'entree calib.<nom> a
