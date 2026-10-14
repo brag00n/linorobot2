@@ -123,6 +123,10 @@ class NavSupervisor(Node):
         # est jugee sur la carte sauvee (exploration, cf. _jumpCheck).
         self.jump_m = float(d("jump_m", 0.5).value)
         self.jump_rad = float(d("jump_rad", 0.35).value)
+        self.jump_min_score = float(d("jump_min_score", 0.35).value)
+        # COMPLETER une carte exige une relocalisation NETTE : partir d'une pose douteuse
+        # ajoute des scans au mauvais endroit (14/10 : depart faux de 7 m, recale ensuite).
+        self.complete_min_score = float(d("complete_min_score", 0.80).value)
         # --- exploration AUTOMATIQUE (gates) : reglages, cf. _autoTick ---
         self.auto_min_frontier_m = float(d("auto_min_frontier_m", 0.30).value)
         # Delai SANS PROGRES (la distance restante ne baisse plus) avant d'abandonner un but ;
@@ -866,7 +870,10 @@ class NavSupervisor(Node):
         new, old = rl.compose(cur, ob), rl.compose(prev, ob)
         s_new, s_old = lm.judge(pts, new), lm.judge(pts, old)
         jump = math.hypot(cur[0] - prev[0], cur[1] - prev[1])
-        if s_new >= s_old - 0.05:
+        # Acceptee si elle ne degrade pas l'accord ET si l'accord est BON dans au moins un des
+        # deux reperes. Carte du 13/10 : des corrections de 0,5 a 1 m acceptees a 0,15 / 0,15
+        # (ni l'un ni l'autre ne collait) y ont laisse des murs fantomes.
+        if s_new >= s_old - 0.05 and max(s_new, s_old) >= self.jump_min_score:
             self._m2o = cur
             self._event("correction_slam", jugee=True, saut_m=jump, score_ancien=s_old,
                         score_nouveau=s_new)
@@ -1044,6 +1051,7 @@ class NavSupervisor(Node):
             if pose is None:
                 return False, "pose inconnue (TF map->base_footprint)"
         else:
+            switched = False
             pose, how = self._locate(self.meta.get("last_pose") if self.meta else None)
             if pose is None:
                 # Pas sur la carte courante : peut-etre sur une AUTRE carte, qu'on completera.
@@ -1057,7 +1065,7 @@ class NavSupervisor(Node):
                 self._event("carte_quittee", vers=other, raison="robot sur une autre carte")
                 self._useMap(other)
                 self._event("chargee", raison="robot retrouve sur cette carte")
-                name, how = other, how2
+                name, how, switched = other, how2, True
             else:
                 better = self._otherIfBetter()
                 if better is not None:
@@ -1065,7 +1073,14 @@ class NavSupervisor(Node):
                     self._event("carte_quittee", vers=other, raison="autre carte meilleure")
                     self._useMap(other)
                     self._event("chargee", raison="robot mieux reconnu sur cette carte")
-                    name = other
+                    name, switched = other, True
+            final = self._lastOtherScore if switched else self._lastLocScore
+            if final is None or final < self.complete_min_score:
+                self._event("completion_refusee", score=final)
+                return False, ("carte %s : relocalisation trop faible pour la COMPLETER "
+                               "(score %.2f < %.2f) -- nouvelle carte (+ long), ou rapprocher "
+                               "le robot d'une zone bien cartographiee"
+                               % (name, final or 0.0, self.complete_min_score))
         ok, why = self._startSlam("mapping", self.store.posegraph_base(name), pose)
         if ok:
             self.loc, self.match = "ok", math.nan
