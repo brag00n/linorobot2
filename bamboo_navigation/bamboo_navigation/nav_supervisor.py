@@ -970,7 +970,7 @@ class NavSupervisor(Node):
                 return False, "aucune carte : + long pour une carte vierge"
             self._relocBusy, self.loc = True, "relocalisation"
             threading.Thread(target=self._resumeJob, daemon=True, name="nav_resume").start()
-            return True, "relocalisation sur %s lancee (pour la completer)" % self.map_name
+            return True, "relocalisation sur %s lancee" % self.map_name
         prior = self._jumpPending[1] if self._jumpPending else self._robotPose()
         if prior is None:
             return False, "relocalisation : pose inconnue"
@@ -1163,7 +1163,8 @@ class NavSupervisor(Node):
         try:
             with self._lock:
                 self._forcedMap = self._forcedName == self.map_name
-                ok, why = self._resumeMapping()
+                ok, why = self._resumeMapping() if self.submode == "exploration" else \
+                    self._resumeLocalization()
                 self._forcedMap = False
                 if ok:
                     ok2, why2 = self._nav2(True)
@@ -1197,30 +1198,44 @@ class NavSupervisor(Node):
             return False, ("carte %s sans graphe de poses (image seule) : la recartographier "
                            "(exploration)" % name)
         if pose is None:
-            pose, how = self._locate(self.meta.get("last_pose") if self.meta else None)
-            if pose is None:
-                # Pas sur la carte courante : peut-etre sur une AUTRE carte enregistree.
-                if self._forcedMap:        # carte choisie au + / - : elle, et elle seule
-                    other, pose, how2 = None, None, "carte forcee : autres cartes non essayees"
-                else:
-                    other, pose, how2 = self._locateOtherMaps()
-                if other is None:
-                    return False, "%s ; %s" % (how, how2)
-                self._event("carte_quittee", vers=other, raison="robot sur une autre carte")
-                self._useMap(other)
-                self._event("chargee", raison="robot retrouve sur cette carte")
-                name, how = other, how2
+            # PAS de relocalisation a l'entree, ni de rotation (demande utilisateur 2026-10-15 :
+            # « il ne doit rien faire tant que je ne lui ai pas donne d'ordre ») : R long.
+            self._mapWait = True
+            self.loc, self.match = "inconnue", math.nan
+            return True, "carte %s en attente : R long = relocaliser" % name
+        return self._startLocalization(name, pose, how)
+
+    def _resumeLocalization(self):
+        """R long en navigation EN ATTENTE : robot retrouve (carte courante, puis les autres
+        sauf carte forcee), slam_toolbox en localisation a cette pose."""
+        name = self.map_name
+        pose, how = self._locate(self.meta.get("last_pose") if self.meta else None)
+        if pose is None:
+            # Pas sur la carte courante : peut-etre sur une AUTRE carte enregistree.
+            if self._forcedMap:        # carte choisie au + / - : elle, et elle seule
+                other, pose, how2 = None, None, "carte forcee : autres cartes non essayees"
             else:
-                better = self._otherIfBetter()
-                if better is not None:
-                    other, pose, how = better
-                    self._event("carte_quittee", vers=other, raison="autre carte meilleure")
-                    self._useMap(other)
-                    self._event("chargee", raison="robot mieux reconnu sur cette carte")
-                    name = other
+                other, pose, how2 = self._locateOtherMaps()
+            if other is None:
+                return False, "%s ; %s" % (how, how2)
+            self._event("carte_quittee", vers=other, raison="robot sur une autre carte")
+            self._useMap(other)
+            self._event("chargee", raison="robot retrouve sur cette carte")
+            name, how = other, how2
+        else:
+            better = self._otherIfBetter()
+            if better is not None:
+                other, pose, how = better
+                self._event("carte_quittee", vers=other, raison="autre carte meilleure")
+                self._useMap(other)
+                self._event("chargee", raison="robot mieux reconnu sur cette carte")
+                name = other
+        return self._startLocalization(name, pose, how)
+
+    def _startLocalization(self, name, pose, how):
         ok, why = self._startSlam("localization", self.store.posegraph_base(name), pose)
         if ok:
-            self.loc, self.match, self._badT = "ok", math.nan, None
+            self.loc, self.match, self._badT, self._mapWait = "ok", math.nan, None, False
             self._event("localisation", pose=pose, comment=how)
         return ok, "navigation sur %s (%s) : %s" % (name, how, why)
 
@@ -1272,12 +1287,12 @@ class NavSupervisor(Node):
             ok, why = self._enterLocalization()
             if not ok:
                 return False, why
-            self._mapWait = False
             t1 = time.monotonic()
-            ok2, why2 = self._nav2(True)
-            if not ok2:
-                why += " ; Nav2 " + why2
-            why += " [slam %.0f s, Nav2 %.0f s]" % (t1 - t0, time.monotonic() - t1)
+            if not self._mapWait:          # en attente : pas de repere map, Nav2 plus tard
+                ok2, why2 = self._nav2(True)
+                if not ok2:
+                    why += " ; Nav2 " + why2
+                why += " [slam %.0f s, Nav2 %.0f s]" % (t1 - t0, time.monotonic() - t1)
         old, self.submode = self.submode, mode
         self._event("sous_mode", de=old, vers=mode)
         self.detail = "sous-mode %s : %s" % (mode, why)
@@ -1340,6 +1355,8 @@ class NavSupervisor(Node):
             self.pubEnable.publish(Bool(data=on))
 
     def _goto(self, wp, kind="dest"):
+        if self._mapWait:
+            return False, "carte %s pas encore localisee : R long (relocaliser)" % self.map_name
         if not self.nav.wait_for_server(timeout_sec=2.0):
             return False, "navigate_to_pose absent (Nav2 inactif ?)"
         goal = NavigateToPose.Goal()
@@ -1469,6 +1486,8 @@ class NavSupervisor(Node):
         if cmd == "goto":
             return self._gotoCmd(arg)
         if cmd == "relocalize":
+            if self.submode in ("exploration", "navigation") and self._mapWait:
+                return self._relocExplore()        # carte en attente : la reprendre
             if self.submode == "navigation":
                 return self._relocStart(arg == "global", "demande")
             if self.submode == "exploration" and self.slamMode == "mapping":
@@ -1482,6 +1501,8 @@ class NavSupervisor(Node):
         if cmd == "patrol":
             if self.patrol != "off":
                 return self._patrolStop("demande")
+            if self._mapWait:
+                return False, "ronde : carte %s pas encore localisee -- R long" % self.map_name
             return self._patrolStart()
         if cmd == "list":
             maps = ["%s (%s)" % (m["name"], m["kind"]) for m in self.store.list()]
