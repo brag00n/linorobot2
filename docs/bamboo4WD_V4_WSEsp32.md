@@ -406,18 +406,35 @@ en échec 13 → 0, débit 325 → 433 Mb/s.
    débit ÷ ~2 ;
 4. côté installation : rapprocher le répéteur de la box, ou les relier en filaire (CPL ou câble).
 
-**Piste différée — HUD en H.264 via MediaMTX** :
-- le flux `cam` actuel est l'image brute de la webcam (H.264 matériel recopié, `-c:v copy`),
-  **sans le HUD** ;
-- il faudrait un 2e chemin `hud` dans `docker/mediamtx.yml`, à la demande comme `cam` : ffmpeg
-  lit le MJPEG du HUD en local, encode en H.264 et publie vers MediaMTX ;
-- lecture : `http://<rpi>:8889/hud` (WebRTC) ;
-- **gain** : ~1 Mbit/s au lieu de 5 ; en WebRTC (UDP), un lien qui perd des paquets saute des
-  images au lieu d'accumuler du retard ;
-- **coût** : décodage JPEG + encodage H.264 en plus du dessin du HUD ;
-- **à vérifier d'abord** : l'encodeur matériel du RPi4 (`h264_v4l2m2m`, `/dev/video11`)
-  depuis le conteneur — absent de la liste des périphériques vidéo le 2026-10-16 ;
-- à défaut, x264 `ultrafast`, 640×480 à ~11 img/s ≈ 0,5 à 1 cœur, lourd avec NAV allumée.
+**HUD en H.264 via MediaMTX — FAIT le 2026-10-16** (validé : fluide, temps réel) :
+
+| Adresse | Lecture |
+|---|---|
+| `http://<rpi>:8889/hud` | WebRTC, navigateur, ~0,3 s — **à utiliser pour piloter** |
+| `http://<rpi>:8888/hud` | HLS, navigateur, 2 à 6 s |
+| `rtsp://<rpi>:8554/hud` | VLC, sans UDP |
+
+- **Principe** : chemin `hud` à la demande dans `docker/mediamtx.yml`. ffmpeg lit le MJPEG du
+  HUD (`localhost:8080`, `/video/stream`) et l'encode avec l'**encodeur matériel**
+  (`h264_v4l2m2m`) : ~0,4 Mbit/s mesuré au lieu de ~5, CPU quasi nul. En WebRTC, un Wi-Fi qui
+  perd des paquets fait sauter des images au lieu d'empiler du retard.
+- **Prérequis sur le RPi, HORS dépôt** (DietPi les coupe par défaut) :
+  - `blacklist bcm2835_codec` commenté dans `/etc/modprobe.d/dietpi-disable_rpi_codec.conf` ;
+  - `gpu_mem_256/512/1024=128` dans `/boot/config.txt` ;
+  - redémarrage. `/dev/video11` = `bcm2835-codec-encode`.
+  - Sauvegardes : `/boot/config.txt.bak_20261016`, `/root/dietpi-disable_rpi_codec.conf.bak_20261016`.
+  - **Une réinstallation de DietPi les remet** : refaire ces deux changements.
+- **MediaMTX sur le réseau de l'hôte** (`network_mode: host`, service `camera.h264`) :
+  - sur le réseau compose, WebRTC annonçait au navigateur ses IP internes (172.x), d'où une page
+    ouverte mais sans vidéo (« deadline exceeded while waiting connection ») ;
+  - en réseau hôte il annonce la vraie IP du RPi, limitée à `wlan0`
+    (`webrtcIPsFromInterfacesList`), même si la box en attribue une autre ;
+  - `webrtcIPsFromInterfacesExcludeList` n'existe pas en v1.21.0 : refusé au démarrage ;
+  - un changement de réseau exige `docker compose up -d --force-recreate camera.h264`
+    (`restart` ne suffit pas).
+- **Diagnostic** : `bamboo_diagnostics` lit les métriques par `host.docker.internal:9998`
+  (`extra_hosts: host-gateway`). Depuis le réseau local, le port 9998 répond 401 : seules la
+  boucle locale et les réseaux Docker ont la permission `metrics`.
 
 ---
 
