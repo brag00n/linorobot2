@@ -456,7 +456,10 @@ class NavSupervisor(Node):
         # odom en tient lieu.
         if self.tfl is not None and not self._tfOk("odom", "base_footprint"):
             miss.append("TF odom->base_footprint")
-        if self.submode in ("exploration", "navigation") and not self._tfOk("map", "odom"):
+        # Carte EN ATTENTE (R long / + long) : slam arrete volontairement, pas de repere map --
+        # ce n'est pas un manque (HUD du 2026-10-16 : « manque : TF map->odom » trompeur).
+        if self.submode in ("exploration", "navigation") and not self._mapWait and \
+                not self._tfOk("map", "odom"):
             miss.append("TF map->odom (slam_toolbox %s)" % (self.slamMode or "arrete"))
         return miss
 
@@ -1116,7 +1119,7 @@ class NavSupervisor(Node):
         # elle ne part que sur R long. Essai du 14/10 : chaque reessai de la manette relancait
         # une recherche sur toutes les cartes (refusee a 0,70 < 0,80), sans fin.
         self._mapWait = True
-        self.loc, self.match = "inconnue", math.nan
+        self.loc, self.match = "en attente", math.nan
         return True, ("carte %s en attente : R long = relocaliser pour la completer, + long = "
                       "carte vierge" % name)
 
@@ -1172,7 +1175,8 @@ class NavSupervisor(Node):
                     if not ok2:
                         why += " ; Nav2 " + why2
                 else:
-                    self.loc = "inconnue"
+                    self.loc = "en attente"
+                    why += " -- R long pour reessayer, + long = carte vierge"
                 self.detail = why
                 self._event("reprise_carte", ok=ok, detail=why)
                 (self.get_logger().info if ok else self.get_logger().warn)(why)
@@ -1202,7 +1206,7 @@ class NavSupervisor(Node):
             # PAS de relocalisation a l'entree, ni de rotation (demande utilisateur 2026-10-15 :
             # « il ne doit rien faire tant que je ne lui ai pas donne d'ordre ») : R long.
             self._mapWait = True
-            self.loc, self.match = "inconnue", math.nan
+            self.loc, self.match = "en attente", math.nan
             return True, "carte %s en attente : R long = relocaliser" % name
         return self._startLocalization(name, pose, how)
 
@@ -1441,6 +1445,9 @@ class NavSupervisor(Node):
                 self.get_logger().error("commande %s : %s" % (req.command, e))
         resp.success, resp.message = ok, msg
         self.detail = msg
+        if self._mapWait and not self._relocBusy and req.command.strip() in (
+                "cancel_all", "cancel", "select"):
+            self.detail = "%s | carte %s en attente : R long / + long" % (msg, self.map_name)
         self._publish()
         return resp
 
