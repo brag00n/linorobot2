@@ -406,6 +406,13 @@ en échec 13 → 0, débit 325 → 433 Mb/s.
    débit ÷ ~2 ;
 4. côté installation : rapprocher le répéteur de la box, ou les relier en filaire (CPL ou câble).
 
+**Portail : `http://<rpi>:8000/`** — page d'accueil de tous les flux et outils du robot (HUD
+WebRTC / MJPEG / HLS, caméra brute, flux ROS, RTSP pour VLC, Foxglove, Portainer). Service compose
+`portail` (profil `boot`) : busybox httpd sert `docker/portail/index.html`, page statique sans
+ressource extérieure ; ses liens sont construits dans le navigateur depuis l'adresse de la page,
+donc rien à changer si l'IP du RPi change. La page de `:8080` (web_video_server) n'est pas
+modifiable : elle est générée par le paquet binaire.
+
 **HUD en H.264 via MediaMTX — FAIT le 2026-10-16** (validé : fluide, temps réel) :
 
 | Adresse | Lecture |

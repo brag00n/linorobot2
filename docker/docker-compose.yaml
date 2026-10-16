@@ -315,6 +315,22 @@ services:
       - ./mediamtx.yml:/mediamtx.yml:ro
       - /dev:/dev
 
+#--- Portail (2026-10-16) : page d'accueil des flux et outils du robot, http://<rpi>:8000/.
+#    Page STATIQUE (docker/portail/index.html) servie par busybox httpd (~4 Mo, aucune
+#    dependance) : ses liens sont construits dans le navigateur depuis l'adresse qui a servi la
+#    page, donc rien a configurer si l'IP du RPi change. web_video_server (:8080) n'est pas
+#    touche : sa page de topics est generee par le paquet binaire et ne prend pas de lien.
+  portail:
+    image: busybox:latest
+    profiles: ["boot"]
+    restart: unless-stopped
+    command: httpd -f -p 8000 -h /www
+    read_only: true
+    volumes:
+      - ./portail:/www:ro
+    ports:
+      - "8000:8000"
+
 #--- Driver ESP32 (pont MAVLink) : proprietaire du serie, telemetrie + cmd_vel gatee.
 #    LECTURE SEULE par defaut (enable_cmd_vel:=false du YAML) ; L6 : enable_cmd_vel:=true.
   driver.real:

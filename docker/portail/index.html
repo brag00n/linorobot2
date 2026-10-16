@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bamboo · Poste de bord</title>
+<!--
+  Portail des flux et outils du robot BambooWS, servi sur :8000 par le service compose
+  `portail` (busybox httpd, docker/docker-compose.yaml). Page STATIQUE et AUTONOME : aucune
+  police ni script exterieur (le robot n'a pas forcement Internet), et AUCUNE adresse en dur --
+  chaque lien est construit depuis l'hote qui a servi la page (location.hostname), donc il suit
+  le RPi meme si la box lui donne une autre IP.
+-->
+<style>
+  /* Plan : un poste de bord -- en-tete en plaque d'immatriculation du robot, puis des rangees
+     de "prises" groupees par usage (piloter, regarder, superviser), chacune avec son port. */
+  :root {
+    --bg: #f3f5f2;          /* gris-vert tres clair, celui d'un chassis peint */
+    --panel: #ffffff;
+    --ink: #1c2420;
+    --muted: #5d6a63;
+    --rule: #d7ddd8;
+    --accent: #2f7d4f;      /* vert bambou */
+    --accent-ink: #ffffff;
+    --live: #2f7d4f;
+    --warn: #b7791f;
+    --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121815; --panel: #1a221e; --ink: #e4ebe6; --muted: #93a39a; --rule: #2b3631;
+      --accent: #5fbf85; --accent-ink: #0d1411; --live: #5fbf85; --warn: #e0a84a;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink); font: 15px/1.5 var(--sans);
+    padding: max(20px, env(safe-area-inset-top)) 16px max(28px, env(safe-area-inset-bottom));
+  }
+  .wrap { max-width: 980px; margin: 0 auto; display: grid; gap: 28px;
+    grid-template-columns: minmax(0, 1fr); }
+
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 22px; }
+  .plate {
+    font: 700 22px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase;
+    padding: 10px 14px; border: 2px solid var(--ink); border-radius: 6px; background: var(--panel);
+  }
+  .plate small { display: block; font: 500 11px/1.2 var(--mono); letter-spacing: .1em;
+    color: var(--muted); margin-top: 6px; }
+  .host { font: 13px/1.4 var(--mono); color: var(--muted); }
+  .host b { color: var(--ink); font-weight: 600; }
+
+  section { display: grid; gap: 12px; min-width: 0; }
+  h2 { margin: 0; font: 600 12px/1 var(--sans); letter-spacing: .14em; text-transform: uppercase;
+    color: var(--muted); display: flex; align-items: center; gap: 10px; }
+  h2::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); }
+  a.card {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-content: start;
+    padding: 16px 16px 14px; background: var(--panel); border: 1px solid var(--rule);
+    border-radius: 10px; color: inherit; text-decoration: none; min-width: 0;
+    transition: border-color .15s, transform .15s;
+  }
+  a.card:hover { border-color: var(--accent); transform: translateY(-1px); }
+  a.card:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .name { font-weight: 650; font-size: 16px; }
+  .port { font: 600 12px/1.6 var(--mono); color: var(--muted); border: 1px solid var(--rule);
+    border-radius: 4px; padding: 0 6px; align-self: start; font-variant-numeric: tabular-nums; }
+  .what { grid-column: 1 / -1; color: var(--muted); font-size: 14px; }
+  .url { grid-column: 1 / -1; font: 12px/1.4 var(--mono); color: var(--muted);
+    overflow-wrap: anywhere; }
+  .tags { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+  .tag { font: 600 11px/1 var(--sans); letter-spacing: .04em; padding: 5px 7px; border-radius: 99px;
+    background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+  .tag.slow { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+
+  /* La prise principale : le HUD a piloter, mise en avant seule. */
+  a.card.main { background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
+    padding: 20px; }
+  a.card.main .what, a.card.main .url { color: var(--accent-ink); opacity: .85; }
+  a.card.main .port { color: var(--accent-ink); border-color: currentColor; opacity: .85; }
+  a.card.main .name { font-size: 20px; }
+  a.card.main .tag { background: color-mix(in srgb, var(--accent-ink) 22%, transparent);
+    color: var(--accent-ink); }
+
+  .copy { font: 12px/1.4 var(--mono); color: var(--muted); display: grid; gap: 6px; }
+  .copy code { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
+    padding: 8px 10px; overflow-x: auto; white-space: nowrap; color: var(--ink); }
+  footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule); padding-top: 14px; }
+  @media (prefers-reduced-motion: reduce) { a.card { transition: none; } a.card:hover { transform: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="plate">BambooWS<small>bamboo4WD V4 · RPi4 + ESP32</small></div>
+    <div class="host">robot joint par <b id="host">…</b><br>liens construits depuis cette adresse</div>
+  </header>
+
+  <section aria-labelledby="h-pilot">
+    <h2 id="h-pilot">Piloter</h2>
+    <div class="grid">
+      <a class="card main" data-port="8889" data-path="/hud/">
+        <span class="name">HUD temps réel</span><span class="port">:8889</span>
+        <span class="what">Image annotée (modes, NAV, carte, batterie) en H.264. Le retard ne s'accumule pas, même si le Wi-Fi perd des paquets.</span>
+        <span class="url"></span>
+        <span class="tags"><span class="tag">WebRTC</span><span class="tag">~0,3 s</span><span class="tag">recommandé</span></span>
+      </a>
+      <a class="card" data-port="8080" data-path="/stream?topic=/video/stream&amp;type=ros_compressed">
+        <span class="name">HUD MJPEG</span><span class="port">:8080</span>
+        <span class="what">Même image, sans encodage H.264. Accumule du retard quand le Wi-Fi faiblit.</span>
+        <span class="url"></span>
+        <span class="tags"><span class="tag">MJPEG</span><span class="tag slow">retard possible</span></span>
+      </a>
+      <a class="card" data-port="8888" data-path="/hud/">
+        <span class="name">HUD HLS</span><span class="port">:8888</span>
+        <span class="what">Lecture la plus robuste, sans UDP. Pour regarder, pas pour piloter.</span>
+        <span class="url"></span>
+        <span class="tags"><span class="tag">HLS</span><span class="tag slow">2 à 6 s</span></span>
+      </a>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-look">
+    <h2 id="h-look">Regarder</h2>
+    <div class="grid">
+      <a class="card" data-port="8080" data-path="/stream?topic=/video/raw&amp;type=ros_compressed">
+        <span class="name">Caméra brute</span><span class="port">:8080</span>
+        <span class="what">Image de la webcam, sans incrustation.</span>
+        <span class="url"></span>
+        <span class="tags"><span class="tag">MJPEG</span></span>
+      </a>
+      <a class="card" data-port="8080" data-path="/">
+        <span class="name">Flux ROS</span><span class="port">:8080</span>
+        <span class="what">Liste des topics vidéo de web_video_server : stream, viewer, snapshot.</span>
+        <span class="url"></span>
+        <span class="tags"><span class="tag">web_video_server</span></span>
+      </a>
+    </div>
+    <div class="copy">
+      <span>Dans VLC (Média › Ouvrir un flux réseau) :</span>
+      <code id="rtsp"></code>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-sup">
+    <h2 id="h-sup">Superviser</h2>
+    <div class="grid">
+      <a class="card" data-scheme="https" data-ext="https://app.foxglove.dev/~/view?ds=foxglove-websocket&amp;ds.url=ws%3A%2F%2F{host}%3A8765">
+        <span class="name">Foxglove</span><span class="port">:8765</span>
+        <span class="what">Topics, carte, lidar et diagnostics en direct. Ouvre Foxglove sur la connexion du robot.</span>
+        <span class="url"></span>
+        <span class="tags"><span class="tag">WebSocket</span><span class="tag slow">fermer pendant la NAV</span></span>
+      </a>
+      <a class="card" data-port="9002" data-path="/">
+        <span class="name">Portainer</span><span class="port">:9002</span>
+        <span class="what">Conteneurs Docker du robot : état, journaux, redémarrages.</span>
+        <span class="url"></span>
+        <span class="tags"><span class="tag">Docker</span></span>
+      </a>
+    </div>
+  </section>
+
+  <footer>Les flux H.264 démarrent à la demande : la première image arrive après 1 à 3 s. Un seul onglet HUD à la fois quand la navigation tourne.</footer>
+</div>
+<script>
+  // Toutes les adresses partent de l'hote qui a servi la page : rien n'est ecrit en dur.
+  (function () {
+    var host = location.hostname || "192.168.1.164";
+    document.getElementById("host").textContent = host;
+    document.getElementById("rtsp").textContent = "rtsp://" + host + ":8554/hud";
+    document.querySelectorAll("a.card").forEach(function (a) {
+      var url = a.dataset.ext
+        ? a.dataset.ext.replace("{host}", encodeURIComponent(host))
+        : "http://" + host + ":" + a.dataset.port + a.dataset.path;
+      a.href = url;
+      a.target = "_blank";
+      a.rel = "noopener";
+      var u = a.querySelector(".url");
+      if (u) u.textContent = a.dataset.ext ? "ws://" + host + ":8765" : url.replace(/^http:\/\//, "");
+    });
+  })();
+</script>
+</body>
+</html>
