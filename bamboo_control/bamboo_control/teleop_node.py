@@ -351,6 +351,7 @@ class TeleopNode(Node):
         self._navWantT, self._navRetryAt, self._navSentT = 0.0, 0.0, 0.0
         self._navStarted = False      # allumee au moins une fois depuis le dernier A long
         self._navBusy = 0             # commandes au superviseur sans reponse encore
+        self._subBusy = False         # changement de sous-mode (croix) sans reponse encore
         self._navOffSince = None      # retombee a l'arret depuis (grace, cf. _navStackTick)
         self._navStackCli = self.create_client(SetBool, "/bamboo/nav_stack")
         self.create_timer(1.0, self._navStackTick)
@@ -1235,6 +1236,12 @@ class TeleopNode(Node):
 
     def _cycleGroup(self, step):
         g = self._groups()
+        if self._mode == "navigation" and self._subBusy:
+            # Changement de sous-mode EN COURS (slam relance, 20 a 40 s) : la croix est ignoree.
+            # Essai du 2026-10-16 : 4 bascules en 3 min, slam relance a chaque fois, charge 26.
+            self.get_logger().warn("navigation : changement de sous-mode en cours, croix "
+                                   "ignoree")
+            return
         if len(g) > 1:
             self._group = (self._group + step) % len(g)
             self.get_logger().info("groupe %s / %s" % (self._mode, self._groupName()))
@@ -1242,8 +1249,12 @@ class TeleopNode(Node):
             # pose transmises, sans relocalisation).
             if self._mode == "navigation" and self._navOn() and \
                     self._groupName() in ("exploration", "navigation"):
-                self._nav(self._groupName())
+                self._subBusy = True
+                self._nav(self._groupName(), then=self._onSubDone)
         self._publishState()
+
+    def _onSubDone(self, _r):
+        self._subBusy = False
 
     def _requestMode(self, which):
         if self._modeInFlight:
@@ -1618,6 +1629,8 @@ class TeleopNode(Node):
         if not self._navCli.service_is_ready():
             self.get_logger().warn("navigation : %s absent (conteneur navigation arrete ?)"
                                    % self._navCli.srv_name)
+            if then is not None:
+                then(None)
             return
         act = self._curAction
         if act:

@@ -130,6 +130,10 @@ class NavSupervisor(Node):
         self.jump_m = float(d("jump_m", 0.5).value)
         self.jump_rad = float(d("jump_rad", 0.35).value)
         self.jump_min_score = float(d("jump_min_score", 0.35).value)
+        self.jump_big_m = float(d("jump_big_m", 1.0).value)
+        self.jump_big_min_score = float(d("jump_big_min_score", 0.50).value)
+        # Destination refusee a moins de cette distance d'une autre (p1 / p2 doubles, 16/10).
+        self.dest_min_sep_m = float(d("dest_min_sep_m", 0.30).value)
         # COMPLETER une carte exige une relocalisation NETTE : partir d'une pose douteuse
         # ajoute des scans au mauvais endroit (14/10 : depart faux de 7 m, recale ensuite).
         self.complete_min_score = float(d("complete_min_score", 0.80).value)
@@ -883,7 +887,10 @@ class NavSupervisor(Node):
         # Acceptee si elle ne degrade pas l'accord ET si l'accord est BON dans au moins un des
         # deux reperes. Carte du 13/10 : des corrections de 0,5 a 1 m acceptees a 0,15 / 0,15
         # (ni l'un ni l'autre ne collait) y ont laisse des murs fantomes.
-        if s_new >= s_old - 0.05 and max(s_new, s_old) >= self.jump_min_score:
+        # Un GRAND recalage exige un accord NET (essai du 2026-10-16 : 1,39 m accepte a 0,38,
+        # puis murs approximatifs et sauts dans la meme zone).
+        need = self.jump_big_min_score if jump >= self.jump_big_m else self.jump_min_score
+        if s_new >= s_old - 0.05 and max(s_new, s_old) >= need:
             self._m2o = cur
             self._event("correction_slam", jugee=True, saut_m=jump, score_ancien=s_old,
                         score_nouveau=s_new)
@@ -1700,6 +1707,11 @@ class NavSupervisor(Node):
         pose = self._robotPose()
         if pose is None:
             return False, "pose inconnue (TF map->base_footprint) : passer en NAV"
+        for o in self.meta.get("destinations", []):
+            if math.hypot(float(o["x"]) - pose[0], float(o["y"]) - pose[1]) < self.dest_min_sep_m:
+                return False, ("destination refusee : %s est a moins de %.1f m (deplacer le "
+                               "robot, ou Y long pour la supprimer)" % (o["name"],
+                                                                        self.dest_min_sep_m))
         d = map_io.dest_add(self.meta, pose[0], pose[1], pose[2], name)
         self.sel["dest"] = d["n"]
         self._saveMeta()
