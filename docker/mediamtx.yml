@@ -13,12 +13,20 @@ logLevel: info
 rtspAddress: :8554
 hlsAddress: :8888
 webrtcAddress: :8889
+# WebRTC : MediaMTX annonce au navigateur les IP de SES interfaces. Le conteneur est sur le
+# RESEAU DE L'HOTE (docker-compose.yaml, camera.h264) : ce sont donc celles du RPi, toujours
+# justes. Sur le reseau compose il n'annoncait que 172.x, injoignable -> page ouverte mais video
+# jamais recue (« deadline exceeded while waiting connection », 2026-10-16). On n'annonce que
+# l'interface Wi-Fi : les ponts Docker (docker0, br-*) feraient essayer au navigateur des
+# adresses mortes. (La liste d'EXCLUSION n'existe pas en v1.21.0 : refusee au demarrage.)
+webrtcIPsFromInterfacesList: [wlan0]
 
 # --- Metriques pour le diagnostic (lot DIAGNOSTICS, observateur bamboo_health) -----------
 # METRIQUES et non API, et c'est le choix de securite : l'action `api` permet aussi de
 # RECONFIGURER le serveur, `metrics` ne fait que LIRE (format Prometheus : etat des chemins,
-# octets, lecteurs). Le port 9998 n'est PAS publie sur l'hote (cf. docker-compose.yaml) : seul
-# le reseau compose l'atteint.
+# octets, lecteurs). Depuis le passage au RESEAU DE L'HOTE (2026-10-16), le port 9998 ecoute sur
+# le reseau local ; ce sont les permissions ci-dessous qui le gardent : `metrics` n'est accorde
+# qu'a la boucle locale et aux reseaux Docker, un poste du reseau local est refuse.
 metrics: yes
 metricsAddress: :9998
 
@@ -50,6 +58,7 @@ authInternalUsers:
     ips: ["172.16.0.0/12"]
     permissions:
       - action: metrics
+  # (reseau de l'hote : le diagnostic arrive par la passerelle Docker, dans 172.16.0.0/12)
 
 paths:
   # Flux camera : rtsp://<rpi>:8554/cam | http://<rpi>:8888/cam (HLS) | http://<rpi>:8889/cam (WebRTC)
@@ -58,5 +67,24 @@ paths:
     runOnDemand: >
       ffmpeg -f v4l2 -input_format h264 -video_size 640x480 -framerate 30
       -i /dev/bamboocam -c:v copy -f rtsp rtsp://localhost:8554/$MTX_PATH
+    runOnDemandRestart: yes
+    runOnDemandCloseAfter: 15s
+
+  # Flux HUD (image annotee de l'overlay) en H.264 : rtsp://<rpi>:8554/hud |
+  # http://<rpi>:8889/hud (WebRTC, ~0,3 s) | http://<rpi>:8888/hud (HLS).
+  # ffmpeg lit le MJPEG du HUD servi par web_video_server (service bamboo_video, port 8080
+  # publie sur l'hote : localhost puisque MediaMTX est sur le reseau de l'hote) et l'ENCODE
+  # en H.264 avec l'encodeur MATERIEL du RPi4 (h264_v4l2m2m,
+  # /dev/video11 : pilote bcm2835_codec + gpu_mem 128, actives le 2026-10-16 ; DietPi les
+  # coupe par defaut). Pourquoi : en WebRTC un Wi-Fi qui perd des paquets fait SAUTER des
+  # images, la ou le MJPEG (TCP) accumulait un retard sans fin (cf. doc §6.7). ~1 Mbit/s au
+  # lieu de ~5. -g 20 : une image cle toutes les 2 s, pour qu'un lecteur qui arrive (ou un
+  # paquet perdu) retrouve vite l'image. A LA DEMANDE comme `cam` : rien ne tourne au repos.
+  hud:
+    runOnDemand: >
+      ffmpeg -hide_banner -loglevel warning -fflags nobuffer -f mjpeg -r 10
+      -i http://localhost:8080/stream?topic=/video/stream&type=ros_compressed
+      -c:v h264_v4l2m2m -b:v 1200k -g 20 -pix_fmt yuv420p
+      -f rtsp rtsp://localhost:8554/$MTX_PATH
     runOnDemandRestart: yes
     runOnDemandCloseAfter: 15s

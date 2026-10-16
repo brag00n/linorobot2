@@ -140,7 +140,7 @@ class HealthNode(Node):
         self._gpRateWarn = float(p("gamepad_state_warn_hz", 1.0).value)
 
         # MediaMTX, par ses metriques (lecture seule).
-        self._mtxUrl = p("mediamtx_metrics_url", "http://camera.h264:9998/metrics").value
+        self._mtxUrl = p("mediamtx_metrics_url", "http://host.docker.internal:9998/metrics").value
         self._mtxTimeout = float(p("mediamtx_timeout_s", 1.0).value)
 
         # Systeme du RPi. Seuils a recaler a T26 sur les mesures reelles.

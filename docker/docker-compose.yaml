@@ -300,20 +300,20 @@ services:
 #    hors stack ROS (n'etend pas base). Voir docker/mediamtx.yml.
   camera.h264:
     image: bluenviron/mediamtx:latest-ffmpeg
-    hostname: mediamtx
     profiles: ["boot"]          # cf. rosbridge ; source a la demande, donc gratuit au repos
     restart: unless-stopped
-    networks:
-    - linorobot2.network
+    # RESEAU DE L'HOTE (2026-10-16) : WebRTC doit annoncer au navigateur une IP JOIGNABLE. Sur
+    # le reseau compose, MediaMTX ne voyait que ses adresses internes (172.x) et la video ne
+    # venait jamais ; ici il voit les interfaces du RPi et annonce sa vraie IP tout seul, meme si
+    # la box en attribue une autre. Ports 8554 RTSP, 8888 HLS, 8889 WebRTC, 8189/udp ICE, 9998
+    # metriques : ouverts directement sur l'hote (plus de `ports:`). Revers : plus de nom de
+    # service -- le HUD est lu sur localhost:8080 (publie par bamboo_video), et le diagnostic
+    # joint les metriques par host.docker.internal.
+    network_mode: host
     privileged: true
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
       - /dev:/dev
-    ports:
-      - "8554:8554"       # RTSP (VLC, faible latence)
-      - "8888:8888"       # HLS (navigateur)
-      - "8889:8889"       # WebRTC (navigateur, faible latence)
-      - "8189:8189/udp"   # WebRTC ICE
 
 #--- Driver ESP32 (pont MAVLink) : proprietaire du serie, telemetrie + cmd_vel gatee.
 #    LECTURE SEULE par defaut (enable_cmd_vel:=false du YAML) ; L6 : enable_cmd_vel:=true.
@@ -571,6 +571,9 @@ services:
     tty: true
     networks:
     - linorobot2.network
+    # MediaMTX (camera.h264) est sur le RESEAU DE L'HOTE : ses metriques se joignent par l'hote.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ipc: host
     volumes:
       - ..:/root/linorobot2_ws/src/linorobot2:ro

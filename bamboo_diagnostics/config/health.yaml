@@ -33,7 +33,7 @@ bamboo_health:
     gamepad_state_warn_hz: 1.0        # bamboo_teleop publie a 2 Hz
 
     # MediaMTX : metriques Prometheus, lecture seule (cf. docker/mediamtx.yml).
-    mediamtx_metrics_url: "http://camera.h264:9998/metrics"
+    mediamtx_metrics_url: "http://host.docker.internal:9998/metrics"
     mediamtx_timeout_s: 1.0
 
     # Systeme du RPi.
