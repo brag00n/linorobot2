@@ -360,6 +360,65 @@ mesures.
 - Étape 2 (gscam2) : gstreamer + build colcon de gscam2 — bloc **commenté** dans le Dockerfile,
   à décommenter une fois l'étape validée.
 
+### 6.7 HUD en retard au navigateur : Wi-Fi, et piste H.264 du HUD (différée, 2026-10-16)
+
+**Symptôme** : HUD (`:8080/stream?topic=/video/stream&type=ros_compressed`) en retard, différent
+d'un navigateur à l'autre, que F5 ne rattrape pas.
+
+**Ce n'était PAS le robot** — mesures dans les conteneurs (`ros2 topic hz` / `delay`) :
+caméra brute 32 img/s, retard 24 ms ; `/video/stream` 12 img/s ; HUD 11 img/s, retard 47 ms.
+
+**C'était le Wi-Fi** :
+- ping PC → robot **35 % de pertes** ;
+- connexions TCP du HUD vues dans le réseau du conteneur `bamboo_video`
+  (`nsenter -t <pid> -n ss -tni`) : **25 % de retransmissions**, `cwnd 2`, 120 à 130 Ko en
+  attente d'envoi ;
+- MJPEG = flux TCP : les images s'empilent dans l'envoi et le retard ne se résorbe jamais
+  (chaque navigateur a le sien) ;
+- débit d'un flux : **~640 Ko/s ≈ 5 Mbit/s** (80 Ko/image à qualité JPEG 80, 12 img/s), par
+  navigateur.
+
+**Réseau** : box Free + répéteur, SSID `tiol01`.
+
+| Point d'accès | Bande | Signal vu du robot |
+|---|---|---|
+| Répéteur `8C:97:EA:F0:69:6C` (utilisé par le robot) | 5 GHz | −44 dBm |
+| Répéteur `…69:68` | 2,4 GHz | −39 dBm |
+| Box Free `DC:00:B0:89:DC:16` | 2,4 GHz | −73 dBm |
+
+Le Wi-Fi 5 GHz de la box n'est pas visible depuis le robot. Le maillon fragile est
+**répéteur ↔ box**, pas robot ↔ répéteur.
+
+**Remède constaté** : un redémarrage du RPi (même point d'accès) → 0 % de pertes, renvois Wi-Fi
+en échec 13 → 0, débit 325 → 433 Mb/s.
+
+**Pièges de diagnostic** :
+- la box est en **192.168.1.254**, pas en .1 (« No route to host » vers .1 n'est pas un
+  symptôme) ;
+- les connexions au `:8080` toutes les 30 s viennent de `camera_fps_node`, pas des navigateurs ;
+- `ss` sur l'hôte ne voit pas les connexions des conteneurs (réseau bridge) : passer par
+  `nsenter`.
+
+**Si ça revient** :
+1. un seul navigateur sur le HUD quand NAV est allumée ;
+2. relancer le Wi-Fi du robot (pas tout le RPi) ;
+3. qualité JPEG 80 → 50 (`jpeg_quality`, `bamboo_videotracking/config/videotracking.yaml`) :
+   débit ÷ ~2 ;
+4. côté installation : rapprocher le répéteur de la box, ou les relier en filaire (CPL ou câble).
+
+**Piste différée — HUD en H.264 via MediaMTX** :
+- le flux `cam` actuel est l'image brute de la webcam (H.264 matériel recopié, `-c:v copy`),
+  **sans le HUD** ;
+- il faudrait un 2e chemin `hud` dans `docker/mediamtx.yml`, à la demande comme `cam` : ffmpeg
+  lit le MJPEG du HUD en local, encode en H.264 et publie vers MediaMTX ;
+- lecture : `http://<rpi>:8889/hud` (WebRTC) ;
+- **gain** : ~1 Mbit/s au lieu de 5 ; en WebRTC (UDP), un lien qui perd des paquets saute des
+  images au lieu d'accumuler du retard ;
+- **coût** : décodage JPEG + encodage H.264 en plus du dessin du HUD ;
+- **à vérifier d'abord** : l'encodeur matériel du RPi4 (`h264_v4l2m2m`, `/dev/video11`)
+  depuis le conteneur — absent de la liste des périphériques vidéo le 2026-10-16 ;
+- à défaut, x264 `ultrafast`, 640×480 à ~11 img/s ≈ 0,5 à 1 cœur, lourd avec NAV allumée.
+
 ---
 
 ## 7. État d'avancement
