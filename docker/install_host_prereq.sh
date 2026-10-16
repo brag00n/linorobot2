@@ -272,6 +272,79 @@ else
 fi
 
 say ""
+
+# ========================================================================================
+# 3. Encodeur H.264 MATERIEL du RPi — CONDITION DU FLUX HUD EN WebRTC (`hud`, mediamtx.yml)
+# ========================================================================================
+# Le chemin MediaMTX `hud` encode l'image du HUD en H.264 avec `h264_v4l2m2m`, donc avec le
+# bloc d'encodage du VideoCore (/dev/video11, `bcm2835-codec-encode`). Sans lui le flux ne
+# demarre pas, et le repli logiciel (x264) couterait 0,5 a 1 coeur, intenable NAV allumee.
+# DietPi le coupe par DEUX reglages, comme la BT (cf. § 2) :
+#   1. `/etc/modprobe.d/dietpi-disable_rpi_codec.conf` blackliste `bcm2835_codec` ;
+#   2. `gpu_mem_*=16` dans config.txt : 16 Mo au GPU, trop peu pour l'encodeur (128 Mo).
+# On COMMENTE la ligne du blacklist plutot que de supprimer le fichier : DietPi le reconnait
+# toujours, et le retour arriere est evident. Le reglage memoire ne vaut qu'au boot suivant.
+# Mis en place a la main le 2026-10-16, valide le meme jour (flux fluide, temps reel).
+say "=== 3. Encodeur H.264 materiel (prerequis au flux HUD en WebRTC) ==="
+
+CODEC_BLACKLIST=/etc/modprobe.d/dietpi-disable_rpi_codec.conf
+GPU_MEM_MIN=128
+
+if [ "$IS_RPI" != "1" ]; then
+    ok "hote non-RPi : pas d'encodeur VideoCore"
+elif [ -z "$CONFIG_TXT" ]; then
+    warn "aucun config.txt trouve : verifier gpu_mem (>= $GPU_MEM_MIN) et le pilote bcm2835_codec"
+else
+    # ETAT REEL d'abord : /dev/video11 nomme bcm2835-codec-encode, c'est la seule preuve.
+    enc_ok=0
+    for d in /sys/class/video4linux/video*; do
+        [ "$(cat "$d/name" 2>/dev/null)" = "bcm2835-codec-encode" ] && { enc_ok=1; enc_dev="/dev/$(basename "$d")"; }
+    done
+    [ "$enc_ok" = "1" ] && ok "encodeur present : $enc_dev (bcm2835-codec-encode)"
+
+    # Couche 1 : le blacklist.
+    if [ -f "$CODEC_BLACKLIST" ] && grep -qE '^[[:blank:]]*blacklist[[:blank:]]+bcm2835_codec' "$CODEC_BLACKLIST"; then
+        if [ "$APPLY" = "1" ]; then
+            cp -a "$CODEC_BLACKLIST" "$CODEC_BLACKLIST.avant-install" 2>/dev/null
+            sed -i -E 's/^[[:blank:]]*blacklist[[:blank:]]+bcm2835_codec.*/# blacklist bcm2835_codec  (reactive par install_host_prereq.sh : encodeur H.264 du HUD)/' "$CODEC_BLACKLIST"
+            act "bcm2835_codec retire du blacklist ($CODEC_BLACKLIST, sauvegarde .avant-install)"
+            # Chargeable tout de suite si la memoire GPU suffit deja ; sinon au reboot.
+            modprobe bcm2835_codec >/dev/null 2>&1 || true
+        else
+            warn "bcm2835_codec blackliste par $CODEC_BLACKLIST : le flux hud ne pourra pas encoder"
+        fi
+    else
+        ok "bcm2835_codec non blackliste"
+    fi
+
+    # Couche 2 : la memoire GPU. Les trois cles gpu_mem_<RAM> de DietPi, et la cle generique :
+    # le firmware applique celle de la taille de RAM reelle, on les met donc TOUTES au minimum.
+    low=""
+    for k in gpu_mem gpu_mem_256 gpu_mem_512 gpu_mem_1024; do
+        v="$(sed -n -E "s/^[[:blank:]]*$k=([0-9]+).*/\1/p" "$CONFIG_TXT" | tail -n1)"
+        [ -n "$v" ] && [ "$v" -lt "$GPU_MEM_MIN" ] && low="$low $k=$v"
+    done
+    if [ -z "$low" ]; then
+        ok "memoire GPU suffisante (>= $GPU_MEM_MIN Mo, ou non bornee dans $CONFIG_TXT)"
+    elif [ "$APPLY" = "1" ]; then
+        [ -f "$CONFIG_TXT.avant-install" ] || cp -a "$CONFIG_TXT" "$CONFIG_TXT.avant-install"
+        for kv in $low; do
+            k="${kv%%=*}"
+            sed -i -E "s/^([[:blank:]]*$k=)[0-9]+/\1$GPU_MEM_MIN/" "$CONFIG_TXT"
+        done
+        act "memoire GPU portee a $GPU_MEM_MIN Mo :$low -> $GPU_MEM_MIN (sauvegarde $CONFIG_TXT.avant-install)"
+        reboot_required=1
+    else
+        warn "memoire GPU trop faible pour l'encodeur :$low (il faut $GPU_MEM_MIN Mo, REBOOT ensuite)"
+    fi
+
+    # Reglages conformes mais encodeur toujours absent : c'est le reboot qui manque.
+    if [ "$enc_ok" != "1" ] && [ -z "$low" ] && [ "$reboot_required" != "1" ]; then
+        warn "encodeur absent malgre des reglages conformes : un reboot devrait le faire apparaitre"
+    fi
+fi
+
+say ""
 say "=== bilan ==="
 if [ "$todo" = "0" ]; then
     say "  hote conforme."
@@ -281,9 +354,10 @@ fi
 if [ "$reboot_required" = "1" ]; then
     # Un SEUL reboot pour les deux reglages : ils vivent dans le meme fichier, applique une
     # fois au boot. D'ou leur regroupement ici plutot qu'un script par sujet.
-    say "  REBOOT REQUIS pour appliquer les changements de $CONFIG_TXT (brochage UART et/ou"
-    say "  radio BT). La liberation sysfs de GPIO14 tient jusque-la. Verifier ensuite :"
+    say "  REBOOT REQUIS pour appliquer les changements de $CONFIG_TXT (brochage UART, radio BT"
+    say "  et/ou memoire GPU). La liberation sysfs de GPIO14 tient jusque-la. Verifier ensuite :"
     say "    docker compose --profile tools run --rm -e CHECK_ONLY=1 flash.esp32   # voie TX"
     say "    hciconfig -a                                                         # radio BT"
+    say "    cat /sys/class/video4linux/video11/name    # bcm2835-codec-encode (flux hud)"
 fi
 exit 0

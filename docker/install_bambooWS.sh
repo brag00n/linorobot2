@@ -6,7 +6,8 @@
 # declaratif -- images, montages, peripheriques, ports, profil `boot`, `restart:
 # unless-stopped`. Ce script ne fait donc QUE ce que Docker ne peut structurellement pas
 # faire, et rien de plus :
-#   - le multiplexage des broches du SoC (/boot/config.txt), decide par le firmware au boot ;
+#   - le multiplexage des broches du SoC et la memoire GPU (/boot/config.txt), decides par le
+#     firmware au boot, et le pilote de l'encodeur H.264 materiel (flux HUD en WebRTC) ;
 #   - l'installation du demon Docker lui-meme, et l'appartenance au groupe `docker` ;
 #   - les regles udev, qui vivent dans le noyau de l'hote ;
 #   - le service Bluetooth de l'hote (l'appairage est hote et interactif) ;
@@ -53,7 +54,7 @@ act()  { echo "  [applique] $*"; }
 skip() { echo "  [ignore]   $*"; }
 
 STEP_NAMES=(
-    "1 uart      UART de l'hote au repos (prerequis a toute ecriture ESP32)"
+    "1 hote      UART au repos (ecriture ESP32), radio BT, encodeur H.264 materiel (HUD)"
     "2 docker    demon Docker, plugin compose, groupe docker"
     "3 repos     les deux depots cote a cote"
     "4 udev      ports serie stables (/dev/esp32, /dev/lidar), Wi-Fi sans mise en veille"
@@ -120,7 +121,7 @@ echo ""
 
 # ========================================================================================
 run_step 1 && {
-echo "=== 1. UART de l'hote ==="
+echo "=== 1. Prerequis de l'hote (UART, Bluetooth, encodeur H.264) ==="
 # Delegue : le detail (pourquoi GPIO14 ecrase le RXD de l'ESP32, d'ou vient enable_uart=1
 # sur DietPi) est documente une seule fois, dans install_host_prereq.sh.
 if [ -r "$HERE/install_host_prereq.sh" ]; then
@@ -477,10 +478,16 @@ echo ""
 # ========================================================================================
 run_step 9 && {
 echo "=== 9. Verifications ==="
-for p in 9090 8765 8554; do
+for p in 9090 8765 8554 8889; do
     if ss -ltn 2>/dev/null | grep -q ":$p "; then ok "port $p en ecoute"
-    else warn "port $p muet (rosbridge / foxglove / RTSP selon le cas)"; fi
+    else warn "port $p muet (rosbridge / foxglove / RTSP / WebRTC selon le cas)"; fi
 done
+# Encodeur materiel du flux hud (pose a l'etape 1, apparait apres le reboot).
+if grep -qx "bcm2835-codec-encode" /sys/class/video4linux/video*/name 2>/dev/null; then
+    ok "encodeur H.264 materiel present : flux HUD http://<rpi>:8889/hud"
+else
+    warn "encodeur H.264 materiel absent : le flux hud ne demarrera pas (etape 1, puis REBOOT)"
+fi
 expected="$(boot_services | sort | tr '\n' ' ')"
 up="$( cd "$HERE" && docker compose ps --services --filter status=running 2>/dev/null | sort | tr '\n' ' ' )"
 say "  attendus : ${expected:-aucun}"
@@ -500,6 +507,6 @@ if [ "$todo" = "0" ]; then
 else
     echo "  $todo point(s) restant(s) : relancer avec 'sudo bash $0 --apply'."
 fi
-[ "$reboot_required" = "1" ] && echo "  REBOOT REQUIS (brochage UART)."
+[ "$reboot_required" = "1" ] && echo "  REBOOT REQUIS (brochage UART, radio BT et/ou memoire GPU)."
 [ "$relogin_required" = "1" ] && echo "  RE-CONNEXION REQUISE (groupe docker) -- le reboot ci-dessus y suffit."
 exit 0
