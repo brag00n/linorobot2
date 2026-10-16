@@ -71,7 +71,11 @@ def patch_slam(doc, wiring, lidar, use_sim_time=False):
     p = _rp(out, "slam_toolbox")
     p["scan_topic"] = wiring["scan"]
     if lidar.get("range_max_m"):
-        p["max_laser_range"] = float(lidar["range_max_m"])
+        # Portee du lidar, PLAFONNEE par `max_laser_range` du modele s'il est plus court : au
+        # dessin de la carte, un point lointain se deplace de 14 cm a 8 m pour 1 deg d'erreur
+        # de cap (eventails de la carte du 2026-10-16).
+        r = float(lidar["range_max_m"])
+        p["max_laser_range"] = min(r, float(p.get("max_laser_range", r)))
     return set_sim_time(out, use_sim_time)
 
 

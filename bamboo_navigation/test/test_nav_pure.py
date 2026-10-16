@@ -40,6 +40,8 @@ def test_patch_ekf_and_slam():
     with open(os.path.join(HERE, "..", "config", "slam.yaml"), encoding="utf-8") as fh:
         s = nav_params.patch_slam(yaml.safe_load(fh), WIRING, {"range_max_m": 12.0})
     assert s["slam_toolbox"]["ros__parameters"]["scan_topic"] == "/robot/scan"
+    # la portee du modele (8 m) plafonne celle du lidar (12 m) pour le dessin
+    assert s["slam_toolbox"]["ros__parameters"]["max_laser_range"] == 8.0
 
 
 def test_required_sensors():
