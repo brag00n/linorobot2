@@ -160,8 +160,12 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      # Caisse 0,245 x 0,230 m + 2 cm de marge, centree sur base_footprint.
-      footprint: "[[0.143, 0.135], [0.143, -0.135], [-0.143, -0.135], [-0.143, 0.135]]"
+      # Cadre MESURE (2026-10-16) : 0,200 x 0,175 m, rien ne depasse des roues, centre sur
+      # base_footprint. AUCUNE marge (footprint_padding 0) : le couloir de 30 cm vers la piece
+      # du bas laissait sinon moins que la demi-largeur au planificateur (cases de 5 cm). L'ancienne
+      # caisse 0,245 x 0,230 + 2 cm (0,286 x 0,270) le bloquait entierement.
+      footprint: "[[0.10, 0.0875], [0.10, -0.0875], [-0.10, -0.0875], [-0.10, 0.0875]]"
+      footprint_padding: 0.0
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -193,7 +197,12 @@ global_costmap:
       robot_base_frame: base_footprint
       resolution: 0.05
       track_unknown_space: true
-      footprint: "[[0.143, 0.135], [0.143, -0.135], [-0.143, -0.135], [-0.143, 0.135]]"
+      # Cadre MESURE (2026-10-16) : 0,200 x 0,175 m, rien ne depasse des roues, centre sur
+      # base_footprint. AUCUNE marge (footprint_padding 0) : le couloir de 30 cm vers la piece
+      # du bas laissait sinon moins que la demi-largeur au planificateur (cases de 5 cm). L'ancienne
+      # caisse 0,245 x 0,230 + 2 cm (0,286 x 0,270) le bloquait entierement.
+      footprint: "[[0.10, 0.0875], [0.10, -0.0875], [-0.10, -0.0875], [-0.10, 0.0875]]"
+      footprint_padding: 0.0
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
