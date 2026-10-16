@@ -75,6 +75,7 @@ class NavSupervisor(Node):
     def __init__(self):
         super().__init__("nav_supervisor")
         self._cbg = ReentrantCallbackGroup()
+        self._recalClis = {}
         d = self.declare_parameter
         self.maps_dir = str(d("maps_dir", "/tmp/maps").value)
         self.slam_params = str(d("slam_params_file", "").value)
@@ -1972,17 +1973,20 @@ class NavSupervisor(Node):
         name = self._recalService()
         if not name:
             return None, "gyro NON recalibre (aucun service recalibrate_imu)"
-        cli = self.create_client(Trigger, name, callback_group=self._cbg)
-        try:
-            if not cli.wait_for_service(timeout_sec=1.0):
-                return None, "gyro NON recalibre (%s absent)" % name
-            fut = cli.call_async(Trigger.Request())
-            if not self._wait(fut, 3.0) or not fut.result().success:
-                return None, "gyro NON recalibre (%s : %s)" % (
-                    name, fut.result().message if fut.done() and fut.result() else "muet")
-            return time.monotonic(), "gyro recalibre (%s)" % name
-        finally:
-            self.destroy_client(cli)
+        # Client GARDE (un par service) : le detruire alors qu'une reponse tardive arrivait
+        # tuait le superviseur (« cannot use Destroyable because destruction was requested »,
+        # essai du 2026-10-16 : driver muet 3 s, reponse apres coup, executeur plante).
+        cli = self._recalClis.get(name)
+        if cli is None:
+            cli = self._recalClis[name] = self.create_client(Trigger, name,
+                                                             callback_group=self._cbg)
+        if not cli.wait_for_service(timeout_sec=1.0):
+            return None, "gyro NON recalibre (%s absent)" % name
+        fut = cli.call_async(Trigger.Request())
+        if not self._wait(fut, 3.0) or not fut.result().success:
+            return None, "gyro NON recalibre (%s : %s)" % (
+                name, fut.result().message if fut.done() and fut.result() else "muet")
+        return time.monotonic(), "gyro recalibre (%s)" % name
 
     def _gyroRate(self):
         """Vitesse de lacet mesuree par le gyro (rad/s, dernier /imu/data), ou None."""
@@ -2646,9 +2650,12 @@ class NavSupervisor(Node):
 def main(argv=None):
     rclpy.init(args=argv)
     node = NavSupervisor()
-    # 3 fils : l'exploration auto attend des services (carte, Nav2) dans sa minuterie, et une
-    # commande de la manette doit pouvoir passer pendant ce temps.
-    ex = MultiThreadedExecutor(num_threads=3)
+    # Plusieurs fils : l'exploration auto attend des services (carte, Nav2) dans sa minuterie,
+    # et une commande de la manette doit pouvoir passer pendant ce temps.
+    # 6 et non 3 (2026-10-16) : une commande longue (carte vierge, Nav2) + l'exploration auto +
+    # la relocalisation occupaient les 3 fils, et la REPONSE de Nav2 n'avait plus de fil pour
+    # etre lue -- « manage_nodes sans reponse » apres 60 s alors que Nav2 etait actif a 8 s.
+    ex = MultiThreadedExecutor(num_threads=6)
     ex.add_node(node)
     try:
         ex.spin()
