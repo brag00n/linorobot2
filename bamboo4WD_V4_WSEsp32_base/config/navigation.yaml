@@ -126,8 +126,11 @@ controller_server:
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.2            # borne par navigation.max_vel_x (injecte)
-      lookahead_dist: 0.4
-      min_lookahead_dist: 0.25
+      # VISEE 0,25 m et non 0,40 (essai du 2026-10-16) : Pure Pursuit vise un point du chemin a
+      # cette distance et s'y dirige en ligne droite, donc COUPE les virages d'autant ; a 0,40 m
+      # il butait sur le montant de la porte de la piece du bas (couloir de 30 cm).
+      lookahead_dist: 0.25
+      min_lookahead_dist: 0.20
       max_lookahead_dist: 0.8
       lookahead_time: 1.5
       transform_tolerance: 0.3

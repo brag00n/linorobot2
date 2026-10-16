@@ -51,9 +51,7 @@ from diagnostic_updater import Updater
 from geometry_msgs.msg import (Pose, PoseArray, PoseStamped, PoseWithCovarianceStamped,
                                Twist)
 from std_msgs.msg import Bool, String
-from nav2_msgs.action import BackUp, ComputePathToPose, NavigateToPose
-from rcl_interfaces.msg import Parameter as RosParam, ParameterType, ParameterValue
-from rcl_interfaces.srv import SetParameters
+from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from nav2_msgs.srv import ClearEntireCostmap, ManageLifecycleNodes
 from lifecycle_msgs.msg import State
 from lifecycle_msgs.srv import GetState
@@ -133,16 +131,6 @@ class NavSupervisor(Node):
         self.jump_rad = float(d("jump_rad", 0.35).value)
         self.jump_min_score = float(d("jump_min_score", 0.35).value)
         self.jump_big_m = float(d("jump_big_m", 1.0).value)
-        self.backup_dist_m = float(d("backup_dist_m", 0.15).value)
-        self.backup_speed = float(d("backup_speed", 0.05).value)
-        self.backup_retries = int(d("backup_retries", 2).value)
-        # Visee (lookahead) du controleur : normale / serree pour les tentatives apres un recul.
-        self.lookahead_normal = (float(d("lookahead_normal_m", 0.40).value),
-                                 float(d("min_lookahead_normal_m", 0.25).value))
-        self.lookahead_tight = (float(d("lookahead_tight_m", 0.20).value),
-                                float(d("min_lookahead_tight_m", 0.15).value))
-        self._tight = False              # visee serree en vigueur
-        self._retryWp = None             # (wp, kind, essais restants) du but a retenter
         self.jump_big_min_score = float(d("jump_big_min_score", 0.50).value)
         # Destination refusee a moins de cette distance d'une autre (p1 / p2 doubles, 16/10).
         self.dest_min_sep_m = float(d("dest_min_sep_m", 0.30).value)
@@ -334,12 +322,6 @@ class NavSupervisor(Node):
                                          callback_group=self._cbg)
         self.nav = ActionClient(self, NavigateToPose, "navigate_to_pose",
                                 callback_group=self._cbg)
-        # RECUL DE SECOURS (demande utilisateur 2026-10-16) : but abandonne par le controleur
-        # (virage coupe, robot cale sur un montant de porte) -> recul, visee du controleur
-        # RACCOURCIE pour la nouvelle tentative, puis visee normale une fois le but fini.
-        self.backup = ActionClient(self, BackUp, "backup", callback_group=self._cbg)
-        self.ctrlParams = self.create_client(SetParameters, "/controller_server/set_parameters",
-                                             callback_group=self._cbg)
         # Pour verifier qu'une gate est ATTEIGNABLE avant d'y envoyer le robot.
         self.planner = ActionClient(self, ComputePathToPose, "compute_path_to_pose",
                                     callback_group=self._cbg)
@@ -1398,7 +1380,7 @@ class NavSupervisor(Node):
         p.pose.orientation.w = math.cos(float(wp["yaw"]) / 2.0)
         goal.pose = p
         self.goal_name, self.goal_status = wp["name"], "active"
-        self._goalInfo = {"kind": kind, "wp": dict(wp), "wp_ref": wp.get("name")}
+        self._goalInfo = {"kind": kind, "wp": dict(wp)}
         self.distance, self.recoveries = math.nan, 0
         # Buts NUMEROTES : l'accuse et le resultat d'un but ANNULE peuvent arriver apres
         # l'envoi du suivant (exploration auto : pause manette, gate suivante) ; sans le
@@ -1441,12 +1423,6 @@ class NavSupervisor(Node):
             return
         self._setNavEnable(False)
         st = fut.result().status
-        if st == 6 and self._goalInfo.get("kind") in ("dest", "home", "patrol") and \
-                self._retryStart():
-            return                         # recul puis nouvelle tentative (_backupJob)
-        if self._tight:
-            self._setLookahead(False)      # but fini : visee normale
-        self._retryWp = None
         self.goal_status = {4: "succeeded", 5: "canceled", 6: "aborted"}.get(st, str(st))
         self.detail = "but %s : %s" % (self.goal_name, self.goal_status)
         self._goal = None
@@ -1455,85 +1431,7 @@ class NavSupervisor(Node):
             self._event("destination", nom=self.goal_name, resultat=self.goal_status)
         self.get_logger().info(self.detail)
 
-    def _retryStart(self):
-        """But ABANDONNE (bloque) : reste-t-il un essai ? Si oui, recul en tache de fond."""
-        info = self._goalInfo
-        prev = self._retryWp
-        left = prev[2] if prev is not None and prev[0] == info.get("wp_ref") else \
-            self.backup_retries
-        if left <= 0 or time.monotonic() - self._teleopT < self.auto_resume_s:
-            return False
-        wp, kind = dict(info["wp"]), info["kind"]
-        self._retryWp = (None, kind, left - 1)
-        self.detail = "but %s bloque : recul de %.0f cm puis nouvel essai (visee serree)" % (
-            self.goal_name, 100 * self.backup_dist_m)
-        self.get_logger().warn(self.detail)
-        self._event("recul_secours", but=self.goal_name, essais_restants=left - 1)
-        threading.Thread(target=self._backupJob, args=(wp, kind, left - 1), daemon=True,
-                         name="nav_backup").start()
-        return True
-
-    def _backupJob(self, wp, kind, left):
-        """Recul (comportement BackUp de Nav2, qui verifie l'arriere), visee serree, et but
-        renvoye. Si le stick reprend la main ou si la ronde s'arrete, on s'arrete la."""
-        ok = False
-        if self.backup.wait_for_server(timeout_sec=2.0):
-            g = BackUp.Goal()
-            g.target.x = -abs(self.backup_dist_m)
-            g.speed = abs(self.backup_speed)
-            g.time_allowance = Duration(seconds=int(self.backup_dist_m / self.backup_speed
-                                                    + 5)).to_msg()
-            self._setNavEnable(True)       # le recul passe par la voie Nav2 du multiplexeur
-            fut = self.backup.send_goal_async(g)
-            if self._wait(fut, 3.0) and fut.result().accepted:
-                rf = fut.result().get_result_async()
-                ok = self._wait(rf, g.time_allowance.sec + 2.0)
-            self._setNavEnable(False)
-        with self._lock:
-            if self.goal_status != "active":
-                return                     # annule entre-temps (B, sous-mode) : _cancelGoal
-            if time.monotonic() - self._teleopT < self.auto_resume_s:
-                self._giveUp(wp, kind, "stick")
-                return
-            self._setLookahead(True)
-            ok2, why = self._goto(wp, kind)
-            if not ok2:
-                self._giveUp(wp, kind, why)
-                return
-            self._retryWp = (self._goalInfo.get("wp_ref"), kind, left)
-            self.detail = "but %s : nouvel essai (recul %s, visee %.2f m)" % (
-                wp["name"], "fait" if ok else "impossible", self.lookahead_tight[0])
-
-    def _giveUp(self, wp, kind, why):
-        """Plus de nouvel essai : le but est ABANDONNE, comme sans recul."""
-        if self._tight:
-            self._setLookahead(False)
-        self._retryWp, self._goal = None, None
-        self.goal_status = "aborted"
-        self.detail = "but %s : abandonne (%s)" % (wp["name"], why)
-        if kind in ("dest", "home", "patrol"):
-            self._event("destination", nom=wp["name"], resultat="aborted")
-        self.get_logger().warn(self.detail)
-
-    def _setLookahead(self, tight):
-        """Visee du controleur (FollowPath) : serree apres un recul, normale sinon."""
-        la, mn = self.lookahead_tight if tight else self.lookahead_normal
-        if not self.ctrlParams.service_is_ready():
-            return
-        req = SetParameters.Request(parameters=[
-            RosParam(name=n, value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE,
-                                                  double_value=v))
-            for n, v in (("FollowPath.lookahead_dist", la),
-                         ("FollowPath.min_lookahead_dist", mn))])
-        self.ctrlParams.call_async(req)
-        self._tight = tight
-        self.get_logger().info("controleur : visee %s (%.2f m)" % (
-            "SERREE" if tight else "normale", la))
-
     def _cancelGoal(self):
-        if self._tight:
-            self._setLookahead(False)
-        self._retryWp = None
         self._setNavEnable(False)          # d'abord : la voie se ferme dans la milliseconde
         if self._goal is not None:
             self._goal.cancel_goal_async()
