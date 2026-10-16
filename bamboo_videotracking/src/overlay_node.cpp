@@ -621,6 +621,8 @@ public:
       rclcpp::QoS(10).reliable(),
       [this](sensor_msgs::msg::BatteryState::ConstSharedPtr m) {
         batt_v_ = m->voltage;
+        // Fraction 0..1 de BatteryState (NaN si le driver ne l'estime pas).
+        batt_pct_ = std::isfinite(m->percentage) ? 100.0 * m->percentage : -1.0;
         // CHARGEUR branche : deduit par le driver de la tension au repos (ChargerDetector de
         // bamboo_base) ; icone de prise devant la tension, en bas a droite (2026-10-12).
         charging_ = m->power_supply_status ==
@@ -1757,13 +1759,21 @@ private:
       std::vector<Seg> segs;
       const bool cpu_ok = fresh(last_cpu_, 15.0);
       const int cl = cpu_level_;
-      segs.push_back({cpu_ok ? "CPU " + fmt(cpu_pct_, 0) + " %" : "CPU --",
+      // Format demande par l'utilisateur (2026-10-16) :
+      //   « CPU: 60% BAT: 85% (12,10V) HUD: 15fps »
+      segs.push_back({cpu_ok ? "CPU: " + fmt(cpu_pct_, 0) + "%" : "CPU: --",
           cpu_ok ? (cl >= 1 ? cl : -1) : 9, false});
       const bool bat_ok = fresh(last_batt_, 5.0);
       const int bl = batt_level_;
-      segs.push_back({bat_ok ? fmt(batt_v_, 2) + " V" : "-- V",
-          bat_ok ? (bl >= 1 ? bl : -1) : 9, bat_ok && charging_});
-      segs.push_back({"HUD " + fmt(last_overlay_fps_, 1) + " fps",
+      const double bp = batt_pct_;
+      std::string bat = "BAT: --";
+      if (bat_ok) {
+        std::string v = fmt(batt_v_, 2);
+        for (auto & ch : v) {if (ch == '.') {ch = ',';}}
+        bat = "BAT: " + (bp >= 0.0 ? fmt(bp, 0) + "% " : std::string()) + "(" + v + "V)";
+      }
+      segs.push_back({bat, bat_ok ? (bl >= 1 ? bl : -1) : 9, bat_ok && charging_});
+      segs.push_back({"HUD: " + fmt(last_overlay_fps_, 0) + "fps",
           last_overlay_fps_ < 10.0 ? 1 : -1, false});
       int xr = im.cols - iu(8, u);
       const int yb = im.rows - iu(10, u);
@@ -1996,6 +2006,7 @@ private:
   std::atomic<double> cpu_pct_{0.0};
   std::atomic<int> cpu_level_{0};
   std::atomic<int> batt_level_{0};
+  std::atomic<double> batt_pct_{-1.0};             // % restant, -1 = inconnu
   rclcpp::Time last_cpu_{0, 0, RCL_STEADY_TIME};
   std::atomic<bool> charging_{false};
   // Etat du groupe `nav` a la demande (starting / running / stopping / stopped, ...).
