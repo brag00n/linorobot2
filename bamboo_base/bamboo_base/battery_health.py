@@ -63,7 +63,9 @@ class ChargerDetector:
     # vu. D'ou : un GROS saut (big_step_v) compte des 35 s de repos -- la relaxation n'en fait
     # pas autant en quelques secondes ; et la pente, sur 3 min, doit TENIR `slope_hold_s`.
     def __init__(self, step_v=0.10, quiet_s=60.0, slope_v_min=0.015, slope_span_s=180.0,
-                 slope_rest_s=360.0, load_di_a=0.08, big_step_v=0.25, slope_hold_s=180.0):
+                 slope_rest_s=360.0, load_di_a=0.08, big_step_v=0.25, slope_hold_s=180.0,
+                 reg_min_di_a=0.25, reg_max_slope_v_a=0.05, reg_min_v=11.95,
+                 jump_v=0.15, jump_plateau_v=0.04, jump_plateau_s=5.0, jump_di_a=0.12):
         self.step_v = step_v
         self.quiet_s = quiet_s
         self.slope_v_min = slope_v_min
@@ -72,6 +74,25 @@ class ChargerDetector:
         self.load_di_a = load_di_a
         self.big_step_v = big_step_v
         self.slope_hold_s = slope_hold_s
+        # SIGNATURE D'UNE ALIMENTATION REGULEE (2026-10-17) : un pack seul baisse de R*I quand le
+        # courant monte (R ~ 0,15-0,3 ohm : 0,15 a 0,3 V par ampere) ; sous un chargeur la tension
+        # ne suit pas le courant du robot (<= reg_max_slope_v_a V/A). Il faut un vrai pas de
+        # courant (>= reg_min_di_a) pour conclure, et une tension d'au moins reg_min_v.
+        self.reg_min_di_a = reg_min_di_a
+        self.reg_max_slope_v_a = reg_max_slope_v_a
+        self.reg_min_v = reg_min_v
+        self._reg = collections.deque(maxlen=600)  # (v, i) en MOUVEMENT ET au repos
+        # DETECTION CONTINUE d'un saut (2026-10-17) : sur la tension A TOUT MOMENT, repos ou non
+        # (le detecteur par fenetres exige un repos continu et rate un branchement pendant ou juste
+        # apres la conduite). Un saut >= jump_v en < 2 s, SUIVI d'un palier (+-jump_plateau_v
+        # pendant jump_plateau_s) et sans saut de courant du meme ordre (jump_di_a) : un demarrage
+        # de noeud donne un saut de courant, un chargeur non (il ne passe pas par l'INA219).
+        self.jump_v = jump_v
+        self.jump_plateau_v = jump_plateau_v
+        self.jump_plateau_s = jump_plateau_s
+        self.jump_di_a = jump_di_a
+        self._cont = collections.deque()           # (t, v, i) sur 40 s
+        self._pending = None                       # (t0, dv, v_avant, i_avant) a valider
         self._hist = collections.deque()         # (t, v, i) au repos, un point par 0,5 s
         self._slopeSince = None                  # (debut, pente) d'une pente au-dessus du seuil
         self.charging = None                     # None = inconnu
@@ -85,6 +106,14 @@ class ChargerDetector:
         return statistics.median(ia) - statistics.median(ib)
 
     @staticmethod
+    def _opposes(dv, di, min_di=0.04):
+        """Saut de tension et de courant en SENS OPPOSE = changement de CHARGE, pas chargeur.
+        Retirer le lidar : le courant baisse (0,61 -> 0,52 A) et la tension MONTE (+0,12 V),
+        ce qui passait pour un branchement (2026-10-17). Un chargeur ne passe pas par l'INA219 :
+        il laisse le courant du robot a peu pres plat, sans signe privilegie."""
+        return (dv > 0 and di < -min_di) or (dv < 0 and di > min_di)
+
+    @staticmethod
     def _slope(pts):
         """Pente (V/min) par moindres carres de [(t, v, i)]."""
         if len(pts) < 5:
@@ -93,6 +122,71 @@ class ChargerDetector:
         mx = sum(x for _, x, _ in pts) / len(pts)
         den = sum((u - mu) ** 2 for u, _, _ in pts)
         return 60.0 * sum((u - mu) * (x - mx) for u, x, _ in pts) / den if den else 0.0
+
+    def observe_jump(self, t, v, i=None):
+        """Saut de tension franc, repos ou non, valide par un palier. Rend l'evenement
+        ("branche" | "debranche", dv, "saut V continu") ou None."""
+        if v is None:
+            return None
+        c = self._cont
+        c.append((t, v, i))
+        while c and t - c[0][0] > 40.0:
+            c.popleft()
+        if self._pending is None:
+            rec = [p for p in c if t - p[0] <= 1.0]
+            old = [p for p in c if 6.0 <= t - p[0] <= 12.0]
+            if len(rec) < 3 or len(old) < 8:
+                return None
+            vr = statistics.median(x for _, x, _ in rec)
+            vo = statistics.median(x for _, x, _ in old)
+            dv = vr - vo
+            if abs(dv) < self.jump_v:
+                return None
+            # La tension d'un pack BAISSE sous charge : un saut vers le bas qui accompagne une
+            # hausse du courant est une CHARGE (nœud, moteur), pas un debranchement.
+            ir = [x for _, _, x in rec if x is not None]
+            io_ = [x for _, _, x in old if x is not None]
+            di = (statistics.median(ir) - statistics.median(io_)) if ir and io_ else 0.0
+            if abs(di) > self.jump_di_a or self._opposes(dv, di):
+                return None
+            self._pending = (t, dv, vo, vr)
+            return None
+        t0, dv, vo, vr = self._pending
+        if t - t0 < self.jump_plateau_s:
+            return None
+        plateau = [x for tt, x, _ in c if tt >= t0]
+        self._pending = None
+        # Palier : la tension est restee pres du niveau atteint (pas un pic, pas une rampe).
+        if max(plateau) - min(plateau) > max(self.jump_plateau_v, 0.25 * abs(dv)) + 0.02 * abs(dv):
+            return None
+        if dv > 0 and self.charging is not True:
+            self._cont.clear()
+            return self._set(True, dv, "saut V continu")
+        if dv < 0 and self.charging is not False:
+            self._cont.clear()
+            return self._set(False, dv, "saut V continu")
+        return None
+
+    def observe_regulation(self, v, i):
+        """Un point (V, I) a toute heure. Rend ("branche", pente V/A, "tension insensible au
+        courant") la premiere fois que la tension reste PLATE pour un courant qui a varie."""
+        if i is None or v is None or self.charging is not None:
+            return None
+        self._reg.append((v, i))
+        if len(self._reg) < 120:
+            return None
+        cur = [c for _v, c in self._reg]
+        di = max(cur) - min(cur)
+        if di < self.reg_min_di_a or statistics.median(x for x, _c in self._reg) < self.reg_min_v:
+            return None
+        mi = sum(cur) / len(cur)
+        mv = sum(x for x, _c in self._reg) / len(self._reg)
+        var = sum((c - mi) ** 2 for c in cur)
+        slope = sum((c - mi) * (x - mv) for x, c in self._reg) / var if var else 0.0
+        # slope = dV/dI : ~ -R sur un pack (negatif, 0,15 a 0,3), ~0 sous un chargeur regule.
+        if -self.reg_max_slope_v_a <= slope <= self.reg_max_slope_v_a:
+            return self._set(True, slope, "tension insensible au courant")
+        return None
 
     def observe(self, t, v, rest_age, i=None):
         """`rest_age` = duree du repos continu (s), None en mouvement ; `i` = courant du robot
@@ -117,9 +211,12 @@ class ChargerDetector:
             need = self.step_v if rest_age >= self.quiet_s + 30.0 else self.big_step_v
             rec = [p for p in h if t - p[0] <= 5.0]
             past = [p for p in h if 25.0 <= t - p[0] <= 30.0]
-            if len(rec) >= 3 and len(past) >= 3 and abs(self._di(rec, past)) <= self.load_di_a:
+            di_w = self._di(rec, past) if len(rec) >= 3 and len(past) >= 3 else 0.0
+            if len(rec) >= 3 and len(past) >= 3 and abs(di_w) <= self.load_di_a:
                 dv = statistics.median(x for _, x, _ in rec) - \
                     statistics.median(x for _, x, _ in past)
+                if self._opposes(dv, di_w):
+                    return None
                 if dv > need and self.charging is not True:
                     return self._set(True, dv, "saut V")
                 if dv < -need and self.charging is not False:
@@ -167,7 +264,9 @@ class BatteryHealth:
     def __init__(self, cells=3, profile=None, rest_current_a=0.3, rest_settle_s=2.0,
                  window_s=120.0,
                  min_current_spread_a=0.8, deficit_ratio=0.7, deficit_settle_s=1.0,
-                 deficit_min_rpm=20.0):
+                 deficit_min_rpm=20.0, r_default_ohm=0.20, slew_pct_min=1.0,
+                 rest_current_spread_a=0.30, rest_stable_s=10.0,
+                 ocv_max_age_s=180.0):
         self.cells = cells
         # Profil MESURE du pack (calibration batterie_decharge) : [(tension repos, %)], qui
         # remplace la courbe Li-ion generique. None = courbe generique.
@@ -179,6 +278,16 @@ class BatteryHealth:
         self.deficit_ratio = deficit_ratio
         self.deficit_settle_s = deficit_settle_s
         self.deficit_min_rpm = deficit_min_rpm
+        # JAUGE (2026-10-17) : resistance interne supposee tant qu'elle n'est pas mesuree, pente
+        # maximale de l'affichage (points de % par minute), et critere de courant STABLE du repos.
+        self.r_default_ohm = r_default_ohm
+        self.slew_pct_min = slew_pct_min
+        self.rest_current_spread_a = rest_current_spread_a
+        self.rest_stable_s = rest_stable_s
+        self.ocv_max_age_s = ocv_max_age_s
+        self._ocv = collections.deque(maxlen=12)  # (t, V + R*I) a vide estimee, repos stable
+        self._shown = None                        # (t, %) dernier pourcentage affiche
+        self._iRest = collections.deque()         # (t, i) pour juger la stabilite du courant
         self._vi = collections.deque()           # (t, v, i) pour la regression
         self._rest = collections.deque(maxlen=12)
         self._rest_since = None
@@ -212,20 +321,37 @@ class BatteryHealth:
             at_rest = not moving
         else:
             at_rest = i is None or abs(i) < self.rest_current_a
+        if i is not None:
+            self._iRest.append((t, i))
+            while self._iRest and t - self._iRest[0][0] > self.rest_stable_s:
+                self._iRest.popleft()
         if at_rest:
             if self._rest_since is None:
                 self._rest_since = t
             if t - self._rest_since >= self.rest_settle_s:
                 self._rest.append(v)
+                # Tension A VIDE du pack : on ajoute la chute interne R*I (0,1 a 0,2 V avec le
+                # robot qui tire ~0,6 A en permanence), mais SEULEMENT sur un courant stable --
+                # un echantillon pris pendant un demarrage de noeud serait faux.
+                if self._current_stable():
+                    r = self.resistance
+                    r = self.r_default_ohm if r is None or not 0.02 <= r <= 1.0 else r
+                    self._ocv.append((t, v + r * (i or 0.0)))
         else:
             self._rest_since = None
             self._low.append((t, v))
         while self._low and t - self._low[0][0] > 10.0:
             self._low.popleft()
         rest_age = (t - self._rest_since) if at_rest and self._rest_since is not None else None
-        ev = self.charger.observe(t, v, rest_age, i)
+        ev = (self.charger.observe(t, v, rest_age, i) or self.charger.observe_jump(t, v, i)
+              or self.charger.observe_regulation(v, i))
         if ev:
             self._chgEvents.append(ev)
+            # La tension d'AVANT l'evenement n'est plus celle du pack (2026-10-17 : 85 % affiches
+            # pour 50 % reels, des valeurs de la periode branchee restees en memoire).
+            self._ocv.clear()
+            self._rest.clear()
+            self._shown = None
 
         # Decrochage de traction (M1/M2 : un encodeur par cote sur l'ESP32).
         if req and meas and moving:
@@ -249,6 +375,70 @@ class BatteryHealth:
     @property
     def rest_voltage(self):
         return statistics.median(self._rest) if self._rest else None
+
+    def _current_stable(self):
+        """Courant plat sur rest_stable_s (ecart < rest_current_spread_a) ; vrai sans mesure."""
+        if not self.has_current:
+            return True
+        cur = [c for _t, c in self._iRest]
+        if len(cur) < 5 or self._iRest[-1][0] - self._iRest[0][0] < 0.8 * self.rest_stable_s:
+            return False
+        return max(cur) - min(cur) < self.rest_current_spread_a
+
+    @property
+    def ocv(self):
+        """Tension a vide estimee (V), ou la tension de repos brute sans mesure de courant."""
+        fresh = [x for tt, x in self._ocv
+                 if self._last_t is not None and self._last_t - tt <= self.ocv_max_age_s]
+        return statistics.median(fresh) if fresh else self.rest_voltage
+
+    @property
+    def r_used(self):
+        r = self.resistance
+        return self.r_default_ohm if r is None or not 0.02 <= r <= 1.0 else r
+
+    def _soc_at(self, v):
+        if v is None or self.profile is None:
+            return soc_from_rest(v, self.cells)
+        p = self.profile
+        if v <= p[0][0]:
+            return float(p[0][1])
+        if v >= p[-1][0]:
+            return float(p[-1][1])
+        for (v0, s0), (v1, s1) in zip(p, p[1:]):
+            if v0 <= v <= v1:
+                return s0 + (s1 - s0) * (v - v0) / (v1 - v0) if v1 > v0 else float(s1)
+        return None
+
+    @property
+    def soc_raw(self):
+        """Etat de charge instantane, sur la tension A VIDE compensee. None sans repos stable."""
+        return self._soc_at(self.ocv)
+
+    def display_soc(self, t):
+        """Pourcentage A AFFICHER (HUD, /battery) : None tant que le chargeur est branche ou
+        possible (la tension est alors celle du CHARGEUR, pas du pack -- 83 % affiches branche,
+        61 % debranche, 2026-10-17), sinon l'etat de charge lisse. Il DESCEND a pente limitee et
+        ne REMONTE PAS sans chargeur confirme : un pack ne se recharge pas seul, ses remontees
+        sont de la relaxation ou du bruit. Le premier calcul n'est pas limite."""
+        if self.charger.charging:
+            self._shown = None               # au debranchement, on repart de la mesure
+            return None
+        raw = self.soc_raw
+        if raw is None:
+            return None if self._shown is None else self._shown[1]
+        if self._shown is None or abs(raw - self._shown[1]) > 8.0:
+            # Demarrage, ou ecart de plus de 8 points avec l'affichage (dans les deux sens) :
+            # ce n'est plus de la relaxation ni du bruit, la jauge s'aligne tout de suite sur la
+            # mesure. Le lissage ne sert qu'aux petites variations (2026-10-17 : 76 % affiches
+            # pour 48 % mesures, 30 min de descente avant de rattraper).
+            self._shown = (t, raw)
+            return raw
+        t0, last = self._shown
+        step = self.slew_pct_min * max(0.0, t - t0) / 60.0
+        shown = max(raw, last - step) if raw < last else last
+        self._shown = (t, shown)
+        return shown
 
     @property
     def soc(self):

@@ -44,7 +44,10 @@ class DriverDiagnostics:
         pv = list(getattr(driver, "batt_profile_v", []) or [])
         ps = list(getattr(driver, "batt_profile_soc", []) or [])
         prof = list(zip(pv, ps)) if len(pv) == len(ps) and len(pv) >= 2 else None
-        self.health = BatteryHealth(cells=int(getattr(driver, "batt_cells", 3)), profile=prof)
+        self.health = BatteryHealth(
+            cells=int(getattr(driver, "batt_cells", 3)), profile=prof,
+            r_default_ohm=float(getattr(driver, "batt_r_ohm", 0.20)),
+            slew_pct_min=float(getattr(driver, "batt_soc_slew_pct_min", 1.0)))
         self._battKey = None
         self.updater = Updater(driver)
         # hardware_id = le SERVICE compose, c'est-a-dire le module de l'arbre de diagnostic.
@@ -147,7 +150,14 @@ class DriverDiagnostics:
         stat.add("tension_repos_v", "?" if rest is None else "%.2f" % rest)
         chg = h.charger.charging
         stat.add("chargeur", "?" if chg is None else ("branche" if chg else "debranche"))
-        stat.add("charge_pct", "?" if soc is None else "%.0f" % soc)
+        shown = h.display_soc(time.monotonic())
+        ocv = h.ocv
+        stat.add("tension_vide_v", "?" if ocv is None else "%.2f" % ocv)
+        stat.add("r_utilisee_ohm", "%.3f%s" % (h.r_used, "" if r is not None else " (supposee)"))
+        stat.add("etat_jauge", "en charge" if chg else ("affichee" if shown is not None
+                                                        else "pas de repos stable"))
+        stat.add("charge_pct", "?" if shown is None else "%.0f" % shown)
+        stat.add("charge_brute_pct", "?" if soc is None else "%.0f" % soc)
         stat.add("courbe_charge", "profil mesure" if h.profile else "Li-ion generique")
         stat.add("resistance_interne_ohm",
                  "non mesuree" if r is None else "%.3f" % r)
@@ -169,7 +179,8 @@ class DriverDiagnostics:
             # La TENSION va, mais la SANTE ou la TRACTION non : c'est l'avertissement demande.
             stat.summary(DiagnosticStatus.WARN, "%.2f V mais " % v + " ; ".join(why))
         else:
-            extra = (" (~%.0f %%)" % soc) if soc is not None else ""
+            extra = (" (~%.0f %%)" % shown) if shown is not None else (
+                " (en charge)" if chg else "")
             stat.summary(DiagnosticStatus.OK, "%.2f V%s" % (v, extra))
         return stat
 

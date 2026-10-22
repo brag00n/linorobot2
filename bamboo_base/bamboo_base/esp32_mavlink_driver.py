@@ -44,6 +44,7 @@ commutable a chaud : c'est ce qui rend l'actuation pilotable sans redemarrer le 
 l'orchestrateur MCP ne sachant pas passer d'argument de launch.
 """
 import math
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -192,6 +193,10 @@ class Esp32MavlinkDriver(Node):
         self.declare_parameter("batt_r_warn_ohm", 0.0)
         self.declare_parameter("batt_sag_warn_v", 0.0)
         self.declare_parameter("batt_deficit_warn", 0.25)
+        # JAUGE (2026-10-17) : resistance interne supposee tant qu'elle n'est pas mesuree (ohm),
+        # et pente maximale du pourcentage affiche (points de % par minute).
+        self.declare_parameter("batt_r_ohm", 0.20)
+        self.declare_parameter("batt_soc_slew_pct_min", 1.0)
         # Profil MESURE (calibration batterie_decharge) ; [0.0] = aucun, courbe generique.
         self.declare_parameter("batt_profile_v", [0.0])
         self.declare_parameter("batt_profile_soc", [0.0])
@@ -214,6 +219,8 @@ class Esp32MavlinkDriver(Node):
         self.batt_r_warn_ohm = float(g("batt_r_warn_ohm"))
         self.batt_sag_warn_v = float(g("batt_sag_warn_v"))
         self.batt_deficit_warn = float(g("batt_deficit_warn"))
+        self.batt_r_ohm = float(g("batt_r_ohm"))
+        self.batt_soc_slew_pct_min = float(g("batt_soc_slew_pct_min"))
         self.batt_profile_v = [float(x) for x in g("batt_profile_v")]
         self.batt_profile_soc = [float(x) for x in g("batt_profile_soc")]
         self.armed_nominal = bool(g("armed_nominal"))
@@ -751,7 +758,10 @@ class Esp32MavlinkDriver(Node):
             # Courant INA219 (firmware >= 0.5.2) : sensor_msgs le veut NEGATIF en decharge.
             cur = snap.get("battery_current")
             b.current = float("nan") if cur is None else -float(cur)
-            soc = self._diag.health.soc if getattr(self, "_diag", None) else None
+            # Pourcentage A AFFICHER : NaN tant que le chargeur est branche (la tension est
+            # alors celle du chargeur), sinon etat de charge compense et lisse (battery_health).
+            soc = (self._diag.health.display_soc(time.monotonic())
+                   if getattr(self, "_diag", None) else None)
             b.percentage = float("nan") if soc is None else soc / 100.0
             # Chargeur deduit de la tension au repos (battery_health.ChargerDetector).
             chg = self._diag.health.charger.charging if getattr(self, "_diag", None) else None
