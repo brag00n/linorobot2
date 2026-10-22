@@ -603,6 +603,79 @@ ros2 action send_goal /bamboo_calibration/calibrate bamboo_interfaces/action/Cal
   - `bamboo_teleop: modes` ;
   - `bamboo_mode_manager: modes du robot`.
 
+### 9.7 Calibration de la batterie (jauge, qualité du pack)
+
+Objectif : caler la **jauge de batterie** sur le pack réel, **quelle que soit sa qualité**, et dire
+**quelle qualité** il a par rapport à une batterie idéale. Mode CALIB, groupe *batterie*.
+
+**Types de batterie.** [`bamboo_base/config/battery_types.yaml`](../bamboo_base/config/battery_types.yaml)
+décrit la **batterie idéale** de chaque robot : éléments série/parallèle, capacité, résistance
+interne, tensions, coude d'arrêt, méthode de mesure, courbe de décharge typique. Le profil du robot
+choisit son bloc par `battery_type:`.
+
+| | `esp32_ups_3s1p` (BambooWS) | `stm32_3s2p_7ah` (Bamboo STM32 / YB) |
+|---|---|---|
+| Pack idéal | UPS 3S, 3 × 18650, **2,6 Ah**, 0,15 Ω | Li-ion 3S2P **7 Ah**, BMS interne, 0,075 Ω |
+| Courant | **mesuré** (INA219) : Ah réels | **supposé** (0,8 A de fond, pas d'INA219) : Ah estimés |
+| Arrêt de la calibration | 9,3 V au repos (3,1 V/élément) | 9,9 V, au-dessus de l'alarme de la carte (9,6 V) |
+| Décharge avec moteur | proposée | **refusée** (pack 12,6 V brut sur moteurs 7,4 V) |
+
+**Gestes (manette).**
+
+| Geste | Action |
+|---|---|
+| **X long** + A | Décharge **avec moteur** : rotation sur place, **roues levées**, traction armée (B long). Commence par 60 s de repos immobile qui fixent le point 100 %. |
+| **Y long** + A | Décharge **sans moteur** : robot immobile, la consommation de fond décharge le pack. Même repos initial. |
+| **R long** + A | **Arrêter** la calibration en cours, mesures gardées. |
+
+Il n'y a plus de touche « plein » : chaque décharge fixe elle-même son point 100 %, mesuré sur le
+pack tel qu'il est après la charge d'une nuit (pas 12,6 V). Les décharges demandent une
+**confirmation** (A = lancer, B ou 10 s sans réponse = annuler) qui rappelle la **tension actuelle**
+et, si le pilote voit un chargeur, une alerte non bloquante. Les deux **s'arrêtent seules** au coude
+de décharge.
+
+**Rotation progressive.** Avec moteur, la rotation monte de l'arrêt à la vitesse nominale, tient un
+palier, puis redescend jusqu'à l'arrêt, à `batt_ramp_accel` rad/s par seconde (1,0). Pas d'à-coup
+sur les engrenages, pas de secousse qui ferait tomber le robot de sa base. Un arrêt d'urgence (B,
+stick, robot au sol) reste immédiat. La vitesse du palier est `batt_load_w` = **1,5 rad/s** (environ
+22 tr/min par roue) : à 2,5 rad/s, un son strident d'engrenage apparaissait, il a disparu à 1,5. Le
+**sens alterne à chaque cycle** pour ne pas user les engrenages du même côté. Roues levées, le
+courant sous rotation dépasse à peine celui du repos : la résistance interne n'est pas mesurable
+ainsi, elle reste celle de la référence (« est. »).
+
+**Boîte HUD « BATTERIE ».** Première ligne **Activité** : Init... (point 100 %), Calib. batt. avec ou
+sans moteur..., Calcul..., Terminé, Arrêtée ou Interrompue. *Avant* le lancement : le résultat de la calibration précédente (date,
+capacité, qualité, raison d'arrêt, « PARTIELLE » si interrompue). *Pendant* : % estimé, **qualité du
+pack** (bon ≥ 80 %, moyen 50–80 %, faible), capacité mesurée contre capacité idéale, résistance
+interne, **durée restante**, barre de progression. Sans moteur, la résistance est celle de la
+référence, marquée « (est.) ». Sans mesure de courant (STM32), la capacité et la qualité sont
+**estimées** (±15 %).
+
+**Durée restante.** « mesure... » tant que la capacité n'est pas estimée, puis « ~ 42 min »
+(provisoire) et la durée sans « ~ » quand l'estimation est stable. Elle **surestime au début** :
+pendant le premier quart d'heure, la courbe typique du pack ne colle pas au pack réel
+(+55 à +73 % à la 14e et 20e minute, +17 % à la 55e, exacte à la fin).
+
+**Essais réels (2026-10-20, BambooWS).** Avec moteur, roues levées, parti à 11,2 V : 62 min,
+124 cycles, arrêt au coude à 9,24 V, 0,71 Ah. Sans moteur, parti d'un plein de nuit à 11,44 V :
+68 min, 136 cycles, arrêt à 9,30 V, **0,76 Ah, qualité 31 % (faible)**, fond 0,65 A. La
+décharge du 17/10 (jusqu'à 8,15 V) donnait 0,59 Ah : le pack vaut 0,6 à 0,8 Ah selon la méthode.
+
+**Rien ne se perd en cas de coupure.** Un journal `batt_journal_<date>.csv` est écrit **chaque
+seconde avec `fsync`**, un `batt_session.json` est réécrit **atomiquement** toutes les 10 s, et
+`batt_dernier.json` garde le dernier résultat. Au démarrage, une session restée `en_cours` (coupure
+batterie imprévue) donne un **résultat partiel** tiré du journal. Une annulation garde aussi ses
+mesures. Les fichiers sont dans le dossier des candidats, à côté du fichier canonique.
+
+**Résultat.** Un *candidat* `batt_candidat_<date>.yaml` (profil de tension, capacité, résistance de
+référence, qualité, raison d'arrêt, hypothèses), à recopier après validation. Le nœud n'écrit
+**jamais** dans le fichier canonique.
+
+**Valeurs mesurées le 2026-10-17** (BambooWS, charge d'une nuit, 0,64 A de consommation de fond) :
+12,03 → 8,15 V en 56 min, **0,59 Ah** au total, coupure du module vers 8,1 V. Qualité : environ
+22 % du pack idéal. Hors calibration, `docker/monitor/historique_batterie.py` enregistre la
+décharge en continu (tension, courant, Wi-Fi, température) dans un CSV.
+
 ## 10. Navigation autonome (lot NAV)
 
 ### 10.1 Vue d'ensemble
