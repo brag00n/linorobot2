@@ -1,0 +1,68 @@
+# ============================================================================
+# Types de batterie -- la BATTERIE IDEALE de chaque robot (2026-10-18)
+# ============================================================================
+# Chaque bloc decrit un pack NEUF, en bon etat : c'est la REFERENCE de la qualite affichee par
+# la calibration (« 23 % du pack ideal ») et la base de sa methode. Le profil du robot choisit
+# son bloc par `battery_type:` (bamboo4WD_V4_*_base/config/*.yaml). Les valeurs viennent des
+# fiches matérielles ; ce sont des PARAMETRES, a affiner sans toucher au code.
+#
+#   cells / parallel       elements en serie / en parallele (3S2P = 6 cellules)
+#   capacity_ah            capacite nominale du pack ideal
+#   r_ohm                  resistance interne du pack ideal (somme des elements, / parallele)
+#   v_full / v_nominal     tension pleine / nominale (V)
+#   knee_cell_v            arret de la calibration, V par element au repos (le coude)
+#   load_knee_cell_v       idem sous charge
+#   alarm_v                coupure du materiel (alarme ou protection), pour les seuils d'alerte
+#   method                 ah_measured  = le courant est mesure (INA219) : capacite en Ah reels
+#                          time_assumed = pas de mesure : capacite = courant de fond SUPPOSE x
+#                                         duree ; qualite marquee « estimee »
+#   assumed_current_a      courant de fond suppose (RPi + carte + capteurs), method time_assumed
+#   motor_calibration      la decharge AVEC MOTEUR est-elle proposee ? (faux : securite)
+#   curve                  courbe tension a vide d'un element -> part de capacite consommee,
+#                          [(V/element, part 0..1)] du plein vers le coude ; mesuree sur
+#                          un pack reel, a refaire par la calibration de chaque pack
+# ============================================================================
+battery_types:
+
+  # --- Robot ESP32 / BambooWS : UPS Module 3S WaveShare, 3 x 18650 ---------------------------
+  # hardware_waveshare_ups_module_3s.md : 3S, 11,1 V nominal / 12,6 V plein, INA219 (I2C).
+  # Cellules supposees 2600 mAh, 50 mohm : valeur courante, A REMPLACER par l'etiquette.
+  esp32_ups_3s1p:
+    description: "UPS Module 3S WaveShare, 3 x 18650 Li-ion (BambooWS)"
+    cells: 3
+    parallel: 1
+    capacity_ah: 2.6
+    r_ohm: 0.15
+    v_full: 12.6
+    v_nominal: 11.1
+    knee_cell_v: 3.1            # 9,3 V
+    load_knee_cell_v: 2.9       # 8,7 V
+    alarm_v: 8.1                # coupure de la protection du module, mesuree le 2026-10-17
+    method: ah_measured
+    assumed_current_a: 0.0
+    motor_calibration: true
+    curve: [[3.887, 0.00], [3.767, 0.11], [3.715, 0.22], [3.673, 0.33], [3.635, 0.44],
+            [3.599, 0.55], [3.559, 0.66], [3.507, 0.77], [3.376, 0.88], [3.103, 1.00]]
+
+  # --- Robot STM32 / YB : pack Li-ion 3S2P 7 Ah, BMS interne ----------------------------------
+  # hardware_yahboom_ros_control_board_v3.md §2 : 3 cellules en serie x 2 chaines en parallele
+  # (2 x 3,5 Ah), 12,6 V chargé, 9,6 V arret carte (3,2 V/cellule), 9,0 V plancher du BMS.
+  # PAS d'INA219 : la carte ne mesure que la tension. Courant de fond suppose a CONFIRMER
+  # (RPi4 + carte, sans moteur) ; la decharge AVEC MOTEUR n'est pas proposee tant que
+  # enable_cmd_vel est faux (fiche, §6 : pack 12,6 V brut sur moteurs 7,4 V).
+  stm32_3s2p_7ah:
+    description: "Pack Li-ion 3S2P 7 Ah, BMS interne (Bamboo STM32 / YB)"
+    cells: 3
+    parallel: 2
+    capacity_ah: 7.0
+    r_ohm: 0.075                # 3 x 50 mohm / 2 chaines
+    v_full: 12.6
+    v_nominal: 11.1
+    knee_cell_v: 3.3            # 9,9 V : AU-DESSUS de l'alarme carte (9,6 V), jamais en dessous
+    load_knee_cell_v: 3.2
+    alarm_v: 9.6                # arret latchant de la carte (g_system_enable = 0)
+    method: time_assumed
+    assumed_current_a: 0.8      # RPi4 + carte Yahboom + capteurs, sans moteur. A CONFIRMER.
+    motor_calibration: false
+    curve: [[3.887, 0.00], [3.767, 0.11], [3.715, 0.22], [3.673, 0.33], [3.635, 0.44],
+            [3.599, 0.55], [3.559, 0.66], [3.507, 0.77], [3.376, 0.88], [3.103, 1.00]]
