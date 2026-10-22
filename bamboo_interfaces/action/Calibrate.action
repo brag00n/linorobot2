@@ -4,6 +4,10 @@
 # PROCEDURE : "" ou "glissement" = glissement en rotation (rotations + arcs) ;
 # "pid_roues_levees" = gains PID des roues par echelons de vitesse, ROUES LEVEES (verifie) ;
 # "pid_sol" = memes echelons en ligne droite avant/arriere AU SOL (peu de place).
+# "batterie_plein" = tension de repos (point 100 %) ; "batterie_decharge" = decharge AVEC MOTEUR
+# (rotation sur place, ROUES LEVEES) ; "batterie_decharge_passive" = decharge SANS MOTEUR (robot
+# immobile, consommation de fond). Les deux s'arretent seules au coude de decharge ; ANNULABLES
+# sans perdre les mesures (journal + candidat partiel).
 string procedure
 string variant          # nom de la variante materielle mesuree (fichier candidat)
 bool include_arcs       # ajoute les arcs (virages en avancant) aux rotations sur place

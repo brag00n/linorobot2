@@ -254,6 +254,40 @@ def pid_candidate_yaml(robot, gains, score, ref_gains, ref_score, procedure, rep
     ])
 
 
+# ===================================================================== rampe de vitesse
+class Slew:
+    """Consigne a ACCELERATION LIMITEE : de l'arret a la vitesse nominale et retour, sans a-coup.
+
+    Demande utilisateur du 2026-10-18 (decharge batterie AVEC moteur) : une rotation brutale
+    use les engrenages et peut faire tomber le robot de sa base. La consigne publiee rejoint la
+    cible a au plus `accel` (rad/s par seconde) ; le pas par appel vaut accel x dt, dt etant le
+    temps REEL ecoule (le noeud tourne a ~10 Hz mais n'est pas regulier).
+    """
+
+    def __init__(self, accel):
+        self.accel = max(1e-6, float(accel))
+        self.out = 0.0
+
+    def update(self, target, dt):
+        step = self.accel * max(0.0, min(1.0, dt))
+        if target > self.out:
+            self.out = min(target, self.out + step)
+        else:
+            self.out = max(target, self.out - step)
+        return self.out
+
+    @property
+    def stopped(self):
+        return abs(self.out) < 1e-3
+
+    def reset(self):
+        self.out = 0.0
+
+    def time_to(self, w):
+        """Duree (s) de l'arret a la vitesse w : sert a verifier qu'un palier est assez long."""
+        return abs(w) / self.accel
+
+
 # ===================================================================== batterie
 # Profil de DECHARGE : une ligne par cycle (charge puis repos), avec les Ah consommes
 # depuis le debut, la tension au repos en fin de repos, la tension et le courant en fin de
@@ -289,8 +323,11 @@ def battery_profile(cycles, cells, n_points=11):
             "chute_v_moy": round(sum(sag) / len(sag), 3), "elements": cells}
 
 
-def battery_candidate_yaml(robot, prof, full, report_path):
+def battery_candidate_yaml(robot, prof, full, report_path, extra=None):
+    """Candidat de profil de batterie. `extra` (facultatif) : type de pack, qualite, capacite de
+    reference, raison d'arret, courant suppose... tires de BattProgress."""
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    extra = extra or {}
     r = prof.get("r_ref_ohm")
     lines = [
         "# CANDIDAT batterie -- a RECOPIER, apres validation, dans le bloc /** du fichier",
@@ -311,4 +348,20 @@ def battery_candidate_yaml(robot, prof, full, report_path):
         lines += ["    batt_r_ref_ohm: %.4f" % r,
                   "    batt_r_warn_ohm: %.4f" % (1.5 * r),
                   "    batt_sag_warn_v: %.2f" % (1.5 * prof["chute_v_moy"])]
+    if extra.get("pack_type"):
+        lines.append("    # type de pack : %s (reference %.1f Ah)"
+                     % (extra["pack_type"], extra.get("capacity_ref_ah", 0.0)))
+    if extra.get("quality_pct") is not None:
+        lines.append("    batt_quality_pct: %.0f   # %s, par rapport au pack ideal"
+                     % (extra["quality_pct"], extra.get("quality_label", "?")))
+    if extra.get("capacity_ref_ah"):
+        lines.append("    batt_ref_capacity_ah: %.2f" % extra["capacity_ref_ah"])
+    if extra.get("stop_reason"):
+        partial = " (PARTIEL)" if extra.get("partial") else ""
+        lines.append("    # arret : %s%s" % (extra["stop_reason"], partial))
+    if extra.get("current_assumed"):
+        lines.append("    # ATTENTION : courant de fond SUPPOSE (pas de mesure) -> capacite et "
+                     "qualite ESTIMEES (+-15 %), a confirmer avec un INA219")
+    if extra.get("r_estimated"):
+        lines.append("    batt_r_estimated: true   # resistance de reference, non mesuree")
     return "\n".join(lines + [""])

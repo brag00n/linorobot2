@@ -12,6 +12,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Esp32Status.msg"
   "msg/Stm32Status.msg"
   "msg/MotionCompensationState.msg"
+  "msg/BatteryCalibState.msg"
   # --- contrat servo : axes NOMMES, aucune carte nommee ---
   "msg/ServoCmd.msg"
   # --- groupe videotracking ---

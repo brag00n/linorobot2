@@ -258,3 +258,8 @@
     imu_gz_sign: 1.0
     # Mode calibration (bamboo_calibration + mode `calibration` de la manette).
     calibration_enabled: false
+    # Calibration de la BATTERIE seule, sans calibration du glissement ni des moteurs (2026-10-18) :
+    # decharge SANS moteur uniquement (motor_calibration: false du type de pack). Pas de mesure de
+    # courant sur cette carte : la capacite se deduit de la duree, a courant de fond suppose.
+    battery_calibration_enabled: true
+    battery_type: stm32_3s2p_7ah

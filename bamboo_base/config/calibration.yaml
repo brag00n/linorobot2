@@ -81,10 +81,24 @@ bamboo_calibration:
     batt_charger_slope_v_min: 0.01
     batt_cycle_load_s: 20.0
     batt_cycle_rest_s: 10.0
-    batt_load_w: 2.5
+    batt_load_w: 1.5
+    # ROTATION PROGRESSIVE (2026-10-18) : acceleration de l'arret a batt_load_w, et de
+    # batt_load_w a l'arret, en rad/s PAR SECONDE. 1,0 : 2,5 s de montee et 2,5 s de descente.
+    # Plus doux = plus bas (0,5 : 5 s). Le palier a vitesse nominale dure au moins 6 s.
+    batt_ramp_accel: 1.0
     batt_ground_gz: 0.3
-    batt_cutoff_cell_v: 3.3
-    batt_load_cutoff_cell_v: 3.0
+    # ARRET AUTOMATIQUE au COUDE (2026-10-18) : 3,1 V/element au repos (9,3 V), 2,9 V sous charge
+    # (8,7 V). Plus bas que 3,3 / 3,0 : la fin de decharge est ce qui sert a l'alerte (le pack
+    # de BambooWS ne coupait qu'a ~8,1 V). Un Li-ion s'abime sous 3,0 V : on reste au-dessus.
+    batt_cutoff_cell_v: 3.1
+    batt_load_cutoff_cell_v: 2.9
+    # La batterie de REFERENCE (« bonne batterie ») et les seuils d'arret viennent du TYPE DE
+    # PACK du robot : `battery_type:` de son profil, bloc de config/battery_types.yaml
+    # (capacite, resistance, coude, methode). Ces seuils-ci ne servent qu'a un type absent.
+    # Garde « sans progres » : le pack ne baisse pas de batt_no_progress_v en batt_no_progress_s
+    # (chargeur oublie) -> abandon.
+    batt_no_progress_s: 1200.0
+    batt_no_progress_v: 0.05
     batt_max_duration_s: 18000.0  # 5 h
 
     # --- essai en RAM (groupe `essai` du mode calibration) ------------------

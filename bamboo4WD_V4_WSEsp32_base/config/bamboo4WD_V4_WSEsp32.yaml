@@ -212,6 +212,9 @@
     imu_gz_sign: 1.0
     # Mode calibration (bamboo_calibration + mode `calibration` de la manette).
     calibration_enabled: true
+    # Type de pack (bamboo_base/config/battery_types.yaml) : sa batterie IDEALE sert de reference
+    # a la calibration de la batterie, et fixe sa methode (courant mesure par l'INA219).
+    battery_type: esp32_ups_3s1p
 
     # --- CAPTEURS presents sur CE robot (lot NAV, 2026-10-10) --------------
     # Lus par le diagnostic de navigation et par les prerequis des modes : un

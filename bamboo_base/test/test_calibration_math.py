@@ -99,3 +99,38 @@ def test_battery_profile():
     txt = cm.battery_candidate_yaml("robot", p, {"v": 12.55, "i": 0.56}, "/tmp/r.json")
     assert "batt_profile_v:" in txt and "batt_r_warn_ohm: 0.2700" in txt
     assert cm.battery_profile(cycles[:2], 3) is None
+
+
+# --- rampe de vitesse : rotation progressive de la decharge batterie (2026-10-18) -----------------
+def test_slew_rises_and_falls_without_a_jump():
+    s = cm.Slew(accel=1.0)
+    outs, dt = [], 0.1
+    for _ in range(40):
+        outs.append(s.update(2.5, dt))                    # montee vers 2,5 rad/s
+    assert outs[0] <= 0.11 and max(outs) == 2.5
+    assert all(b - a <= 0.1 + 1e-9 for a, b in zip(outs, outs[1:]))     # jamais plus de a*dt
+    for _ in range(40):
+        outs.append(s.update(0.0, dt))                    # descente jusqu'a l'arret
+    assert s.stopped and outs[-1] == 0.0
+    assert all(abs(b - a) <= 0.1 + 1e-9 for a, b in zip(outs, outs[1:]))
+
+
+def test_slew_time_to_nominal_matches_accel():
+    assert cm.Slew(1.0).time_to(2.5) == 2.5
+    assert cm.Slew(0.5).time_to(2.5) == 5.0
+
+
+def test_slew_bounds_a_late_tick():
+    """Un tick en retard (dt = 5 s) ne doit pas produire un saut : dt est borne a 1 s."""
+    s = cm.Slew(1.0)
+    assert s.update(2.5, 5.0) == 1.0
+    assert s.update(-2.5, 5.0) == 0.0                      # puis redescend d'au plus 1 rad/s
+
+
+def test_slew_reverses_through_zero():
+    s = cm.Slew(1.0)
+    for _ in range(30):
+        s.update(2.0, 0.1)
+    seq = [s.update(-2.0, 0.1) for _ in range(50)]
+    assert min(seq) == -2.0
+    assert all(abs(b - a) <= 0.1 + 1e-9 for a, b in zip(seq, seq[1:]))

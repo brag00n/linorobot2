@@ -28,7 +28,8 @@ def _setup(context, *args, **kwargs):
     params = {}
     for key in doc:
         params.update((doc[key] or {}).get("ros__parameters", {}) or {})
-    if not params.get("calibration_enabled", False):
+    if not params.get("calibration_enabled", False) and not params.get(
+            "battery_calibration_enabled", False):
         return [LogInfo(msg="calibration : desactivee pour %s (calibration_enabled=false)"
                             % robot)]
     out = os.path.dirname(os.path.realpath(canonical))
