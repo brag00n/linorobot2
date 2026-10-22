@@ -47,6 +47,7 @@
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <nav_msgs/msg/path.hpp>
 
+#include "bamboo_interfaces/msg/battery_calib_state.hpp"
 #include "bamboo_interfaces/msg/mode_cmd.hpp"
 #include "bamboo_interfaces/msg/motion_compensation_state.hpp"
 #include "bamboo_interfaces/msg/nav_state.hpp"
@@ -637,6 +638,14 @@ public:
       declare_parameter<std::string>("calibration_report_topic", "/bamboo_calibration/report"),
       rclcpp::QoS(1).reliable().transient_local(),
       [this](std_msgs::msg::String::ConstSharedPtr m) {calib_report_ = m;}, calib_opts);
+    // Etat de la calibration BATTERIE (qualite, %, duree restante) : LATCHE, 1 Hz.
+    battcal_sub_ = create_subscription<bamboo_interfaces::msg::BatteryCalibState>(
+      declare_parameter<std::string>("battery_calib_topic", "/bamboo_calibration/battery"),
+      rclcpp::QoS(1).reliable().transient_local(),
+      [this](bamboo_interfaces::msg::BatteryCalibState::ConstSharedPtr m) {
+        battcal_ = m;
+        last_battcal_ = now_steady_.now();
+      }, calib_opts);
     gamepad_sub_ = create_subscription<std_msgs::msg::Bool>(
       gamepad_state_topic_, rclcpp::QoS(1).reliable(),
       [this](std_msgs::msg::Bool::ConstSharedPtr m) {
@@ -1042,9 +1051,18 @@ private:
     if (!st || st->confirm_text.empty()) {return;}
     const double sc = 0.55 * u;
     int base = 0;
-    const int tw = cv::getTextSize(st->confirm_text, cv::FONT_HERSHEY_SIMPLEX, sc, 1, &base).width;
+    std::vector<std::string> info;
+    {
+      std::istringstream is(st->confirm_detail);
+      std::string ln;
+      while (std::getline(is, ln)) {if (!ln.empty()) {info.push_back(ln);}}
+    }
+    int tw = cv::getTextSize(st->confirm_text, cv::FONT_HERSHEY_SIMPLEX, sc, 1, &base).width;
+    for (const auto & ln : info) {
+      tw = std::max(tw, cv::getTextSize(ln, cv::FONT_HERSHEY_SIMPLEX, sc * 0.9, 1, &base).width);
+    }
     const int w = std::min(im.cols - iu(16, u), std::max(iu(300, u), tw + iu(32, u)));
-    const int h = iu(92, u);
+    const int h = iu(92, u) + iu(24, u) * static_cast<int>(info.size());
     const int x = (im.cols - w) / 2;
     const int y = (im.rows - h) / 2;
     const cv::Rect r = cv::Rect(x, y, w, h) & cv::Rect(0, 0, im.cols, im.rows);
@@ -1053,8 +1071,20 @@ private:
     roi *= 0.25;                                       // fond assombri : la boite se detache
     cv::rectangle(im, r, kBad, std::max(2, iu(2, u)));
     put(im, st->confirm_text, x + iu(16, u), y + iu(36, u), kVal, sc);
-    put(im, "A : supprimer", x + iu(16, u), y + iu(72, u), kOn, sc);
-    put(im, "B : annuler", x + w / 2 + iu(16, u), y + iu(72, u), kZoneOut, sc);
+    // Libelle du bouton A : la fin du texte apres « A = » (« ... A = lancer »), sinon
+    // « A : oui » (ex. « Supprimer la carte X ? » garde « A : supprimer »).
+    const auto pos = st->confirm_text.rfind("A = ");
+    const std::string yes = pos == std::string::npos ?
+      (st->confirm_text.rfind("Supprimer", 0) == 0 ? "A : supprimer" : "A : oui") :
+      "A : " + st->confirm_text.substr(pos + 4);
+    int yy = y + iu(36, u);
+    for (const auto & ln : info) {
+      yy += iu(24, u);
+      const bool alert = ln[0] == '!';
+      put(im, alert ? ln.substr(1) : ln, x + iu(16, u), yy, alert ? kBad : kLabel, sc * 0.9);
+    }
+    put(im, yes, x + iu(16, u), yy + iu(36, u), kOn, sc);
+    put(im, "B : annuler", x + w / 2 + iu(16, u), yy + iu(36, u), kZoneOut, sc);
   }
 
   bamboo_interfaces::msg::TeleopState::ConstSharedPtr teleopFresh()
@@ -1220,6 +1250,99 @@ private:
     for (const auto & l : lines) {
       put(im, l, x + iu(10, u), yy, kVal, 0.38 * u);
       yy += iu(15, u);
+    }
+  }
+
+  /// Duree en clair : « 1 h 05 », « 38 min », « 45 s » ; « -- » si inconnue.
+  static std::string humanDuration(double s)
+  {
+    if (std::isnan(s) || s < 0.0) {return "--";}
+    const int t = static_cast<int>(s + 0.5);
+    std::ostringstream o;
+    if (t >= 3600) {
+      o << t / 3600 << " h " << std::setw(2) << std::setfill('0') << (t % 3600) / 60;
+    } else if (t >= 90) {
+      o << (t + 30) / 60 << " min";
+    } else {
+      o << t << " s";
+    }
+    return o.str();
+  }
+
+  /// Carte BATTERIE (mode CALIB, groupe batterie) : AVANT le lancement, le resultat de la
+  /// calibration precedente ; PENDANT, le pourcentage estime, la qualite du pack comparee a un
+  /// pack de bonne qualite, la capacite mesuree et la duree restante (demande 2026-10-18).
+  void drawBatteryCalibCard(cv::Mat & im, int x, int y, double u)
+  {
+    const auto & m = *battcal_;
+    const bool live = m.phase == "plein" || m.phase == "decharge" || m.phase == "calcul";
+    const bool idle = m.phase == "idle";
+    const int h = iu(38 + 8 * 19 + 10, u);
+    std::string title = "BATTERIE";
+    if (live) {
+      title = "BATTERIE " + std::string(m.procedure == "batterie_decharge_passive" ?
+        "sans moteur" : (m.procedure == "batterie_decharge" ? "avec moteur" : "plein"));
+    } else if (idle && !m.date.empty()) {
+      title = "BATTERIE derniere calibration";
+    } else if (idle) {
+      title = "BATTERIE aucune calibration";
+    }
+    cardFrame(im, x, y, h, title, live, u);
+    const int step = iu(19, u);
+    // Premiere ligne : ce que fait la calibration (Init..., Calib. batt. avec moteur...,
+    // Termine). Remplace les rappels de touches qui etaient en pied de carte.
+    const bool bad_end = m.phase == "abandon" || m.activity == "Interrompue";
+    cardRow(im, x, y + iu(38, u), u, {
+      {10, "Activite", kLabel},
+      {80, m.activity.empty() ? "--" : m.activity,
+        live ? kVal : (bad_end ? kZoneOut : kOn)}});
+    const int yc = y + iu(38, u) + step;
+    const cv::Scalar qc = m.quality_label == "bon" ? kOn :
+      (m.quality_label == "moyen" ? kZoneOut : (m.quality_label == "faible" ? kBad : kOff));
+    const bool has_q = !std::isnan(m.quality_pct);
+    const bool has_soc = !std::isnan(m.soc_pct);
+    const bool has_cap = !std::isnan(m.capacity_ah);
+    cardRow(im, x, yc, u, {
+      {10, "charge", kLabel},
+      {70, has_soc ? fmt(m.soc_pct, 0) + " %" : "--", has_soc ? kVal : kOff},
+      {150, "qualite", kLabel},
+      {215, has_q ? fmt(m.quality_pct, 0) + " % " + m.quality_label : "--", has_q ? qc : kOff}});
+    cardRow(im, x, yc + step, u, {
+      {10, "capacite", kLabel},
+      {70, has_cap ? fmt(m.capacity_ah, 2) + " Ah" : "mesure...", has_cap ? kVal : kOff},
+      {150, "reference", kLabel}, {215, fmt(m.capacity_ref_ah, 1) + " Ah", kVal}});
+    cardRow(im, x, yc + 2 * step, u, {
+      {10, "R int.", kLabel},
+      {70, std::isnan(m.r_ohm) ? "--" : fmt(m.r_ohm, 2) + (m.r_estimated ? " (est.)" : " ohm"),
+        kVal},
+      {150, "tension", kLabel},
+      {215, std::isnan(m.v_rest) ? "--" : fmt(m.v_rest, 2) + " V", kVal}});
+    if (live) {
+      cardRow(im, x, yc + 3 * step, u, {
+        {10, "reste", kLabel},
+        {70, std::isnan(m.remaining_s) ? "mesure..." :
+          (m.remaining_firm ? "" : "~ ") + humanDuration(m.remaining_s),
+          std::isnan(m.remaining_s) ? kOff : kVal},
+        {150, "ecoule", kLabel}, {215, humanDuration(m.elapsed_s), kVal}});
+      // Barre de progression : part de la capacite deja consommee (Ah / capacite).
+      const double frac = (has_cap && m.capacity_ah > 0.0) ?
+        std::min(1.0, static_cast<double>(m.ah_used) / m.capacity_ah) : 0.0;
+      const cv::Rect bar(x + iu(10, u), yc + 3 * step + iu(8, u), iu(280, u), iu(8, u));
+      cv::rectangle(im, bar, kBorder, 1, cv::LINE_AA);
+      cv::rectangle(im, cv::Rect(bar.x, bar.y, static_cast<int>(bar.width * frac), bar.height),
+        has_cap ? kOn : kOff, cv::FILLED);
+    } else {
+      cardRow(im, x, yc + 3 * step, u, {
+        {10, "date", kLabel}, {70, m.date.empty() ? "--" : m.date, kVal}});
+      cardRow(im, x, yc + 4 * step, u, {
+        {10, "arret", kLabel},
+        {70, m.stop_reason.empty() ? "--" : m.stop_reason.substr(0, 28), kVal}});
+      if (m.partial) {
+        cardRow(im, x, yc + 5 * step, u, {{10, "PARTIELLE : calibration interrompue", kZoneOut}});
+      }
+    }
+    if (live && !m.stop_reason.empty()) {
+      cardRow(im, x, yc + 5 * step, u, {{10, "arret : " + m.stop_reason.substr(0, 30), kZoneOut}});
     }
   }
 
@@ -1585,7 +1708,13 @@ private:
     } else if (mode == "CONDUITE") {
       drawDriveCard(im, x, y, u);
     } else if (mode == "CALIB") {
-      drawCalibCard(im, x, y, u);
+      // Groupe « batterie » : la boite BATTERIE (dernier resultat AVANT lancement, puis etat en
+      // direct), si le noeud de calibration publie ; sinon la carte MESURES d'origine.
+      if (st->group == "batterie" && fresh(last_battcal_, 5.0) && battcal_) {
+        drawBatteryCalibCard(im, x, y, u);
+      } else {
+        drawCalibCard(im, x, y, u);
+      }
     } else if (mode == "SANTE") {
       drawHealthCard(im, x, y, u);
     } else if (mode == "NAV") {
@@ -1983,6 +2112,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr batt_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr calib_sub_;
+  rclcpp::Subscription<bamboo_interfaces::msg::BatteryCalibState>::SharedPtr battcal_sub_;
   rclcpp::Subscription<bamboo_interfaces::msg::NavState>::SharedPtr nav_sub_;
   // --- mini-carte (mode NAV) ---
   std::shared_ptr<const MiniMap> minimap_;            // atomic_load / atomic_store
@@ -2037,6 +2167,8 @@ private:
   sensor_msgs::msg::JointState::ConstSharedPtr req_;
   sensor_msgs::msg::Imu::ConstSharedPtr imu_;
   std_msgs::msg::String::ConstSharedPtr calib_report_;
+  bamboo_interfaces::msg::BatteryCalibState::ConstSharedPtr battcal_;
+  rclcpp::Time last_battcal_{0, 0, RCL_STEADY_TIME};
   float batt_v_{0.0f};
   // Chaine de tracking, relayee par bamboo_teleop (ModeCmd detect / gen / capture_duration).
   bool detect_on_{false};

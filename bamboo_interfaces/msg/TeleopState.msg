@@ -15,6 +15,7 @@ bool armed              # traction armee a la manette (appui long sur B)
 bool armed_latched      # armement VERROUILLE (B long + L long) : la perte de la manette ne
                         # desarme plus ; pastille ARME B clignotante (2026-10-13)
 string confirm_text     # CONFIRMATION demandee ("" = aucune) : A = oui, B = non (2026-10-13)
+string confirm_detail   # lignes d'info sous la question, une par ligne ; « ! » en tete = alerte
 string nav_stack        # pile NAV (A long) : off | starting | on | stopping -- pastille NAV
 bool busy               # un comportement long tourne (calibration)
 string busy_text        # "CALIB 3/12"

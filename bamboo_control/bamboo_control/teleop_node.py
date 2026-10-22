@@ -94,7 +94,7 @@ from diagnostic_updater import Updater
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool
 from std_srvs.srv import SetBool, Trigger
-from sensor_msgs.msg import Joy, JoyFeedback, JoyFeedbackArray
+from sensor_msgs.msg import BatteryState, Joy, JoyFeedback, JoyFeedbackArray
 
 from bamboo_interfaces.action import Calibrate, TrainFaces
 from bamboo_interfaces.msg import ModeCmd, NavState, RobotMode, TeleopState
@@ -358,6 +358,8 @@ class TeleopNode(Node):
         self._curAction = None        # action en cours d'execution (cf. _run)
         self._pendingActs = set()     # actions dont la commande attend sa reponse
         self._confirm = None          # confirmation en cours (cf. _askConfirm)
+        self._battSeen = None         # (tension V, fraction, statut, instant) de /battery
+        self.create_subscription(BatteryState, "/battery", self._onBatt, 10)
         self._confirmIgnore = set()   # touches qui y ont repondu, ignorees jusqu'au relache
         self.create_subscription(NavState, "/navigation/state",
                                  self._onNavState,
@@ -1106,10 +1108,15 @@ class TeleopNode(Node):
             # Batterie : PLEIN = 60 s au repos, sans mouvement (chargeur debranche, apres 1 h
             # de repos) ; DECHARGE = cycles rotation/repos ROUES LEVEES jusqu'a la coupure
             # (des heures ; continue meme si la manette s'endort -- B l'arrete).
-            "calib_batt_full": (lambda: self._calibStart(True, "batterie_plein"),
-                                lambda: "batterie : plein au repos", self._calBusy),
-            "calib_batt_discharge": (lambda: self._calibStart(False, "batterie_decharge"),
-                                     lambda: "batterie : profil de decharge", self._calBusy),
+            # DECHARGES (2026-10-18) : une boite de CONFIRMATION (A = oui, B = non, 10 s) avant
+            # de partir ; AVEC moteur (roues levees) ou SANS moteur (robot immobile). Les deux
+            # s'arretent seules au coude de decharge et gardent leurs mesures si on les arrete.
+            "calib_batt_discharge": (lambda: self._askBattCalib(True),
+                                     lambda: "batterie : decharge AVEC moteur", self._calBusy),
+            "calib_batt_passive": (lambda: self._askBattCalib(False),
+                                   lambda: "batterie : decharge SANS moteur", self._calBusy),
+            "calib_batt_stop": (self._askBattStop, lambda: "arreter la calibration",
+                                lambda: not self._calBusy()),
             "calib_arcs": (self._calibToggleArcs, lambda: "arcs", lambda: self._calArcs),
             "calib_variant": (self._calibNextVariant,
                               lambda: "variante %s" % self._calVariant, None),
@@ -1322,6 +1329,9 @@ class TeleopNode(Node):
             st.nav_stack = self._navStackState()
         if hasattr(st, "confirm_text"):
             st.confirm_text = self._confirm["text"] if self._confirm is not None else ""
+        if hasattr(st, "confirm_detail"):
+            st.confirm_detail = (self._confirm.get("detail", "")
+                                 if self._confirm is not None else "")
         st.busy = self._calBusy()
         st.busy_text = self._calText if st.busy else ""
         self._statePub.publish(st)
@@ -1457,8 +1467,26 @@ class TeleopNode(Node):
         self._askConfirm("Supprimer la carte %s ?" % name.replace("carte_", ""),
                          lambda n=name: self._nav("delete_map", n))
 
-    def _askConfirm(self, text, fn):
-        self._confirm = {"text": text, "fn": fn, "t": time.monotonic(), "ready": False}
+    def _onBatt(self, msg):
+        self._battSeen = (msg.voltage, msg.percentage, msg.power_supply_status, time.monotonic())
+
+    def _battDetail(self):
+        """Lignes d'info sous la question d'une calibration batterie : tension du moment et,
+        si le pilote voit un chargeur, une ALERTE (non bloquante : le point 100 % serait faux)."""
+        seen = self._battSeen
+        if seen is None or time.monotonic() - seen[3] > 5.0:
+            return "tension actuelle inconnue"
+        v, frac, status, _t = seen
+        line = "tension actuelle %.2f V" % v
+        if frac == frac and 0.0 <= frac <= 1.0:
+            line += " (%.0f %%)" % (100.0 * frac)
+        if status == BatteryState.POWER_SUPPLY_STATUS_CHARGING:
+            line += "\n!ATTENTION : chargeur detecte, le point 100 % sera faux"
+        return line
+
+    def _askConfirm(self, text, fn, detail=""):
+        self._confirm = {"text": text, "fn": fn, "t": time.monotonic(), "ready": False,
+                         "detail": detail}
         self.get_logger().info("confirmation demandee : %s (A = oui, B = non)" % text)
         self._publishState()
 
@@ -1721,14 +1749,36 @@ class TeleopNode(Node):
         self._calProc = procedure
         goal = Calibrate.Goal(procedure=procedure, variant=self._calVariant,
                               include_arcs=self._calArcs, imu_check_only=bool(imu_only))
-        self._calText = "CALIB IMU" if imu_only else (
-            "PID 0/?" if procedure else "CALIB 0/?")
+        batt = procedure.startswith("batterie")
+        self._calText = "CALIB BATT" if batt else ("CALIB IMU" if imu_only else (
+            "PID 0/?" if procedure else "CALIB 0/?"))
         self.get_logger().warn("calibration %s lancee (variante %s, arcs %s)"
-                               % ("IMU SEULE" if imu_only else "COMPLETE", self._calVariant,
-                                  self._calArcs))
+                               % ("BATTERIE" if batt else ("IMU SEULE" if imu_only
+                                                           else "COMPLETE"),
+                                  self._calVariant, self._calArcs))
         self._calGoal = self._calCli.send_goal_async(goal,
                                                      feedback_callback=self._onCalFeedback)
         self._calGoal.add_done_callback(self._onCalAccepted)
+
+    def _askBattCalib(self, motor):
+        """Confirmation avant une decharge de calibration : durees et conditions en clair."""
+        if self._calBusy():
+            self.get_logger().warn("calibration deja en cours : appui ignore")
+            return
+        proc = "batterie_decharge" if motor else "batterie_decharge_passive"
+        text = ("Calibration batterie %s (chargeur debranche%s) ? A = lancer"
+                % ("AVEC moteur" if motor else "SANS moteur",
+                   ", roues LEVEES" if motor else ", robot immobile"))
+        self._askConfirm(text, lambda: self._calibStart(not motor, proc),
+                         self._battDetail())
+
+    def _askBattStop(self):
+        """R long du groupe batterie : arreter la calibration en cours, mesures gardees."""
+        if not self._calBusy():
+            self.get_logger().info("aucune calibration en cours")
+            return
+        self._askConfirm("Arreter la calibration batterie (mesures gardees) ? A = arreter",
+                         lambda: self._calibCancel("utilisateur"))
 
     def _onCalAccepted(self, future):
         try:
@@ -1768,7 +1818,8 @@ class TeleopNode(Node):
         # Une DECHARGE de batterie dure des heures roues levees : la manette qui s'endort ne
         # l'arrete pas (le gyro du noeud de calibration arrete tout si le robot touche le
         # sol). Tout autre motif (STOP, stick, changement de mode) l'arrete.
-        if why == "manette perdue" and getattr(self, "_calProc", "") == "batterie_decharge":
+        if why == "manette perdue" and getattr(self, "_calProc", "") in (
+                "batterie_decharge", "batterie_decharge_passive"):
             return
         if self._calHandle is not None:
             self.get_logger().warn("calibration ANNULEE (%s)" % why)

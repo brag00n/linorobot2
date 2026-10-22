@@ -292,13 +292,15 @@ bamboo_teleop:
           ZR_long: "flip_image"
           A_long: "calib_pid_raised"
           X_long: "calib_pid_ground"
-        # Batterie : A long = PLEIN au repos (60 s, sans mouvement ; chargeur DEBRANCHE
-        # depuis 1 h) ; X long = PROFIL DE DECHARGE roues LEVEES jusqu'a 3,3 V/element
-        # (des heures). Resultat = candidat (profil, capacite, R de reference, seuils).
+        # Batterie (2026-10-18, revu 2026-10-21) : X long = decharge AVEC moteur (roues levees),
+        # Y long = SANS moteur ; les deux demandent une confirmation (A = oui) et commencent
+        # d'elles-memes par la recherche du point 100 % (60 s au repos) : plus de touche
+        # « plein ». R long = ARRETER (mesures gardees).
         batterie:
           ZR_long: "flip_image"
-          A_long: "calib_batt_full"
           X_long: "calib_batt_discharge"
+          Y_long: "calib_batt_passive"
+          R_long: "calib_batt_stop"
         essai:
           ZR_long: "flip_image"
           A: "calib_apply"

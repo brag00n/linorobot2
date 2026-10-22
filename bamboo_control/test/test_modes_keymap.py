@@ -21,8 +21,9 @@ ACTIONS = {"tracking", "recenter", "recognition", "acquisition", "tracker", "pre
            "calib_arcs", "calib_variant", "calib_apply", "calib_revert", "calib_pi",
            "flip_image", "nav_unavailable", "acq", "trkv", "detector_prev",
            "tracker_prev", "predict_prev", "capture_next", "capture_prev",
-           "calib_pid_raised", "calib_pid_ground", "calib_batt_full",
-           "calib_batt_discharge", "nav_explore", "nav_auto_explore", "nav_save_map", "nav_idle",
+           "calib_pid_raised", "calib_pid_ground",
+           "calib_batt_discharge", "calib_batt_passive",
+           "calib_batt_stop", "nav_explore", "nav_auto_explore", "nav_save_map", "nav_idle",
            "nav_navigate", "nav_save_wp", "nav_goto_next", "nav_goto_home", "nav_cancel",
            "nav_new_map", "nav_gate_next", "nav_gate_prev", "nav_explore_gate",
            "nav_dest_next", "nav_dest_prev", "nav_goto_sel", "nav_dest_del", "nav_relocalize",
@@ -104,3 +105,14 @@ def test_model_rejects_bad_entries():
 def test_display_key():
     assert displayKey("X_long") == "X long"
     assert displayKey("MINUS") == "-"
+
+
+def test_battery_group_has_no_plein_key():
+    """Le « plein » est fait par chaque decharge (repos initial) : plus de touche A long."""
+    import re
+    import os
+    src = open(os.path.join(os.path.dirname(__file__), "..", "config", "joy_bamboo.yaml"),
+               encoding="utf-8").read()
+    assert "calib_batt_full" not in src
+    bloc = re.search(r"batterie:\n((?:          .*\n)+)", src).group(1)
+    assert "X_long" in bloc and "Y_long" in bloc and "R_long" in bloc and "A_long" not in bloc
