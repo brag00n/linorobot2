@@ -215,6 +215,15 @@
     # Type de pack (bamboo_base/config/battery_types.yaml) : sa batterie IDEALE sert de reference
     # a la calibration de la batterie, et fixe sa methode (courant mesure par l'INA219).
     battery_type: esp32_ups_3s1p
+    # Profil de decharge MESURE du pack, calibration batterie AVEC moteur du 2026-10-22, apres
+    # une charge de toute la journee, arret au coude 9,27 V (candidat
+    # batt_candidat_20261022_190116.yaml), VALIDE par l'utilisateur. Le driver ESP32 s'en sert
+    # pour la jauge a la place de la courbe Li-ion generique. Capacite 0,88 Ah soit 36 % des
+    # 2,6 Ah du pack ideal ; le test SANS moteur du 20/10 donnait 0,76 Ah (31 %).
+    # La resistance interne n'a pas ete mesuree (roues levees) : batt_r_ohm reste la reference.
+    batt_profile_soc: [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0]
+    batt_profile_v: [9.447, 10.222, 10.473, 10.638, 10.744, 10.843, 10.969, 11.007, 11.083,
+                     11.156, 11.351]
 
     # --- CAPTEURS presents sur CE robot (lot NAV, 2026-10-10) --------------
     # Lus par le diagnostic de navigation et par les prerequis des modes : un
