@@ -2,6 +2,7 @@
 import math
 import os
 import sys
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -134,3 +135,51 @@ def test_slew_reverses_through_zero():
     seq = [s.update(-2.0, 0.1) for _ in range(50)]
     assert min(seq) == -2.0
     assert all(abs(b - a) <= 0.1 + 1e-9 for a, b in zip(seq, seq[1:]))
+
+
+CAND = """# CANDIDAT
+    batt_profile_soc: [0, 50, 100]
+    batt_profile_v: [9.4, 10.8, 11.3]
+    batt_capacity_ah: 0.881
+"""
+ROBOT = """/**:
+  ros__parameters:
+    battery_type: esp32_ups_3s1p
+    # ancien profil
+    batt_profile_soc: [0.0, 100.0]
+    batt_profile_v: [9.0,
+                     12.0]
+
+    sensors:
+      lidar: "d500"
+"""
+
+
+def test_profile_parse_and_refuses_bad_input():
+    assert cm.parse_profile_yaml(CAND) == ([0.0, 50.0, 100.0], [9.4, 10.8, 11.3])
+    with pytest.raises(ValueError):
+        cm.parse_profile_yaml("batt_profile_soc: [0, 100]\n batt_profile_v: [9.0]\n")
+    with pytest.raises(ValueError):
+        cm.parse_profile_yaml("batt_profile_soc: [0, 100]\n batt_profile_v: [11.0, 9.0]\n")
+    with pytest.raises(ValueError):
+        cm.parse_profile_yaml("rien")
+
+
+def test_profile_replaces_bare_keys_then_the_marked_block_and_keeps_the_rest():
+    soc, v = [0.0, 50.0, 100.0], [9.4, 10.8, 11.3]
+    once = cm.set_profile_in_yaml(ROBOT, soc, v, "essai 1")
+    assert "[9.0," not in once and once.count("batt_profile_v:") == 1
+    assert "sensors:" in once and 'lidar: "d500"' in once and "# ancien profil" in once
+    assert cm.parse_profile_yaml(once) == (soc, v)
+    twice = cm.set_profile_in_yaml(once, [0.0, 100.0], [9.5, 11.4], "essai 2")
+    assert twice.count(cm.PROFILE_BEGIN) == 1 and "essai 1" not in twice
+    assert cm.parse_profile_yaml(twice) == ([0.0, 100.0], [9.5, 11.4])
+    assert twice.endswith(ROBOT[ROBOT.index("\n    sensors:") - 1:]) or "sensors:" in twice
+
+
+def test_profile_inserted_after_battery_type_and_refused_without_it():
+    bare = "a:\n  b:\n    battery_type: x\n    k: 1\n"
+    out = cm.set_profile_in_yaml(bare, [0.0, 100.0], [9.0, 11.0], "n")
+    assert out.index("battery_type") < out.index("batt_profile_soc") < out.index("k: 1")
+    with pytest.raises(ValueError):
+        cm.set_profile_in_yaml("a: 1\n", [0.0, 100.0], [9.0, 11.0], "n")

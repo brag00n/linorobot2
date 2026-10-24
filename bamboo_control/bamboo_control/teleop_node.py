@@ -97,7 +97,8 @@ from std_srvs.srv import SetBool, Trigger
 from sensor_msgs.msg import BatteryState, Joy, JoyFeedback, JoyFeedbackArray
 
 from bamboo_interfaces.action import Calibrate, TrainFaces
-from bamboo_interfaces.msg import ModeCmd, NavState, RobotMode, TeleopState
+from bamboo_interfaces.msg import (BatteryCalibState, ModeCmd, NavState, RobotMode,
+                                   TeleopState)
 from bamboo_interfaces.srv import ChangeMode, NavCommand, Nudge
 from bamboo_control.keymap_model import KEYS, LONG, PREFIX, displayKey, parseKeymap
 
@@ -327,6 +328,12 @@ class TeleopNode(Node):
         self._calCli = ActionClient(self, Calibrate, calNode + "/calibrate")
         self._calApplyCli = self.create_client(Trigger, calNode + "/apply_candidate")
         self._calRevertCli = self.create_client(Trigger, calNode + "/revert")
+        self._calSaveBattCli = self.create_client(Trigger, calNode + "/save_battery_profile")
+        self._battCal = None          # dernier BatteryCalibState (resultat a sauver)
+        self.create_subscription(
+            BatteryCalibState, calNode + "/battery", self._onBattCal,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self._calPiCli = self.create_client(SetBool, calNode + "/set_pi")
         self._calVariants = [v.strip() for v in str(self.declare_parameter(
             "calibration_variants", "essai").value).split(";") if v.strip()] or ["essai"]
@@ -1115,6 +1122,8 @@ class TeleopNode(Node):
                                      lambda: "batterie : decharge AVEC moteur", self._calBusy),
             "calib_batt_passive": (lambda: self._askBattCalib(False),
                                    lambda: "batterie : decharge SANS moteur", self._calBusy),
+            "calib_batt_save": (self._askBattSave, lambda: "batterie : sauver le profil",
+                                lambda: self._calBusy()),
             "calib_batt_stop": (self._askBattStop, lambda: "arreter la calibration",
                                 lambda: not self._calBusy()),
             "calib_arcs": (self._calibToggleArcs, lambda: "arcs", lambda: self._calArcs),
@@ -1771,6 +1780,29 @@ class TeleopNode(Node):
                    ", roues LEVEES" if motor else ", robot immobile"))
         self._askConfirm(text, lambda: self._calibStart(not motor, proc),
                          self._battDetail())
+
+    def _onBattCal(self, msg):
+        self._battCal = msg
+
+    def _askBattSave(self):
+        """A long du groupe batterie : sauver le profil de la derniere calibration dans le
+        fichier du robot, puis redemarrer le driver (confirmation d'abord)."""
+        m = self._battCal
+        if self._calBusy():
+            self.get_logger().warn("calibration en cours : rien a sauver")
+            return
+        if m is None or m.phase != "idle" or not m.date or m.partial:
+            why = ("derniere calibration PARTIELLE" if m is not None and m.partial
+                   else "aucune calibration complete")
+            self._askConfirm("Rien a sauver. A = fermer", lambda: None, "!" + why)
+            return
+        cap = "%.2f Ah" % m.capacity_ah if m.capacity_ah == m.capacity_ah else "?"
+        qual = ("%.0f %% %s" % (m.quality_pct, m.quality_label)
+                if m.quality_pct == m.quality_pct else "?")
+        self._askConfirm(
+            "Sauver le profil batterie du %s dans le robot ? A = sauver" % m.date,
+            lambda: self._callTrigger(self._calSaveBattCli, "profil batterie sauve"),
+            "capacite %s, qualite %s\nLe driver redemarre (quelques secondes)" % (cap, qual))
 
     def _askBattStop(self):
         """R long du groupe batterie : arreter la calibration en cours, mesures gardees."""

@@ -736,6 +736,8 @@ class CalibrationNode(Node):
                      callback_group=self._cbg)
         self.create_service(Trigger, "~/apply_candidate", self._onApply, callback_group=self._cbg)
         self.create_service(Trigger, "~/revert", self._onRevert, callback_group=self._cbg)
+        self.create_service(Trigger, "~/save_battery_profile", self._onSaveBatteryProfile,
+                            callback_group=self._cbg)
         self.create_service(SetBool, "~/set_pi", self._onSetPi, callback_group=self._cbg)
         self.get_logger().info("calibration prete (%s, variante fichier %s)"
                                % (self.robot or "?", self.fileVariant))
@@ -1312,6 +1314,71 @@ class CalibrationNode(Node):
                         "n'est pas modifie" % (self._last["variant"], SCRATCH_VARIANT)
                         if ok else why)
         return resp
+
+    def _onSaveBatteryProfile(self, _req, resp):
+        """Ecrit le profil de la DERNIERE calibration batterie dans le fichier canonique du robot,
+        puis redemarre le driver pour qu'il le relise (demande utilisateur du 2026-10-22).
+
+        Seul endroit ou ce noeud ecrit dans le fichier canonique, et seulement sur geste
+        confirme a la manette. Un resultat PARTIEL est refuse : son profil ne couvre pas la
+        decharge."""
+        if self._busy:
+            resp.success, resp.message = False, "une calibration est en cours"
+            return resp
+        last = bprog.read_last(self._battFolder())
+        if last is None or not last.get("candidat"):
+            resp.success, resp.message = False, "aucune calibration batterie a sauver"
+            return resp
+        if last.get("partielle"):
+            resp.success, resp.message = False, (
+                "derniere calibration PARTIELLE (%s) : refusee" % last.get("raison_arret", "?"))
+            return resp
+        target = os.path.join(self._battFolder(), "%s.yaml" % self.robot)
+        try:
+            cand = os.path.join(self._battFolder(), os.path.basename(last["candidat"]))
+            with open(cand, encoding="utf-8", newline="") as fh:
+                soc, volts = cm.parse_profile_yaml(fh.read())
+            with open(target, encoding="utf-8", newline="") as fh:
+                text = fh.read()
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(last.get("date") or 0))
+            note = ("Calibration batterie du %s (%s), capacite %.2f Ah, qualite %.0f %%, "
+                    "arret : %s." % (when, last.get("procedure", "?"),
+                                     last.get("capacite_ah") or 0.0,
+                                     last.get("qualite_pct") or 0.0,
+                                     last.get("raison_arret", "?")))
+            new = cm.set_profile_in_yaml(text, soc, volts, note)
+            tmp = target + ".tmp"
+            with open(tmp, "w", encoding="utf-8", newline="") as fh:
+                fh.write(new)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, target)
+        except (OSError, ValueError) as exc:
+            resp.success, resp.message = False, "profil NON sauve : %s" % exc
+            return resp
+        ok, why = self._restartDriver()
+        resp.success = True
+        resp.message = ("profil de %s sauve dans %s (%d points, %.2f Ah) ; %s"
+                        % (when, os.path.basename(target), len(volts),
+                           last.get("capacite_ah") or 0.0,
+                           "driver redemarre" if ok else
+                           "driver NON redemarre (%s) : le redemarrer a la main" % why))
+        self.get_logger().warn(resp.message)
+        return resp
+
+    def _restartDriver(self, timeout=3.0):
+        name = self.driverName or self._findDriver()
+        if not name:
+            return False, "driver introuvable"
+        cli = self.create_client(Trigger, name + "/restart", callback_group=self._cbg)
+        if not cli.wait_for_service(timeout_sec=1.0):
+            return False, "pas de service %s/restart" % name
+        fut = cli.call_async(Trigger.Request())
+        ev = threading.Event()
+        fut.add_done_callback(lambda _f: ev.set())
+        if not ev.wait(timeout) or fut.result() is None:
+            return False, "driver sans reponse"
+        return fut.result().success, fut.result().message
 
     def _onRevert(self, _req, resp):
         kp, ki, kd = self.filePid

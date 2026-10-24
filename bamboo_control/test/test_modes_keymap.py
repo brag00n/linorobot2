@@ -22,7 +22,7 @@ ACTIONS = {"tracking", "recenter", "recognition", "acquisition", "tracker", "pre
            "flip_image", "nav_unavailable", "acq", "trkv", "detector_prev",
            "tracker_prev", "predict_prev", "capture_next", "capture_prev",
            "calib_pid_raised", "calib_pid_ground",
-           "calib_batt_discharge", "calib_batt_passive",
+           "calib_batt_discharge", "calib_batt_passive", "calib_batt_save",
            "calib_batt_stop", "nav_explore", "nav_auto_explore", "nav_save_map", "nav_idle",
            "nav_navigate", "nav_save_wp", "nav_goto_next", "nav_goto_home", "nav_cancel",
            "nav_new_map", "nav_gate_next", "nav_gate_prev", "nav_explore_gate",
@@ -115,4 +115,4 @@ def test_battery_group_has_no_plein_key():
                encoding="utf-8").read()
     assert "calib_batt_full" not in src
     bloc = re.search(r"batterie:\n((?:          .*\n)+)", src).group(1)
-    assert "X_long" in bloc and "Y_long" in bloc and "R_long" in bloc and "A_long" not in bloc
+    assert "X_long" in bloc and "Y_long" in bloc and "R_long" in bloc and 'A_long: "calib_batt_save"' in bloc

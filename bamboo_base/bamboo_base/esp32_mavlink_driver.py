@@ -44,6 +44,7 @@ commutable a chaud : c'est ce qui rend l'actuation pilotable sans redemarrer le 
 l'orchestrateur MCP ne sachant pas passer d'argument de launch.
 """
 import math
+import os
 import time
 
 import rclpy
@@ -57,6 +58,7 @@ from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu, BatteryState, MagneticField, JointState
 from geometry_msgs.msg import Twist, TransformStamped
+from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 
 from bamboo_interfaces.msg import WheelRpm, Esp32Status, NavState, RobotMode, TeleopState
@@ -334,6 +336,11 @@ class Esp32MavlinkDriver(Node):
                                      latched)
             self.hmi_timer = self.create_timer(1.0, self._send_hmi)
 
+        # Redemarrage a la demande (profil de batterie sauve par la calibration) : le driver lit
+        # ses parametres au demarrage ; il s'arrete donc proprement et le conteneur
+        # (`restart: unless-stopped`) le relance avec le fichier canonique a jour.
+        self._restart_timer = None
+        self.create_service(Trigger, "~/restart", self._on_restart)
         # Enregistre EN DERNIER : le callback touche a des membres et au lien serie, il ne
         # doit donc pas pouvoir s'executer sur un objet a demi construit.
         self.add_on_set_parameters_callback(self._on_set_parameters)
@@ -809,6 +816,28 @@ class Esp32MavlinkDriver(Node):
             st.board_pid_kd = cfg["kd"]
         self.pub_status.publish(st)
 
+    def _on_restart(self, _req, resp):
+        """Repond d'abord, puis s'arrete 1 s plus tard (la reponse doit pouvoir partir)."""
+        if self._restart_timer is None:
+            self.get_logger().warn("redemarrage du driver demande : arret dans 1 s, le conteneur "
+                                   "le relance avec le fichier canonique relu")
+            self._restart_timer = self.create_timer(1.0, self._do_restart)
+        resp.success, resp.message = True, "driver ESP32 : redemarrage dans 1 s"
+        return resp
+
+    def _do_restart(self):
+        """Freine puis QUITTE le processus, sans destroy_node ni rclpy.shutdown : appeles depuis
+        un callback du spin, ils laissent le processus en vie (le fil de lecture serie le
+        retient), le driver ne publie alors plus rien et le conteneur ne le relance jamais
+        (constate le 2026-10-22, deux essais). Le systeme ferme le port a la sortie."""
+        self._restart_timer.cancel()
+        try:
+            if self.enable_cmd_vel:
+                self._brake()
+        except Exception:                                           # noqa: BLE001
+            pass
+        os._exit(0)
+
     def destroy_node(self):
         try:
             # _brake() et NON link.stop() : ce dernier est un no-op sur cette carte, donc
@@ -830,7 +859,8 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

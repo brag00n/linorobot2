@@ -365,3 +365,79 @@ def battery_candidate_yaml(robot, prof, full, report_path, extra=None):
     if extra.get("r_estimated"):
         lines.append("    batt_r_estimated: true   # resistance de reference, non mesuree")
     return "\n".join(lines + [""])
+
+
+# ===================================================================== profil -> fichier robot
+PROFILE_BEGIN = "# >>> profil batterie (ecrit par la calibration, touche A long du groupe batterie)"
+PROFILE_END = "# <<< profil batterie"
+
+
+def parse_profile_yaml(text):
+    """(soc, v) lus dans un candidat batt_candidat_*.yaml ; ValueError si absent ou incoherent."""
+    import re
+    out = {}
+    for key in ("batt_profile_soc", "batt_profile_v"):
+        m = re.search(r"^\s*%s:\s*\[([^\]]*)\]" % key, text, re.M)
+        if not m:
+            raise ValueError("%s absent du candidat" % key)
+        out[key] = [float(x) for x in m.group(1).split(",") if x.strip()]
+    soc, v = out["batt_profile_soc"], out["batt_profile_v"]
+    if len(soc) != len(v) or len(v) < 2:
+        raise ValueError("profil incoherent (%d points de %%, %d de tension)" % (len(soc), len(v)))
+    if v != sorted(v) or soc != sorted(soc):
+        raise ValueError("profil non monotone")
+    return soc, v
+
+
+def _wrap(line, indent, width=96):
+    """Coupe une liste YAML `cle: [a, b, ...]` trop longue en alignant la suite sous le `[`."""
+    if len(line) <= width or "[" not in line:
+        return line
+    head, tail = line.split("[", 1)
+    pad = " " * (len(head) + 1)
+    items, out, cur = tail.rstrip("]").split(", "), [], head + "["
+    for i, it in enumerate(items):
+        piece = it + ("," if i < len(items) - 1 else "]")
+        if len(cur) + len(piece) + 1 > width and not cur.endswith("["):
+            out.append(cur.rstrip())
+            cur = pad
+        cur += piece + " "
+    out.append(cur.rstrip())
+    return "\n".join(out)
+
+
+def set_profile_in_yaml(text, soc, v, note, indent="    "):
+    """Fichier canonique `text` avec le profil de batterie (soc, v) ecrit dans un bloc balise.
+
+    Le bloc existant (entre PROFILE_BEGIN et PROFILE_END) est remplace ; a defaut, des cles
+    `batt_profile_*` nues le sont ; a defaut, le bloc est insere apres `battery_type:`. Le reste
+    du fichier (commentaires compris) est conserve a l'octet pres. ValueError sinon."""
+    import re
+    block = [indent + PROFILE_BEGIN] + [indent + "# " + ln for ln in note.splitlines()] + [
+        indent + "batt_profile_soc: [%s]" % ", ".join("%.1f" % s for s in soc),
+        indent + "batt_profile_v: [%s]" % ", ".join("%.3f" % x for x in v),
+        indent + PROFILE_END]
+    block = [_wrap(ln, indent) for ln in block]
+    lines = text.split("\n")
+    idx = [i for i, ln in enumerate(lines) if ln.strip() == PROFILE_BEGIN]
+    end = [i for i, ln in enumerate(lines) if ln.strip() == PROFILE_END]
+    if idx and end and end[0] > idx[0]:
+        lines[idx[0]:end[0] + 1] = block
+        return "\n".join(lines)
+    first = next((i for i, ln in enumerate(lines)
+                  if re.match(r"\s*batt_profile_soc:", ln)), None)
+    if first is not None:
+        last = first
+        for i, ln in enumerate(lines):
+            if re.match(r"\s*batt_profile_v:", ln):
+                last = i
+                while "]" not in lines[last] and last + 1 < len(lines):
+                    last += 1
+                break
+        lines[min(first, last):max(first, last) + 1] = block
+        return "\n".join(lines)
+    at = next((i for i, ln in enumerate(lines) if re.match(r"\s*battery_type:", ln)), None)
+    if at is None:
+        raise ValueError("ni profil ni battery_type dans le fichier du robot")
+    lines[at + 1:at + 1] = block
+    return "\n".join(lines)

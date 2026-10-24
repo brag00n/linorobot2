@@ -296,8 +296,11 @@ bamboo_teleop:
         # Y long = SANS moteur ; les deux demandent une confirmation (A = oui) et commencent
         # d'elles-memes par la recherche du point 100 % (60 s au repos) : plus de touche
         # « plein ». R long = ARRETER (mesures gardees).
+        # A long = SAUVER le profil de la derniere calibration dans le fichier du robot et
+        # redemarrer le driver (confirmation d'abord).
         batterie:
           ZR_long: "flip_image"
+          A_long: "calib_batt_save"
           X_long: "calib_batt_discharge"
           Y_long: "calib_batt_passive"
           R_long: "calib_batt_stop"
