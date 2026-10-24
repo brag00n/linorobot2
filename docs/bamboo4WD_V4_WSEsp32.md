@@ -627,6 +627,7 @@ choisit son bloc par `battery_type:`.
 | **X long** + A | Décharge **avec moteur** : rotation sur place, **roues levées**, traction armée (B long). Commence par 60 s de repos immobile qui fixent le point 100 %. |
 | **Y long** + A | Décharge **sans moteur** : robot immobile, la consommation de fond décharge le pack. Même repos initial. |
 | **R long** + A | **Arrêter** la calibration en cours, mesures gardées. |
+| **A long** + A | **Sauver** le profil de la dernière calibration complète dans le fichier du robot (`batt_profile_soc` / `batt_profile_v`, bloc balisé) et **redémarrer le driver** pour qu'il le relise. Refusé si la dernière calibration est partielle. |
 
 Il n'y a plus de touche « plein » : chaque décharge fixe elle-même son point 100 %, mesuré sur le
 pack tel qu'il est après la charge d'une nuit (pas 12,6 V). Les décharges demandent une
