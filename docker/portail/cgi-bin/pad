@@ -1,0 +1,41 @@
+#!/bin/sh
+# /cgi-bin/pad -- passerelle HTTP de l'assistant d'appairage de la manette (portail :8000).
+#
+# Ce script tourne dans le conteneur `portail` (busybox httpd) et ne fait QUE deux choses :
+#   GET  -> renvoie /run/bamboo-pad/pair.state (JSON ecrit par l'hote, bamboo-pad.py)
+#   POST -> depose `start <id>` ou `cancel <id>` dans /run/bamboo-pad/pair.want
+# Il n'a aucun acces au Bluetooth : l'hote execute (docker/pad/bamboo-pad.py).
+#
+# Garde-fous : liste FERMEE d'actions ; POST exige Content-Type: application/json, ce qu'une page
+# tierce ne peut pas envoyer sans preflight CORS (que httpd ne repond pas) -> pas de CSRF depuis
+# un autre site ouvert sur le telephone ; corps limite a 256 octets.
+D=/run/bamboo-pad
+
+hdr() { printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n'; }
+json() { hdr; printf '\r\n%s\n' "$1"; }
+fail() { printf 'Status: %s\r\n' "$1"; hdr; printf '\r\n{"error":"%s"}\n' "$2"; exit 0; }
+
+[ -d "$D" ] || { json '{"step":"unavailable"}'; exit 0; }
+
+case "$REQUEST_METHOD" in
+    GET)
+        if [ -r "$D/pair.state" ]; then hdr; printf '\r\n'; cat "$D/pair.state"
+        else json '{"step":"idle"}'; fi
+        ;;
+    POST)
+        case "$CONTENT_TYPE" in application/json*) ;; *) fail 415 "content-type" ;; esac
+        len="${CONTENT_LENGTH:-0}"
+        [ "$len" -le 256 ] 2>/dev/null || fail 413 "trop long"
+        body="$(head -c "$len")"
+        case "$body" in
+            *'"action":"start"'*) verb=start ;;
+            *'"action":"cancel"'*) verb=cancel ;;
+            *) fail 400 "action" ;;
+        esac
+        id="$(date +%s)$$"
+        printf '%s %s\n' "$verb" "$id" > "$D/.want.$$" && mv -f "$D/.want.$$" "$D/pair.want" \
+            || fail 500 "ecriture"
+        json "{\"ok\":true,\"id\":\"$id\"}"
+        ;;
+    *) fail 405 "methode" ;;
+esac

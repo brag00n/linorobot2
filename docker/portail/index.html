@@ -93,6 +93,48 @@
     padding: 8px 10px; overflow-x: auto; white-space: nowrap; color: var(--ink); }
   footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule); padding-top: 14px; }
   @media (prefers-reduced-motion: reduce) { a.card { transition: none; } a.card:hover { transform: none; } }
+
+  /* Carte-bouton (meme gabarit qu'une carte-lien) et assistant d'appairage en modales. */
+  button.card { font: inherit; text-align: left; cursor: pointer; width: 100%;
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-content: start;
+    padding: 16px 16px 14px; background: var(--panel); border: 1px solid var(--rule);
+    border-radius: 10px; color: inherit; transition: border-color .15s, transform .15s; }
+  button.card:hover { border-color: var(--accent); transform: translateY(-1px); }
+  button.card:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .pad-state { grid-column: 1 / -1; font: 12px/1.4 var(--mono); color: var(--muted); }
+  dialog { width: min(520px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto;
+    padding: 0; border: 1px solid var(--rule); border-radius: 12px; background: var(--panel);
+    color: var(--ink); }
+  dialog::backdrop { background: rgb(0 0 0 / .5); }
+  .mbody { padding: 22px 22px 8px; display: grid; gap: 14px; }
+  .mbody h3 { margin: 0; font-size: 19px; line-height: 1.25; }
+  .mbody p { margin: 0; }
+  .mfoot { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; padding: 14px 22px 20px; }
+  .btn { font: 600 15px/1 var(--sans); padding: 12px 18px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--rule); background: var(--panel); color: var(--ink); min-height: 44px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .btn:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 14px; }
+  .steps li { display: flex; gap: 10px; align-items: baseline; color: var(--muted); }
+  .steps li::before { content: "○"; font-family: var(--mono); width: 1.2em; flex: none; }
+  .steps li.doing { color: var(--ink); font-weight: 600; }
+  .steps li.doing::before { content: "▶"; color: var(--accent); }
+  .steps li.done::before { content: "✓"; color: var(--live); }
+  .steps li.fail { color: var(--warn); font-weight: 600; }
+  .steps li.fail::before { content: "✗"; }
+  .callout { padding: 12px 14px; border-radius: 8px; border-left: 4px solid var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .callout.warn { border-left-color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 12%, transparent); }
+  .bar { height: 6px; border-radius: 3px; background: var(--rule); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 1s linear; }
+  table.kv { border-collapse: collapse; width: 100%; font-size: 14px; }
+  table.kv th { text-align: left; font-weight: 500; color: var(--muted); padding: 4px 12px 4px 0; width: 38%; }
+  table.kv td { padding: 4px 0; font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
+  details.journal { font: 12px/1.5 var(--mono); color: var(--muted); }
+  details.journal pre { margin: 6px 0 0; white-space: pre-wrap; max-height: 9em; overflow: auto; }
+  @media (prefers-reduced-motion: reduce) { button.card, .bar i { transition: none; }
+    button.card:hover { transform: none; } }
 </style>
 </head>
 <body>
@@ -166,8 +208,29 @@
     </div>
   </section>
 
+  <section aria-labelledby="h-pad">
+    <h2 id="h-pad">Maintenance</h2>
+    <div class="grid">
+      <button type="button" class="card" id="pad-open" aria-haspopup="dialog">
+        <span class="name">Appairer la manette</span><span class="port">Bluetooth</span>
+        <span class="what">Refait l'appairage de la manette (mode XInput) étape par étape, sans ligne de commande. À utiliser quand elle ne se reconnecte plus, par exemple après une partie sur la Switch.</span>
+        <span class="pad-state" id="pad-line" aria-live="polite"></span>
+        <span class="tags"><span class="tag">assistant</span><span class="tag slow">Home + X à faire</span></span>
+      </button>
+    </div>
+  </section>
+
   <footer>Les flux H.264 démarrent à la demande : la première image arrive après 1 à 3 s. Un seul onglet HUD à la fois quand la navigation tourne.</footer>
 </div>
+
+<!-- Assistant d'appairage : UN seul <dialog>, dont le contenu est redessine a chaque etape
+     (consigne -> attente -> detail du resultat). L'etat vient de /cgi-bin/pad (JSON ecrit par
+     l'hote) ; la page ne decide rien, elle affiche l'etape en cours. -->
+<dialog id="pad-dlg" aria-labelledby="pad-title">
+  <div class="mbody" id="pad-body"></div>
+  <div class="mfoot" id="pad-foot"></div>
+</dialog>
+
 <script>
   // Toutes les adresses partent de l'hote qui a servi la page : rien n'est ecrit en dur.
   (function () {
@@ -184,6 +247,162 @@
       var u = a.querySelector(".url");
       if (u) u.textContent = a.dataset.ext ? "ws://" + host + ":8765" : url.replace(/^http:\/\//, "");
     });
+  })();
+
+  // ---- Assistant d'appairage de la manette ------------------------------------------------
+  (function () {
+    var API = "/cgi-bin/pad";
+    var dlg = document.getElementById("pad-dlg");
+    var body = document.getElementById("pad-body");
+    var foot = document.getElementById("pad-foot");
+    var line = document.getElementById("pad-line");
+    var timer = null, st = null, busy = false;
+    var TOTAL = 75;                              // = BAMBOO_PAD_SCAN_S de l'hote, pour la barre
+
+    function el(tag, attrs, kids) {              // textContent partout : aucune donnee n'est du HTML
+      var e = document.createElement(tag);
+      Object.keys(attrs || {}).forEach(function (k) {
+        if (k === "text") e.textContent = attrs[k]; else e.setAttribute(k, attrs[k]);
+      });
+      (kids || []).forEach(function (c) { e.appendChild(c); });
+      return e;
+    }
+    function btn(label, cls, fn) {
+      var b = el("button", { type: "button", "class": "btn " + (cls || ""), text: label });
+      b.addEventListener("click", fn);
+      return b;
+    }
+    function call(method, payload) {
+      var opt = { method: method, cache: "no-store" };
+      if (payload) { opt.headers = { "Content-Type": "application/json" }; opt.body = JSON.stringify(payload); }
+      return fetch(API, opt).then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      });
+    }
+    function stepsList(steps) {
+      return el("ul", { "class": "steps" }, (steps || []).map(function (s) {
+        return el("li", { "class": s.status, text: s.label });
+      }));
+    }
+    function journal(log) {
+      if (!log || !log.length) return null;
+      var d = el("details", { "class": "journal" }, [el("summary", { text: "Journal technique" }),
+        el("pre", { text: log.join("\n") })]);
+      return d;
+    }
+    function show(title, nodes, buttons) {
+      body.replaceChildren(el("h3", { id: "pad-title", text: title }));
+      nodes.forEach(function (n) { if (n) body.appendChild(n); });
+      foot.replaceChildren.apply(foot, buttons);
+      if (!dlg.open) dlg.showModal();
+    }
+
+    // -- ecrans ---------------------------------------------------------------------------
+    function screenIntro(err) {
+      var n = [
+        el("p", { text: "Cet assistant supprime les anciens appairages de manette du robot, cherche la manette, l'appaire et vérifie que le robot la voit." }),
+        el("div", { "class": "callout", text: "Tu auras un geste à faire sur la manette : l'éteindre puis la rallumer avec Home + X. L'assistant te dira quand." }),
+        el("p", { text: "Seules les manettes sont oubliées : les autres appareils Bluetooth ne sont pas touchés." })];
+      if (err) n.push(el("div", { "class": "callout warn", text: err }));
+      show("Appairer la manette", n, [btn("Annuler", "", closeAll),
+        btn("Commencer", "primary", start)]);
+    }
+    function screenRun(s) {
+      var scanning = s.step === "scan";
+      var n = [];
+      if (scanning) {
+        n.push(el("div", { "class": "callout" }, [
+          el("strong", { text: "À faire maintenant sur la manette" }),
+          el("p", { text: s.instruction })]));
+        var bar = el("div", { "class": "bar", role: "progressbar", "aria-label": "Temps de recherche restant" },
+          [el("i", {})]);
+        var left = Math.max(0, s.remaining || 0);
+        bar.firstChild.style.width = (100 * (1 - left / TOTAL)).toFixed(0) + "%";
+        n.push(bar, el("p", { "class": "pad-state", text: "Recherche en cours · il reste " + Math.round(left) + " s" }));
+      } else if (s.instruction) {
+        n.push(el("p", { text: s.instruction }));
+      }
+      n.push(stepsList(s.steps), journal(s.log));
+      show(scanning ? "Allume la manette maintenant" : (s.title || "En cours…"), n,
+        [btn("Annuler", "", cancel)]);
+    }
+    function screenDone(s) {
+      var r = s.result || { rows: [], warnings: [] };
+      var tbl = el("table", { "class": "kv" }, r.rows.map(function (row) {
+        return el("tr", {}, [el("th", { text: row[0] }), el("td", { text: row[1] })]);
+      }));
+      var n = [el("div", { "class": "callout", text: "La manette est appairée et le robot la voit. Elle se reconnectera seule à l'allumage (Home, sans X)." }), tbl];
+      (r.warnings || []).forEach(function (w) { n.push(el("div", { "class": "callout warn", text: w })); });
+      n.push(stepsList(s.steps), journal(s.log));
+      show("Manette appairée", n, [btn("Fermer", "primary", closeAll)]);
+    }
+    function screenError(s) {
+      var n = [el("div", { "class": "callout warn", text: s.message || "Échec." })];
+      if (s.hint) n.push(el("p", { text: s.hint }));
+      n.push(stepsList(s.steps), journal(s.log));
+      show("L'appairage a échoué", n, [btn("Fermer", "", closeAll),
+        btn("Réessayer", "primary", start)]);
+    }
+    function screenUnavailable() {
+      show("Assistant indisponible", [el("div", { "class": "callout warn",
+        text: "Le service d'appairage de l'hôte ne répond pas (bamboo-pad.path). Il est posé par install_bambooWS.sh, étape 8." })],
+        [btn("Fermer", "primary", closeAll)]);
+    }
+
+    // -- logique --------------------------------------------------------------------------
+    function render(s) {
+      st = s;
+      if (s.step === "unavailable") return screenUnavailable();
+      if (s.step === "done") { stopPoll(); return screenDone(s); }
+      if (s.step === "error") { stopPoll(); return screenError(s); }
+      if (s.step === "cancelled" || s.step === "idle") { stopPoll(); return screenIntro(); }
+      screenRun(s);
+    }
+    function poll() {
+      call("GET").then(render).catch(function () {
+        stopPoll(); show("Liaison perdue", [el("div", { "class": "callout warn",
+          text: "Le portail ne joint plus le robot. Si l'assistant tournait, il continue côté robot : rouvre cette fenêtre pour reprendre." })],
+          [btn("Fermer", "primary", closeAll)]);
+      });
+    }
+    function startPoll() { stopPoll(); poll(); timer = setInterval(poll, 1000); }
+    function stopPoll() { if (timer) { clearInterval(timer); timer = null; } }
+    function start() {
+      if (busy) return; busy = true;
+      call("POST", { action: "start" }).then(function () {
+        // L'etat precedent (done/error) reste affiche jusqu'a ce que l'hote ecrive le nouveau :
+        // on montre tout de suite un ecran d'attente plutot que l'ancien resultat.
+        show("Démarrage…", [el("p", { text: "Préparation de l'assistant sur le robot." })], [btn("Annuler", "", cancel)]);
+        setTimeout(startPoll, 800);
+      }).catch(function () { screenIntro("Impossible de joindre l'assistant du robot."); })
+        .then(function () { busy = false; });
+    }
+    function cancel() {
+      call("POST", { action: "cancel" }).catch(function () {});
+      stopPoll();
+      closeAll();
+    }
+    function closeAll() { stopPoll(); if (dlg.open) dlg.close(); refreshLine(); }
+    function refreshLine() {
+      call("GET").then(function (s) {
+        var t = { done: "Dernier appairage réussi.", error: "Dernier appairage : échec.",
+          unavailable: "Assistant indisponible sur ce robot." }[s.step];
+        line.textContent = t || "";
+      }).catch(function () { line.textContent = ""; });
+    }
+
+    document.getElementById("pad-open").addEventListener("click", function () {
+      // Un appairage deja en cours (autre onglet, autre appareil) : on le reprend, on n'en lance pas un second.
+      call("GET").then(function (s) {
+        var active = ["forget", "scan", "pair", "trust", "connect", "verify"].indexOf(s.step) >= 0;
+        if (active) { render(s); startPoll(); } else if (s.step === "unavailable") screenUnavailable();
+        else screenIntro();
+      }).catch(function () { screenIntro("Impossible de joindre l'assistant du robot."); });
+    });
+    dlg.addEventListener("cancel", function (e) { e.preventDefault(); });   // Echap n'annule pas un appairage par megarde
+    dlg.addEventListener("close", stopPoll);
+    refreshLine();
   })();
 </script>
 </body>

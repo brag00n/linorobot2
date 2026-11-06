@@ -1,0 +1,22 @@
+# bamboo-pad.path -- surveille les DEMANDES d'appairage de la manette deposees par le portail.
+#
+# A chaque ecriture dans /run/bamboo-pad (le conteneur `portail` y depose `start <id>` ou
+# `cancel <id>` dans pair.want via /cgi-bin/pad), lance bamboo-pad.service. On surveille le
+# DOSSIER, pas le fichier : `MakeDirectory=yes` creerait pair.want comme un DOSSIER (constat du
+# 2026-11-06), et PathModified sur un fichier absent ne se declenche pas. Le service ecrit
+# aussi pair.state ici : bamboo-pad.py ne traite que les demandes NOUVELLES (id different du
+# dernier), donc ses propres ecritures le relancent a vide, une fois, sans boucle. /run est un
+# tmpfs : le dossier existe des le boot, vide.
+# Pose par install_bambooWS.sh (pas 8).    systemctl status bamboo-pad.path
+
+[Unit]
+Description=Bamboo4WD : demandes d'appairage de la manette (/run/bamboo-pad)
+
+[Path]
+PathModified=/run/bamboo-pad
+MakeDirectory=yes
+DirectoryMode=0755
+Unit=bamboo-pad.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+# bamboo-pad.service -- execute l'assistant d'appairage de la manette (cf. le .path).
+#
+# GABARIT : install_bambooWS.sh y substitue __COMPOSE_DIR__ avant de le poser dans
+# /etc/systemd/system/. N'est PAS active seul : c'est bamboo-pad.path qui le declenche.
+#   journalctl -u bamboo-pad
+
+[Unit]
+Description=Bamboo4WD : assistant d'appairage Bluetooth de la manette
+After=bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 __COMPOSE_DIR__/pad/bamboo-pad.py
+TimeoutStartSec=300

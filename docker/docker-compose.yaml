@@ -351,6 +351,10 @@ services:
     read_only: true
     volumes:
       - ./portail:/www:ro
+      # Assistant d'appairage de la manette (modales du portail) : /cgi-bin/pad DEPOSE une
+      # demande ici, bamboo-pad.path (hote) l'execute et y ecrit l'etat. Meme schema que
+      # /run/bamboo-ondemand : le conteneur n'a ni D-Bus ni Docker. Voir docker/pad/.
+      - /run/bamboo-pad:/run/bamboo-pad
     ports:
       - "8000:8000"
 

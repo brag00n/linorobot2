@@ -452,7 +452,9 @@ fi
 # l'executent cote hote, sur la liste fermee de docker/ondemand/groups.conf. Le conteneur n'a
 # jamais acces a Docker.
 od_changed=0
-for u in bamboo-ondemand.path bamboo-ondemand.service; do
+# bamboo-pad.* (assistant d'appairage de la manette du portail) suit le MEME schema : le
+# conteneur `portail` depose une demande dans /run/bamboo-pad, l'hote l'execute (docker/pad/).
+for u in bamboo-ondemand.path bamboo-ondemand.service bamboo-pad.path bamboo-pad.service; do
     SRC_OD="$HERE/systemd/$u"
     DST_OD="/etc/systemd/system/$u"
     if [ ! -r "$SRC_OD" ]; then
@@ -478,6 +480,18 @@ elif [ "$(systemctl is-active bamboo-ondemand.path 2>/dev/null)" = "active" ]; t
 else
     warn "bamboo-ondemand.path inactif : le mode NAV ne demarrera pas la navigation"
 fi
+if [ "$APPLY" = "1" ]; then
+    systemctl enable --now bamboo-pad.path >/dev/null 2>&1 \
+        && act "bamboo-pad.path active (demandes : /run/bamboo-pad)" \
+        || warn "bamboo-pad.path : activation en echec (journalctl -u bamboo-pad.path)"
+elif [ "$(systemctl is-active bamboo-pad.path 2>/dev/null)" = "active" ]; then
+    ok "bamboo-pad.path actif"
+else
+    warn "bamboo-pad.path inactif : l'assistant d'appairage du portail ne fonctionnera pas"
+fi
+# Le dossier doit exister AVANT le conteneur `portail` : sinon Docker le cree en root et le
+# bind-mount pointe sur un dossier que bamboo-pad.path (MakeDirectory) ne recreera pas.
+[ -d /run/bamboo-pad ] || { [ "$APPLY" = "1" ] && mkdir -p /run/bamboo-pad && chmod 755 /run/bamboo-pad; }
 echo ""
 }
 
