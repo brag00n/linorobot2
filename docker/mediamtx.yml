@@ -19,7 +19,10 @@ webrtcAddress: :8889
 # jamais recue (« deadline exceeded while waiting connection », 2026-10-16). On n'annonce que
 # l'interface Wi-Fi : les ponts Docker (docker0, br-*) feraient essayer au navigateur des
 # adresses mortes. (La liste d'EXCLUSION n'existe pas en v1.21.0 : refusee au demarrage.)
-webrtcIPsFromInterfacesList: [wlan0]
+webrtcIPsFromInterfacesList: [wlan0, ap0]
+# ap0 (2026-11-06) : point d'acces du robot (service ap.rpi, 10.3.141.1). Sans lui, un client de
+# l'AP ne recevrait pas de candidat ICE joignable quand la box est absente (wlan0 sans IP).
+# A VERIFIER au premier demarrage : MediaMTX doit accepter qu'ap0 n'existe pas encore.
 
 # --- Metriques pour le diagnostic (lot DIAGNOSTICS, observateur bamboo_health) -----------
 # METRIQUES et non API, et c'est le choix de securite : l'action `api` permet aussi de

@@ -377,6 +377,12 @@ echo "=== 7. Images du profil boot ==="
 # Tout est declare dans le compose : on ne fait que l'appeler. Long au premier passage
 # (~3,7 Go d'image ROS a construire sur RPi4).
 svcs="$(boot_services | tr '\n' ' ')"
+# Point d'acces (ap.rpi) : ses mots de passe vivent dans un fichier NON versionne. Sans lui le
+# conteneur sort en erreur et boucle (restart: unless-stopped) : on le dit AVANT, pas apres.
+# Le script ne le genere pas : un mot de passe invente ici serait perdu pour l'utilisateur.
+if echo " $svcs " | grep -q ' ap.rpi ' && [ ! -f "$HERE/ap/secret/ap.env" ]; then
+    warn "docker/ap/secret/ap.env absent : le point d'acces ne demarrera pas (modele : docker/ap/ap.env.example)"
+fi
 if [ -z "$svcs" ]; then
     warn "aucun service ne porte profiles: [\"boot\"] dans docker-compose.yaml"
 else
@@ -487,6 +493,21 @@ if grep -qx "bcm2835-codec-encode" /sys/class/video4linux/video*/name 2>/dev/nul
     ok "encodeur H.264 materiel present : flux HUD http://<rpi>:8889/hud"
 else
     warn "encodeur H.264 materiel absent : le flux hud ne demarrera pas (etape 1, puis REBOOT)"
+fi
+# Point d'acces Wi-Fi du robot (ap.rpi) : AP+STA sur UNE puce, donc un seul canal pour ap0 et
+# wlan0, et 5 GHz exige (la manette BT partage la puce avec le 2,4 GHz). Si wlan0 retombe sur
+# le repeteur 2,4 GHz de la box, l'AP le suit : le BSSID 5 GHz est verrouille dans
+# /etc/wpa_supplicant/wpa_supplicant.conf (reglage d'hote, hors compose).
+if echo " $(boot_services | tr '\n' ' ') " | grep -q ' ap.rpi '; then
+    ap_ch="$(/usr/sbin/iw dev ap0 info 2>/dev/null | awk '/channel/ {print $2; exit}')"
+    sta_ch="$(/usr/sbin/iw dev wlan0 info 2>/dev/null | awk '/channel/ {print $2; exit}')"
+    if [ -z "$ap_ch" ]; then
+        warn "ap0 absent : point d'acces arrete (docker compose logs ap.rpi)"
+    elif [ "$ap_ch" -lt 36 ]; then
+        warn "point d'acces en 2,4 GHz (canal $ap_ch) : verrouiller le BSSID 5 GHz de la box dans wpa_supplicant.conf"
+    else
+        ok "point d'acces ap0 en 5 GHz (canal $ap_ch${sta_ch:+, wlan0 canal $sta_ch}) : http://10.3.141.1:8889/hud"
+    fi
 fi
 expected="$(boot_services | sort | tr '\n' ' ')"
 up="$( cd "$HERE" && docker compose ps --services --filter status=running 2>/dev/null | sort | tr '\n' ' ' )"

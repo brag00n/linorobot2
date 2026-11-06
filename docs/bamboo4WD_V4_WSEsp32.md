@@ -443,6 +443,51 @@ modifiable : elle est générée par le paquet binaire.
   (`extra_hosts: host-gateway`). Depuis le réseau local, le port 9998 répond 401 : seules la
   boucle locale et les réseaux Docker ont la permission `metrics`.
 
+### 6.8 Point d'accès Wi-Fi du robot (service `ap.rpi`, 2026-11-06)
+
+**But** : joindre le HUD sans passer par la box (`http://10.3.141.1:8889/hud`), tout en
+restant client de la box (internet, `192.168.1.164`).
+
+**Contrainte matérielle, mesurée** : le Wi-Fi intégré (brcmfmac, CYW43455) annonce
+`{managed}<=1, {AP}<=1, #channels<=1` (`iw phy`). Client et AP tournent donc ensemble mais sur
+le **même canal** : l'AP suit celui de `wlan0`. Le canal réglé dans l'interface web est ignoré.
+
+**Architecture** (`docker/ap/`, service `ap.rpi`, profil `boot`, réseau hôte,
+`NET_ADMIN`/`NET_RAW`, pas `privileged`) :
+- `entrypoint.sh` fait office de superviseur (pas de systemd) : crée `ap0` (`iw dev wlan0
+  interface add ap0 type __ap`), lance hostapd, dnsmasq (DHCP seul, `port=0`) et lighttpd, pose
+  le NAT `ap0 → wlan0` ; un veilleur relance hostapd si le canal de `wlan0` change ;
+- interface web **RaspAP 3.5.9**, téléchargée au build (jamais copiée dans le dépôt, GPL-3.0),
+  liée à `10.3.141.1:8081` : injoignable depuis la box. Pages client Wi-Fi, réseau, système,
+  vnstat, plugins coupées ; `sudoers` réduit à hostapd/dnsmasq (`docker/ap/sudoers`) ;
+- `systemctl` du conteneur = cale (`systemctl-shim.sh`) qui relaie les ordres de l'interface au
+  superviseur ; seules les unités hostapd et dnsmasq sont connues ;
+- état dans le volume `ap_state` (config hostapd/dnsmasq/RaspAP) ; les mots de passe de
+  `docker/ap/secret/ap.env` (non versionné, modèle `ap.env.example`) ne servent qu'au **premier**
+  démarrage, ensuite l'interface web fait foi. Repartir de zéro : `docker volume rm
+  bamboov4_humble_ap_state`.
+
+**Réseau** : AP `10.3.141.1/24`, DHCP `.50`–`.150`, DNS annoncé `1.1.1.1`/`9.9.9.9`. Les clients
+de l'AP atteignent le RPi (HUD, rosbridge) et internet via la box, mais **pas** le réseau local
+de la box (règles `FORWARD` vers 10/8, 172.16/12, 192.168/16 en DROP).
+
+**Hors dépôt, sur le RPi** : `wpa_supplicant.conf` verrouille `bssid=dc:00:b0:89:dc:17` (box
+Free, **5 GHz**, canal 40). Sans cela, `wlan0` s'associait au répéteur 2,4 GHz de la box
+(`…dc:16`, plus fort : −34 dBm contre −43), l'AP passait en canal 11 et la manette Bluetooth, qui
+partage la puce, amputait le débit. `freq_list` seul n'a pas suffi (`reassociate` reste sur le
+point d'accès courant). Sauvegarde : `wpa_supplicant.conf.avant5g`. **Si la box change de
+BSSID ou qu'on la remplace, la connexion échouera** : retirer la ligne `bssid=`.
+
+**Pièges rencontrés** :
+- lighttpd refuse `server.port` en double **et** `Undefined config variable` si on le retire (la
+  config Debian le réutilise pour `use-ipv6.pl`) : on remplace la valeur sur place ;
+- `/run/lighttpd` n'existe pas sans systemd : PHP-FastCGI échoue (`spawning gw failed`) ;
+- `pkill -f "sleep 900"` tue sa propre session SSH (le motif est dans sa ligne de commande) ;
+- le téléphone doit rester sur ce Wi-Fi **sans passer par les données mobiles** (Android bascule
+  sinon, un AP sans internet étant jugé inutile) ;
+- `webrtcIPsFromInterfacesList: [wlan0, ap0]` : à valider pour la vidéo WebRTC depuis l'AP ;
+- canaux DFS (52–144) : signalés dans les logs, comportement de l'AP non vérifié.
+
 ---
 
 ## 7. État d'avancement

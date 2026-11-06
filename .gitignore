@@ -13,6 +13,11 @@ __pycache__/
 # Le contenu est reconstructible par tools/requirements.txt -- c est lui qui est versionne.
 tools/.venv/
 
+# mots de passe du point d'acces du robot (modele : docker/ap/ap.env.example). Le DOSSIER est
+# versionne (.gitkeep) : le compose le monte, et un bind-mount de fichier absent ferait un dossier.
+docker/ap/secret/*
+!docker/ap/secret/.gitkeep
+
 # sources TIERCES recuperees par docker/fetch_sources.sh (commit fige dans le script) :
 # compilees dans l'espace de travail, jamais versionnees ici.
 third_party/

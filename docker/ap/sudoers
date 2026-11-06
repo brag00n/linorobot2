@@ -1,0 +1,18 @@
+# Droits de l'interface web RaspAP (utilisateur www-data) dans le conteneur ap.rpi.
+# REDUIT a ce que l'interface fait pour regler le point d'acces. Le sudoers amont
+# (installers/raspap.sudoers) donne en plus wpa_supplicant, ifup/ifdown, reboot, shutdown,
+# netplan, VPN... : rien de cela ne doit etre atteignable depuis un client Wi-Fi.
+# `systemctl` est la cale systemctl-shim.sh : elle ne connait que hostapd et dnsmasq.
+Defaults:www-data !requiretty
+
+www-data ALL=(root) NOPASSWD: /bin/cp /tmp/hostapddata /etc/hostapd/hostapd.conf
+www-data ALL=(root) NOPASSWD: /bin/cp /tmp/dnsmasqdata /etc/dnsmasq.d/090_*.conf
+www-data ALL=(root) NOPASSWD: /bin/rm /etc/dnsmasq.d/090_*.conf
+www-data ALL=(root) NOPASSWD: /bin/systemctl start hostapd.service
+www-data ALL=(root) NOPASSWD: /bin/systemctl stop hostapd.service
+www-data ALL=(root) NOPASSWD: /bin/systemctl restart hostapd.service
+www-data ALL=(root) NOPASSWD: /bin/systemctl restart hostapd@*
+www-data ALL=(root) NOPASSWD: /bin/systemctl start dnsmasq.service
+www-data ALL=(root) NOPASSWD: /bin/systemctl stop dnsmasq.service
+www-data ALL=(root) NOPASSWD: /bin/systemctl restart dnsmasq.service
+www-data ALL=(root) NOPASSWD: /bin/systemctl reload dnsmasq.service

@@ -33,6 +33,10 @@ volumes:
   # Un seul build a la fois (il est manuel et serie) : pas de colcon concurrent sur ce volume.
   ws_build:
   ws_install:
+  # Etat du point d'acces (service ap.rpi) : hostapd.conf, dnsmasq.d, /etc/raspap (identifiants
+  # web, reglages de l'interface). Volume nomme : l'interface web y ecrit, ca doit survivre a un
+  # --force-recreate. Repartir de zero : `docker volume rm bamboov4_humble_ap_state`.
+  ap_state:
 
 services:   
   base:
@@ -314,6 +318,25 @@ services:
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
       - /dev:/dev
+
+#--- Point d'acces Wi-Fi du robot (2026-11-06) : SSID propre a Bamboo, toujours actif, pour
+#    atteindre le HUD (http://10.3.141.1:8889/hud) sans passer par la box. wlan0 reste CLIENT de
+#    la box ; le conteneur cree ap0 sur la meme puce (AP+STA brcmfmac : un seul canal, l'AP suit
+#    wlan0, repli 5 GHz si la box est absente) et NATe les clients vers wlan0. Reseau de l'hote,
+#    NET_ADMIN/NET_RAW (pas privileged). Embarque l'interface web RaspAP (http://10.3.141.1:8081,
+#    liee a l'adresse de ap0 : injoignable depuis la box). Mots de passe dans
+#    docker/ap/secret/ap.env (non versionne ; DOSSIER monte plutot qu'`env_file`, car un fichier
+#    absent ferait echouer TOUT le profil `boot`, Compose 2.21 n'ayant pas `required: false`).
+#    L'etat (config hostapd/dnsmasq/RaspAP) vit dans le volume ap_state. Voir docker/ap/.
+  ap.rpi:
+    build: ./ap
+    profiles: ["boot"]
+    restart: unless-stopped
+    network_mode: host
+    cap_add: [NET_ADMIN, NET_RAW]
+    volumes:
+      - ap_state:/state
+      - ./ap/secret:/secret:ro
 
 #--- Portail (2026-10-16) : page d'accueil des flux et outils du robot, http://<rpi>:8000/.
 #    Page STATIQUE (docker/portail/index.html) servie par busybox httpd (~4 Mo, aucune
