@@ -471,12 +471,20 @@ le **même canal** : l'AP suit celui de `wlan0`. Le canal réglé dans l'interfa
 de l'AP atteignent le RPi (HUD, rosbridge) et internet via la box, mais **pas** le réseau local
 de la box (règles `FORWARD` vers 10/8, 172.16/12, 192.168/16 en DROP).
 
-**Hors dépôt, sur le RPi** : `wpa_supplicant.conf` verrouille `bssid=dc:00:b0:89:dc:17` (box
-Free, **5 GHz**, canal 40). Sans cela, `wlan0` s'associait au répéteur 2,4 GHz de la box
-(`…dc:16`, plus fort : −34 dBm contre −43), l'AP passait en canal 11 et la manette Bluetooth, qui
-partage la puce, amputait le débit. `freq_list` seul n'a pas suffi (`reassociate` reste sur le
-point d'accès courant). Sauvegarde : `wpa_supplicant.conf.avant5g`. **Si la box change de
-BSSID ou qu'on la remplace, la connexion échouera** : retirer la ligne `bssid=`.
+**Bande et canal : PAS de verrou de BSSID (essayé puis retiré, 2026-11-07).** `wlan0` choisit
+seul son point d'accès, et l'AP suit son canal. Sur ce réseau l'SSID `tiol01` est émis par la box
+(`…dc:16` en 2,4 GHz, `…dc:17` en 5 GHz) **et** par un répéteur (`8c:97:ea:f0:69:6c` en 5 GHz,
+`…:68` en 2,4 GHz). Le 2,4 GHz était plus fort (−34 dBm contre −43) : `wlan0` le prenait, l'AP
+passait en canal 11 et la manette Bluetooth, qui partage la puce, amputait le débit. J'avais donc
+verrouillé `bssid=dc:00:b0:89:dc:17` dans `wpa_supplicant.conf`. **Erreur** : le bureau est loin
+de la box et n'est couvert que par le répéteur ; le robot y refusait le répéteur et n'atteignait
+jamais la box (`ASSOC-REJECT status_code=16`, `SSID-TEMP-DISABLED`) : plus aucun accès hors
+Ethernet. Le verrou est retiré (sauvegardes `wpa_supplicant.conf.avant5g` et
+`.avant-retrait-bssid`). `freq_list` seul n'avait pas suffi non plus (`reassociate` reste sur le
+point d'accès courant).
+
+**Conséquence assumée** : si `wlan0` se retrouve en 2,4 GHz, l'AP aussi, et le Bluetooth de la
+manette se dispute la puce. L'installateur le signale (étape 9) sans le corriger.
 
 **Pièges rencontrés** :
 - lighttpd refuse `server.port` en double **et** `Undefined config variable` si on le retire (la

@@ -509,16 +509,16 @@ else
     warn "encodeur H.264 materiel absent : le flux hud ne demarrera pas (etape 1, puis REBOOT)"
 fi
 # Point d'acces Wi-Fi du robot (ap.rpi) : AP+STA sur UNE puce, donc un seul canal pour ap0 et
-# wlan0, et 5 GHz exige (la manette BT partage la puce avec le 2,4 GHz). Si wlan0 retombe sur
-# le repeteur 2,4 GHz de la box, l'AP le suit : le BSSID 5 GHz est verrouille dans
-# /etc/wpa_supplicant/wpa_supplicant.conf (reglage d'hote, hors compose).
+# wlan0, et 5 GHz souhaite (la manette BT partage la puce avec le 2,4 GHz). Si wlan0 est en
+# 2,4 GHz, l'AP le suit : on le SIGNALE sans le corriger. Un verrou de BSSID a ete essaye puis
+# retire (2026-11-07) : il interdisait le repeteur, seul joignable depuis le bureau (doc §6.8).
 if echo " $(boot_services | tr '\n' ' ') " | grep -q ' ap.rpi '; then
     ap_ch="$(/usr/sbin/iw dev ap0 info 2>/dev/null | awk '/channel/ {print $2; exit}')"
     sta_ch="$(/usr/sbin/iw dev wlan0 info 2>/dev/null | awk '/channel/ {print $2; exit}')"
     if [ -z "$ap_ch" ]; then
         warn "ap0 absent : point d'acces arrete (docker compose logs ap.rpi)"
     elif [ "$ap_ch" -lt 36 ]; then
-        warn "point d'acces en 2,4 GHz (canal $ap_ch) : verrouiller le BSSID 5 GHz de la box dans wpa_supplicant.conf"
+        warn "point d'acces en 2,4 GHz (canal $ap_ch) : la manette BT partage la puce, debit reduit (doc §6.8)"
     else
         ok "point d'acces ap0 en 5 GHz (canal $ap_ch${sta_ch:+, wlan0 canal $sta_ch}) : http://10.3.141.1:8889/hud"
     fi
