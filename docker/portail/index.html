@@ -211,6 +211,12 @@
   <section aria-labelledby="h-pad">
     <h2 id="h-pad">Maintenance</h2>
     <div class="grid">
+      <a class="card" data-ext="http://10.3.141.1:8081/" data-show="10.3.141.1:8081">
+        <span class="name">Point d'accès Wi-Fi</span><span class="port">:8081</span>
+        <span class="what">Interface RaspAP du Wi-Fi « Bamboo » : nom et mot de passe du réseau, appareils connectés, journaux. Liée à l'adresse du point d'accès : injoignable depuis la box.</span>
+        <span class="url"></span>
+        <span class="tags"><span class="tag">RaspAP</span><span class="tag slow">depuis le Wi-Fi Bamboo seulement</span></span>
+      </a>
       <button type="button" class="card" id="pad-open" aria-haspopup="dialog">
         <span class="name">Appairer la manette</span><span class="port">Bluetooth</span>
         <span class="what">Refait l'appairage de la manette (mode XInput) étape par étape, sans ligne de commande. À utiliser quand elle ne se reconnecte plus, par exemple après une partie sur la Switch.</span>
@@ -245,7 +251,8 @@
       a.target = "_blank";
       a.rel = "noopener";
       var u = a.querySelector(".url");
-      if (u) u.textContent = a.dataset.ext ? "ws://" + host + ":8765" : url.replace(/^http:\/\//, "");
+      // data-show : libelle d'une adresse FIXE (le point d'acces n'a qu'une adresse, la sienne).
+      if (u) u.textContent = a.dataset.show || (a.dataset.ext ? "ws://" + host + ":8765" : url.replace(/^http:\/\//, ""));
     });
   })();
 
