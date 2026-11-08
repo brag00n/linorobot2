@@ -496,6 +496,91 @@ manette se dispute la puce. L'installateur le signale (étape 9) sans le corrige
 - `webrtcIPsFromInterfacesList: [wlan0, ap0]` : à valider pour la vidéo WebRTC depuis l'AP ;
 - canaux DFS (52–144) : signalés dans les logs, comportement de l'AP non vérifié.
 
+### 6.9 Command Center (portail `:8000/cc/`, 2026-11-08) — jalon 1, LECTURE SEULE
+
+Console web de gestion du robot, **à côté du HUD** (le HUD sert au pilotage rapproché, le Command
+Center à suivre le robot pendant une mission). Thème « console » : fond noir bleuté, un seul ton
+cyan, accent crème, rouge et ambre réservés aux alertes, police Oxanium (SIL OFL 1.1) embarquée dans
+`docker/portail/fonts/`.
+
+**Fichiers** (`docker/portail/`) : `cc/index.html` (page), `cc/cc.css` (thème et widgets),
+`cc/widgets.js` (widgets partagés), `theme/index.html` (catalogue), `fonts/`. La maquette simulée
+(missions, calibrations, carte) reste dans `docker/command-center-maquette/` : c'est la référence du
+jalon 2.
+
+**Ce que la page fait aujourd'hui — et rien de plus : aucune commande ne part vers le robot.**
+- **Données** par rosbridge (`ws://<hôte>:9090`, reconnexion automatique) : batterie, IMU, roues,
+  stats et état du suivi, compensation de mouvement, état de la navigation, calibration batterie,
+  diagnostics agrégés (38 tâches), `/rosout`. La valeur « liaison » de l'en-tête est l'aller-retour
+  d'un appel de service rosbridge (`/rosapi/get_time`), **pas** un ping réseau : elle monte avec la
+  charge du robot.
+- **Vidéo** par WebRTC (WHEP) vers le chemin MediaMTX `raw` (`docker/mediamtx.yml`) : l'image de la
+  caméra **sans** incrustation du HUD, mêmes réglages que `hud` (640×480, 1200 kbit/s, image clé
+  toutes les 2 s) mais à **15 images/s** (le HUD est à 10). À la demande : rien ne tourne quand
+  personne ne regarde. La page ne trace que le **suivi** (cadre, réticule, ruban de cap). Le suivi
+  travaille sur l'image **miroir** (`flip: h`) alors que ce flux ne l'est pas : la page inverse x.
+- **Quatre modes** : Mission (état de la pile de navigation), Vitaux (sections dépliables, plusieurs
+  ouvertes à la fois, résumé coloré dans chaque en-tête, Santé en premier), Config (une section
+  ouverte à la fois), Calib (oscilloscope du lacet, calibration batterie).
+- **Pastille d'état** en haut à droite de chaque widget : **vert** donnée reçue, **orange** pas
+  d'info, **rouge** non implémenté (source déclarée `✗ …`). Touche **S** : affiche la source de
+  chaque donnée.
+- Niveau d'affichage **75 %** par défaut (`#z=0.85` pour changer). Options : `#mode=`, `#host=`,
+  `#acc=0,1`, `#open=journal`.
+
+**Catalogue `/theme/`** : tous les widgets (jauge, barre, courbe, oscilloscope, horizon, tableau,
+matrice, pastilles, contrôles, sections, modales, typographie) classés par type, avec des **données
+aléatoires** et des boutons pour forcer un niveau (normal, avertissement, critique, sans donnée).
+Même `cc.css` et `widgets.js` que le Command Center : ce qu'on y voit est ce qu'on aura là-bas.
+
+**Limites connues**
+- **Webcam du PC indisponible** : le navigateur exige HTTPS (ou localhost) pour `getUserMedia`, et
+  le portail est en HTTP (décision utilisateur : on reste en HTTP).
+- **Pas de carte** : elle demande la pile de navigation (lidar + SLAM), éteinte au repos.
+- **Signaux Wi-Fi et Bluetooth** réels : non exposés par le robot (marqués `✗`).
+- Pastilles de tâches du suivi : tant que la détection est coupée (hors mode TRACKING, voir
+  `modes.yaml`), le cadre de suivi ne s'affiche pas.
+- **Pièges** : `widgets.js` et la page doivent partager **le même tableau** `REG` (le vider avec
+  `.length = 0`, jamais le réaffecter, sinon les widgets cessent de se rafraîchir) ; l'animation
+  d'apparition des chiffres ne doit pas écraser une valeur arrivée entre-temps.
+
+**Jalon 2 (à faire, dans cet ordre)** : (1) verrou de sécurité — armement par appui maintenu côté
+page **et** côté robot, arrêt si la liaison saute — avant toute commande ; (2) mode du robot et
+réglages ; (3) missions simples (exploration, retour base) ; (4) carte ; (5) calibrations ; (6)
+services Docker via un assistant côté hôte (modèle `bamboo-ondemand`).
+
+### 6.10 Surveillance de la caméra (`bamboo-camwatch`, 2026-11-08)
+
+**Panne d'origine** : après ~19 h de marche, la webcam USB a répondu `Failed to set UVC probe
+control: -110` (délai dépassé). `gscam_node` est resté **vivant** mais ne livrait plus rien : suivi,
+HUD et Command Center sont tombés ensemble, sans récupération.
+
+**Mécanisme** (`docker/watchdog/bamboo-camwatch.sh`, minuteur systemd toutes les 30 s, **côté hôte**
+et non dans le conteneur de diagnostic — cela reviendrait à donner Docker à un conteneur) :
+- **Sonde** : un instantané du flux brut (`snapshot?topic=/video/raw` de `web_video_server`), ~40 ms
+  et ~60 Ko quand la caméra va bien. Il traverse toute la chaîne (caméra → gscam → serveur web).
+- **Niveau 1** : après **3 échecs de suite**, redémarre `bamboo_video`. Si l'échec persiste, le
+  répète et le consigne ; **plafonné à 3 reprises par heure**, puis abandon signalé.
+- **Niveau 2 (reset du port USB `1-1.1`) : DÉSACTIVÉ** (`BAMBOO_CAMWATCH_USB=0`). La caméra est sur
+  le même hub (`1-1`) que le pont série CP2102N de la carte ESP32 (`1-1.2`). À essayer **une fois**,
+  utilisateur présent, en observant la liaison série de l'ESP32, avant de l'activer.
+- **Garde-fous** : rien dans les 4 premières minutes du RPi, ni si le conteneur est arrêté
+  volontairement, ni dans les 90 s après son démarrage, ni si `/run/bamboo-camwatch/pause` existe
+  (maintenance). État écrit dans `/run/bamboo-camwatch/state.json`.
+- **Essai sans risque** : `BAMBOO_CAMWATCH_DRY=1` décrit sans agir.
+
+**Mesure** : une rafale de sondes 150 fois plus fréquente que la réalité laisse le flux du HUD à
+13 img/s (13,1 sans sonde) et `web_video_server` à 73 Mo, 13 fils, sans fuite. Installé par l'étape 8
+de `install_bambooWS.sh`. **Pas encore éprouvé sur une vraie panne.**
+
+### 6.11 Foxglove à la demande
+
+`foxglove_bridge` prenait ~70 % d'un cœur en permanence, sur un RPi déjà à un load de 6 à 10 sur 4
+cœurs. Il est passé du profil `boot` au profil `tools` (`restart: "no"`) : il ne démarre plus au boot
+ni avec `bamboo4wd.service`, et le diagnostic ne le surveille plus. Pour inspecter les topics à la
+main : `docker compose --profile tools up -d foxglovebridge` (port 8765), puis l'arrêter. La carte
+« Foxglove » du portail pointe vers ce service quand il est lancé.
+
 ---
 
 ## 7. État d'avancement
@@ -513,6 +598,9 @@ manette se dispute la puce. L'installateur le signale (étape 9) sans le corrige
 - **Lot QUALIBRATION** (2026-10-03) — modes du robot, calibration du glissement en rotation,
   compensation dans les drivers (§9) : code livré, compensation à ZÉRO (comportement d'origine),
   contrôle IMU validé au repos ; calibration au sol à faire.
+- **Point d'accès Wi-Fi, assistant d'appairage de la manette** (2026-11-06) : faits (§6.8).
+- **Command Center, jalon 1** (2026-11-08) : lecture seule, branché au robot (§6.9) ; surveillance de
+  la caméra (§6.10) ; Foxglove à la demande (§6.11). **Jalon 2 (commandes) : à faire.**
 - **Suite** — URDF/TF, EKF (vx roues + vyaw IMU), SLAM, navigation : **à faire**.
 
 ---
