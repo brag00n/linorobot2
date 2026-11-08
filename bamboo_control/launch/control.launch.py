@@ -68,7 +68,19 @@ def _mux(control):
                     {"output_topic": control["cmd_vel"],
                      "topics.teleop.topic": control["cmd_vel_teleop"],
                      "topics.calibration.topic": control["cmd_vel_calib"],
-                     "topics.navigation.topic": control["cmd_vel_nav"]}],
+                     "topics.navigation.topic": control["cmd_vel_nav"],
+                     "topics.cc.topic": control.get("cmd_vel_cc", "/cmd_vel_cc")}],
+        output="screen",
+    )
+
+
+def _ccGuard():
+    """Garde-fou du Command Center (battement de coeur de la page + video). Il observe et declenche ;
+    bamboo_teleop arrete, annule et desarme. Dort tant que rien n'est arme : la manette seule marche
+    comme avant."""
+    return Node(
+        package="bamboo_control", executable="cc_guard", name="cc_guard",
+        parameters=[{"heartbeat_timeout_s": 1.5, "video_timeout_s": 3.0}],
         output="screen",
     )
 
@@ -127,7 +139,7 @@ def _checkAxes(context, *args, **kwargs):
     canonical = resolveRobotConfig(robot, robot_config)
     control, wnotes = _wiring(canonical)
     out = LaunchConfiguration("cmd_vel_out_topic").perform(context) or control["cmd_vel_teleop"]
-    infra = [LogInfo(msg=n) for n in wnotes] + [_mux(control)]
+    infra = [LogInfo(msg=n) for n in wnotes] + [_mux(control), _ccGuard()]
     with open(canonical, "r", encoding="utf-8") as fh:
         doc = yaml.safe_load(fh) or {}
     params = {}

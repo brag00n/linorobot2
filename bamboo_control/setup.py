@@ -30,6 +30,8 @@ setup(
             "mode_manager_node = bamboo_control.mode_manager_node:main",
             # Arbitrage des consignes (semantique et configuration twist_mux).
             "cmd_vel_mux = bamboo_control.cmd_vel_mux_node:main",
+            # Garde-fou du Command Center : battement de coeur + video, arret si l'un manque.
+            "cc_guard = bamboo_control.cc_guard_node:main",
         ],
     },
 )

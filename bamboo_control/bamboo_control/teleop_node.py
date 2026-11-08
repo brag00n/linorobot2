@@ -367,6 +367,18 @@ class TeleopNode(Node):
         self._confirm = None          # confirmation en cours (cf. _askConfirm)
         self._battSeen = None         # (tension V, fraction, statut, instant) de /battery
         self.create_subscription(BatteryState, "/battery", self._onBatt, 10)
+        # GARDE-FOU du Command Center (cc_guard_node) : il OBSERVE le battement de la page et la video, et
+        # DECLENCHE ici -- ce noeud reste le seul proprietaire de l'armement, donc le seul a arreter,
+        # annuler le but et desarmer.
+        self.create_subscription(Bool, "/cc/guard/stop", self._onGuardStop, 10)
+        # Armement demande depuis le Command Center : refuse sans liaison saine (page + video), jamais
+        # automatique, et le B long de la manette garde la priorite pour desarmer.
+        self._ccLink, self._ccLinkT = False, 0.0
+        _latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.create_subscription(Bool, "/cc/guard/link", self._onCcLink, _latched)
+        self.create_service(SetBool, "/cc/guard/arm", lambda q, r: self._ccArm(q, r, False))
+        self.create_service(SetBool, "/cc/guard/arm_locked", lambda q, r: self._ccArm(q, r, True))
         self._confirmIgnore = set()   # touches qui y ont repondu, ignorees jusqu'au relache
         self.create_subscription(NavState, "/navigation/state",
                                  self._onNavState,
@@ -1845,6 +1857,50 @@ class TeleopNode(Node):
             self.get_logger().error("calibration : resultat illisible : %s" % exc)
         self._calGoal = self._calHandle = None
         self._publishState()
+
+    def _onCcLink(self, msg):
+        self._ccLink, self._ccLinkT = bool(msg.data), time.monotonic()
+
+    def _ccArm(self, req, res, locked):
+        """Armer (data=True) ou desarmer (data=False) depuis le CC. Armer exige une liaison saine."""
+        if not req.data:
+            self._calibCancel("desarmement CC")
+            self._stopMotion()
+            self._motionOn = False
+            self._armLatched = False
+            self.get_logger().warning("moteurs desarmes depuis le CC")
+            self._publishState()
+            res.success, res.message = True, "desarme"
+            return res
+        if not self._ccLink:
+            self.get_logger().warning("armement CC REFUSE : pas de liaison saine (page + video)")
+            res.success, res.message = False, "liaison CC/video non saine"
+            return res
+        self._motionOn, self._armLatched = True, bool(locked)
+        self.get_logger().error("traction %s ARMEE depuis le CC (garde-fou actif%s)" % (
+            "VERROUILLEE" if locked else "", ", manette non exigee" if locked else ""))
+        self._publishState()
+        res.success, res.message = True, "arme verrouille" if locked else "arme"
+        return res
+
+    def _onGuardStop(self, msg):
+        """Le Command Center ne repond plus (battement) ou n'a plus de video : tout arreter.
+
+        Ordre voulu : (1) STOP franc d'abord, c'est ce qui compte pour la securite ; (2) annuler le but de
+        navigation et l'exploration, sinon Nav2 reprend la main des que le multiplexeur lui rend la voie ;
+        (3) annuler une calibration ; (4) DESARMER, y compris l'armement verrouille -- c'est la raison d'etre
+        du garde-fou, la manette n'est pas exigee. Le rearmement est volontaire (B long, ou le CC)."""
+        if not msg.data:
+            return
+        self.get_logger().error("garde-fou CC : STOP, but annule, traction desarmee")
+        self._stopMotion()
+        if self._navCli.service_is_ready():
+            self._nav("cancel_all")
+        self._calibCancel("liaison CC perdue")
+        self._motionOn = False
+        self._armLatched = False
+        self._publishState()
+        self._rumble(3)
 
     def _calibCancel(self, why):
         # Une DECHARGE de batterie dure des heures roues levees : la manette qui s'endort ne

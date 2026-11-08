@@ -14,6 +14,13 @@ cmd_vel_mux:
     topics:
       teleop:      {topic: /cmd_vel_teleop, timeout: 0.5, priority: 100}
       calibration: {topic: /cmd_vel_calib,  timeout: 0.5, priority: 90}
+      # Voie Command Center (clavier / manette du PC, a venir) : SOUS AUTORISATION de cc_guard, qui ne
+      # l'ouvre que si la page est la, la video aussi, et la traction armee. Priorite 95 : la manette
+      # (100) reprend toujours la main ; au-dessus de la calibration (90) et de la navigation (10).
+      # Timeout COURT (0,3 s) : une touche relachee ou une page figee n'entretient pas la consigne.
+      # AUCUNE interface de pilotage dans ce lot : seule la plomberie, testee.
+      cc:          {topic: /cmd_vel_cc,     timeout: 0.3, priority: 95,
+                    enable_topic: /cc/guard/enable}
       # Voie navigation SOUS AUTORISATION : nav_supervisor ne l'ouvre que pendant un but actif
       # (cf. cmd_vel_mux_node, soubresauts de l'essai E1 du 2026-10-11).
       navigation:  {topic: /cmd_vel_nav,    timeout: 0.5, priority: 10,
