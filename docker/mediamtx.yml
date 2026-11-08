@@ -91,3 +91,22 @@ paths:
       -f rtsp rtsp://localhost:8554/$MTX_PATH
     runOnDemandRestart: yes
     runOnDemandCloseAfter: 15s
+
+  # Flux BRUT pour le Command Center (http://<rpi>:8889/raw, WebRTC) : l'image de la camera SANS
+  # incrustation du HUD. Le Command Center y superpose lui-meme le suivi (cadre, reticule) a
+  # partir de /videotracking/track_state, lu par rosbridge. MEME CHAINE ET MEME REGLAGES QUE `hud`
+  # (MJPEG de web_video_server -> encodeur H.264 materiel, 640x480, 1200 kbit/s, image cle toutes
+  # les 2 s), source /video/raw. Seule difference voulue : la cadence, plafonnee a 15 images/s
+  # (le HUD est a 10) -> -r 15 et -g 30 pour garder une image cle toutes les 2 s. Le goulot n'est
+  # pas l'encodeur materiel mais le decodage MJPEG logiciel de ffmpeg (~15 % d'un coeur a 10 img/s).
+  # A la demande comme `hud` : rien ne tourne au repos.
+  # NB : le tracking travaille sur l'image MIROIR (flip: h de videotracking.yaml) alors que ce
+  # flux brut n'est pas retourne -- le Command Center inverse donc x des cadres avant de les tracer.
+  raw:
+    runOnDemand: >
+      ffmpeg -hide_banner -loglevel warning -fflags nobuffer -f mjpeg -r 15
+      -i http://localhost:8080/stream?topic=/video/raw&type=ros_compressed
+      -c:v h264_v4l2m2m -b:v 1200k -g 30 -pix_fmt yuv420p
+      -f rtsp rtsp://localhost:8554/$MTX_PATH
+    runOnDemandRestart: yes
+    runOnDemandCloseAfter: 15s
