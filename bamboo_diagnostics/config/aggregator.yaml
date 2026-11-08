@@ -169,12 +169,6 @@ analyzers:
           startswith: [ 'rosbridge_websocket:' ]
           expected: [ 'rosbridge_websocket: presence' ]
           timeout: 5.0
-        foxglove:
-          type: diagnostic_aggregator/GenericAnalyzer
-          path: foxglovebridge
-          startswith: [ 'foxglove_bridge:' ]
-          expected: [ 'foxglove_bridge: presence' ]
-          timeout: 5.0
         robotdesc:
           type: diagnostic_aggregator/GenericAnalyzer
           path: robotdesc

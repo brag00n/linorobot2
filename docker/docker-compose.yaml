@@ -172,11 +172,16 @@ services:
       source /root/linorobot2_ws/install/setup.bash;
       ros2 launch rosbridge_server rosbridge_websocket_launch.xml"
 
-#--- foxglovebridge
+#--- foxglovebridge : A LA DEMANDE depuis le 2026-11-08 (retire du profil `boot`).
+#    Il prenait ~70 % d'un coeur en permanence, sur un RPi deja a un load de 6 a 10 sur 4 coeurs,
+#    et le Command Center (portail :8000/cc/) couvre desormais la supervision courante. Il reste
+#    utile pour inspecter les topics a la main (carte, lidar) : le lancer alors avec
+#        docker compose --profile tools up -d foxglovebridge       (port 8765)
+#    et l'arreter ensuite. Le diagnostic ne le surveille plus (bamboo_diagnostics/config).
   foxglovebridge:
     image: linorobot2-foxglovebridge:${ROS_DISTRO}
-    profiles: ["boot"]          # cf. rosbridge
-    restart: unless-stopped
+    profiles: ["tools"]         # PAS `boot` : ne demarre ni au boot ni via bamboo4wd.service
+    restart: "no"
     build:
       context: ../
       dockerfile: docker/Dockerfile

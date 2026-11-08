@@ -11,10 +11,12 @@ bamboo_health:
     startup_grace_s: 15.0
 
     # Noeuds tiers, et le service compose (module) qui porte chacun -- MEME ORDRE.
+    # foxglove_bridge n'y est PLUS (2026-11-08) : le service est a la demande (profil `tools`), et un
+    # noeud attendu mais volontairement arrete s'afficherait en erreur permanente.
     watched_nodes: [ "gscam_node", "web_video_server", "camera_fps", "joy_linux_node",
-                     "rosbridge_websocket", "foxglove_bridge", "robot_state_publisher" ]
+                     "rosbridge_websocket", "robot_state_publisher" ]
     watched_modules: [ "bamboo_video", "bamboo_video", "bamboo_video", "bamboo_control",
-                       "rosbridge", "foxglovebridge", "robotdesc" ]
+                       "rosbridge", "robotdesc" ]
 
     # Video : cadence du flux WEB, publiee par camera_fps (client HTTP du flux). Elle suit la
     # sortie du mux, donc l'ENRICHI (1 a 2 Hz mesures a T26 quand le HUD tourne) : un seuil a
