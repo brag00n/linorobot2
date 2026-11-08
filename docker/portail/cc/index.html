@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#04080b">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%2304080b'/%3E%3Cpath d='M3 3h10v10H3z' fill='none' stroke='%23f1e8b4' stroke-width='1.5'/%3E%3C/svg%3E">
+<title>Bamboo · Command Center</title>
+<!--
+  COMMAND CENTER BambooWS -- jalon 1 : LECTURE SEULE, branche au robot.
+  Servi par le portail (:8000/cc/). Aucune commande ne part vers le robot depuis cette page.
+    - donnees : rosbridge (ws://<hote>:9090), topics ROS lus en direct (batterie, IMU, roues, suivi, diagnostics, nav, journal)
+    - video   : WebRTC (WHEP) vers le chemin MediaMTX « raw » (http://<hote>:8889/raw), image SANS incrustation du HUD ;
+                seul l'affichage du SUIVI (cadre, reticule, ruban de cap) est trace par cette page
+    - touches : 1-4 modes · J journal · S afficher la source de chaque donnee
+    - options : #host=<ip> (autre robot) · #z=0.85 (zoom, 0.75 par defaut) · #mode=vitals|mission|config|calib · #src · #open=journal
+  Polices Oxanium (licence OFL) : ../fonts/. Maquette d'origine et captures : docker/command-center-maquette/.
+-->
+<link rel="stylesheet" href="cc.css">
+</head>
+<body>
+<div class="app" id="app">
+  <header class="hdr fr hi">
+    <div class="logo">Bamboo<b>CC</b><small class="micro">Command Center · BambooWS</small></div>
+    <div class="mchip" id="mchip">
+      <div><div class="micro">Mode robot</div><div class="mt"><span class="pulse off"></span><span id="mt">—</span></div></div>
+      <div></div>
+      <div class="mtime" id="mtime">00:00:00</div>
+    </div>
+    <div class="inds">
+      <div class="ind" id="iPad" data-lv="0"><span class="micro">Manette</span><span class="iv"><svg class="pico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 8h11a4.5 4.5 0 0 1 4.4 3.6l.6 3.4a2.4 2.4 0 0 1-4.1 2.1L16 15.5H8L5.6 17.1a2.4 2.4 0 0 1-4.1-2.1l.6-3.4A4.5 4.5 0 0 1 6.5 8z"/><path d="M8 10.5v3M6.5 12h3"/></svg><span class="sigb" id="sigp"><i style="height:4px"></i><i style="height:7px"></i><i style="height:10px"></i><i style="height:14px"></i></span><span id="iPadT">Connectée</span></span><em class="src todo">✗ RSSI Bluetooth : à exposer par l'hôte</em></div>
+      <div class="ind" id="iLink" data-lv="0"><span class="micro">Liaison Wi-Fi</span><span class="iv"><span class="sigb" id="sigb"><i style="height:4px"></i><i style="height:7px"></i><i style="height:10px"></i><i style="height:14px"></i></span><span id="iLinkT">−45 dBm · 5G</span></span><em class="src todo">✗ wpa_cli signal_poll : à exposer</em></div>
+      <div class="ind" id="iBat" data-lv="0"><span class="micro">Batterie</span><span class="iv"><span class="mbat" id="mbat"></span><span id="iBatT">78 %</span></span><em class="src">/battery · BatteryCalibState · soc_pct</em></div>
+    </div>
+    <div class="hb"></div>
+  </header>
+
+  <aside class="rail">
+    <section class="op fr" aria-label="Opérateur">
+      <div class="opmeta"><span class="micro">Opérateur</span><span class="micro" id="opSess">Session 00:00</span></div>
+      <div class="opcam" id="opcam">
+        <video id="opvid" autoplay muted playsinline></video>
+        <svg viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+          <ellipse class="face" cx="80" cy="56" rx="25" ry="33"/><path class="face" d="M30 120c4-24 22-30 50-30s46 6 50 30"/>
+          <path d="M8 18V8h10M152 18V8h-10M8 102v10h10M152 102v10h-10" fill="none" stroke="var(--cream)" stroke-width="1.5"/>
+          <line class="scanl" x1="38" x2="122" y1="0" y2="0"/>
+        </svg>
+        <button class="btn on-btn" id="camOn" type="button" title="La webcam du PC exige HTTPS ou localhost">Activer ma webcam</button>
+      </div>
+      <div class="ai">
+        <div class="opmeta"><span class="micro">Assistant IA</span><span class="badge">Prévu</span></div>
+        <div class="wave" id="wave"></div>
+        <div class="aitxt" id="aitxt"></div>
+        <div class="aiin"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg><span>Parle au robot…</span></div>
+      </div>
+    </section>
+    <nav class="modes fr" id="modes" aria-label="Modes d'action"><div class="micro" style="padding:2px 4px 0">Actions</div><div class="selb" id="selb"></div></nav>
+  </aside>
+
+  <main class="stage fr hi" id="stage">
+    <div class="slot" id="slotBig"></div>
+    <div class="fx"></div>
+    <div class="vchips" id="vchips"></div>
+    <div class="glitch"><b id="glitchT">SIGNAL DÉGRADÉ</b></div>
+  </main>
+
+  <section class="strip" id="strip" aria-label="Constantes du mode"></section>
+
+  <section class="panel fr" id="panel" aria-live="polite">
+    <div class="ph" id="ph"></div>
+    <div class="pb" id="pb"><div class="sweep"></div></div>
+  </section>
+
+  <footer class="foot fr"><span class="micro lbl">Santé</span><div class="pills" id="pills" role="status" aria-label="Santé du robot"></div><button class="btn jbtn" id="jbtn" type="button" aria-haspopup="dialog"><i class="live"></i>Journal<b id="jcount" data-lv="0" style="display:none">0</b></button></footer>
+</div>
+<dialog id="dlg" aria-labelledby="dlgT"></dialog>
+
+<script src="widgets.js"></script>
+<script>
+(function () {
+"use strict";
+var W = window.W, $ = W.$, h = W.h, sv = W.sv, pad = W.pad, hms = W.hms, ms2 = W.ms2, clamp = W.clamp, lerp = W.lerp, reduce = W.reduce, lvOf = W.lvOf, num = W.num, f = W.f, fmt = W.fmt,
+  srcTag = W.srcTag, attach = W.attach, Gauge = W.Gauge, Bar = W.Bar, Stat = W.Stat, Horizon = W.Horizon, Scope = W.Scope, KV = W.KV, Matrix = W.Matrix, block = W.block, StatusDot = W.StatusDot;
+var REG = [], RAFP = []; W.setRegistry(REG); window.CCSTATE = window.CCSTATE || { DT: {}, SC: [] };
+var HASH = {}; location.hash.replace(/^#/, "").split("&").forEach(function (p) { if (p) { var a = p.split("="); HASH[a[0]] = a[1] === undefined ? true : a[1]; } });
+/* ======================= Command Center : données réelles (rosbridge) + vidéo WebRTC ======================= */
+var HOST = HASH.host || location.hostname || "192.168.1.164";
+var RB_URL = "ws://" + HOST + ":9090", WHEP_URL = "http://" + HOST + ":8889/raw/whep";
+var PORTAL = "http://" + HOST + ":8000/", AP_UI = "http://10.3.141.1:8081/";
+var Z = parseFloat(HASH.z) || 0.75;                          // le bon niveau d'affichage = 75 % (retour utilisateur)
+document.documentElement.style.setProperty("--z", Z);
+
+var S = { mode: "vitals", t0: performance.now(), pad: null, rb: false, vid: "off", robotMode: "—", armed: null, charging: false, gauge: "", unread: 0, unreadLv: 0, jPause: false };
+var V = { bat_v: NaN, soc: NaN, cur: NaN, speed: NaN, cpu: NaN, temp: NaN, mem: NaN, disk: NaN, fpsC: NaN, fpsD: NaN, fpsO: NaN, lat: NaN, latMax: NaN,
+  rpmL: NaN, rpmR: NaN, roll: 0, pitch: 0, yaw: NaN, wzIn: NaN, gz: NaN, ww: NaN, vw: NaN, slip: NaN, pi: NaN, rtt: NaN, vfps: NaN, vloss: NaN, jit: NaN, kbps: NaN };
+var T = null, TT = 0, NAV = null, NAVT = 0, MC = null, BC = null, E32 = null, DT = {}, DMODS = [], HL = null;
+var SC = { buf: window.CCSTATE.SC };
+var CAMOPT = { det: true, ret: true };
+
+/* ---------- journal ---------- */
+var JLOG = [], JL = null, JFILTER = 0;
+function jpass(e) { return e.l >= JFILTER; }
+function jrow(e, fresh) { var r = h("div", "jr l" + e.l + (fresh ? " new" : "")), t = h("span", "jt"), b = h("b"), m = h("span"); t.textContent = e.t; b.textContent = ["INFO", "WARN", "CRIT"][e.l]; m.textContent = e.txt; r.append(t, b, m); return r; }
+function jbadge() { var b = $("#jcount"); b.style.display = S.unread ? "" : "none"; b.textContent = S.unread > 99 ? "99+" : S.unread; b.dataset.lv = S.unreadLv; }
+function log(l, txt) {
+  var e = { t: hms((performance.now() - S.t0) / 1000), l: l, txt: txt }; JLOG.push(e); if (JLOG.length > 300) JLOG.shift();
+  if (JL) { if (!S.jPause && jpass(e)) { JL.appendChild(jrow(e, true)); while (JL.children.length > 160) JL.firstChild.remove(); JL.scrollTop = JL.scrollHeight; } }
+  else { S.unread++; S.unreadLv = Math.max(S.unreadLv, l); jbadge(); }
+}
+
+/* ---------- rosbridge : client minimal (protocole JSON, aucune bibliothèque) ---------- */
+var HANDLERS = {
+  "/battery": ["sensor_msgs/msg/BatteryState", 500, 1, function (m) { V.bat_v = num(m.voltage); V.cur = Math.abs(num(m.current)); V.soc = m.percentage == null ? NaN : num(m.percentage) * 100; }],
+  "/esp32_status": ["bamboo_interfaces/msg/Esp32Status", 400, 1, function (m) { E32 = m; V.roll = num(m.roll) || 0; V.pitch = num(m.pitch) || 0; V.yaw = num(m.yaw); V.speed = Math.abs(num(m.vx)); if (!isFinite(V.bat_v)) V.bat_v = num(m.battery_voltage); }],
+  "/wheel_rpm": ["bamboo_interfaces/msg/WheelRpm", 300, 1, function (m) { V.rpmL = Math.abs(num(m.rpm[0])); V.rpmR = Math.abs(num(m.rpm[1])); }],
+  "/videotracking/stats": ["bamboo_interfaces/msg/TrackingStats", 500, 1, function (m) { V.fpsC = num(m.capture_fps); V.fpsD = num(m.detect_fps); V.fpsO = num(m.overlay_fps); V.lat = num(m.latency_ms); V.latMax = num(m.latency_ms_max); }],
+  "/videotracking/track_state": ["bamboo_interfaces/msg/TrackState", 100, 1, function (m) { T = m; TT = performance.now(); }],
+  "/motion_compensation/state": ["bamboo_interfaces/msg/MotionCompensationState", 100, 1, function (m) {
+    MC = m; V.ww = num(m.w_wheels); V.gz = num(m.gz); V.slip = num(m.slip); V.pi = num(m.pi_term); V.wzIn = num(m.wz_in); V.vw = num(m.v_wheels);
+    SC.buf.push([V.wzIn, V.gz, V.ww]); if (SC.buf.length > 300) SC.buf.shift(); }],
+  "/gamepad/connected": ["std_msgs/msg/Bool", 500, 1, function (m) { var p = !!m.data; if (S.pad !== null && p !== S.pad) log(p ? 0 : 1, p ? "Manette connectée" : "Manette déconnectée"); S.pad = p; }],
+  "/navigation/state": ["bamboo_interfaces/msg/NavState", 500, 1, function (m) { NAV = m; NAVT = performance.now(); }],
+  "/bamboo_calibration/battery": ["bamboo_interfaces/msg/BatteryCalibState", 1000, 1, function (m) { BC = m; }],
+  "/diagnostics_agg": ["diagnostic_msgs/msg/DiagnosticArray", 1000, 1, onDiag],
+  "/rosout": ["rcl_interfaces/msg/Log", 0, 40, function (m) {
+    if (m.level < 20) return; var l = m.level >= 40 ? 2 : m.level >= 30 ? 1 : 0, t = "[" + m.name + "] " + String(m.msg).replace(/\s+/g, " ");
+    log(l, t.length > 220 ? t.slice(0, 219) + "…" : t); }]
+};
+var ws = null, rbBack = 1000, callN = 0, calls = {}, lastRb = 0;
+function rbSend(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+function rbConnect() {
+  try { ws = new WebSocket(RB_URL); } catch (e) { return rbRetry(); }
+  ws.onopen = function () {
+    S.rb = true; rbBack = 1000; log(0, "rosbridge connecté (" + HOST + ":9090)");
+    Object.keys(HANDLERS).forEach(function (t, i) { var d = HANDLERS[t]; rbSend({ op: "subscribe", id: "s" + i, topic: t, type: d[0], throttle_rate: d[1], queue_length: d[2] }); });
+  };
+  ws.onmessage = function (ev) {
+    var m; try { m = JSON.parse(ev.data); } catch (e) { return; } lastRb = performance.now();
+    if (m.op === "publish") { var d = HANDLERS[m.topic]; if (d) { try { d[3](m.msg); } catch (e) { console.error(m.topic, e); } } }
+    else if (m.op === "service_response") { var c = calls[m.id]; if (c) { delete calls[m.id]; c(m); } }
+    else if (m.op === "status" && m.level === "error") log(1, "rosbridge : " + String(m.msg).slice(0, 160));
+  };
+  ws.onclose = function () { if (S.rb) log(1, "rosbridge perdu — nouvelle tentative"); S.rb = false; Object.keys(V).forEach(function (k) { V[k] = NaN; }); V.roll = 0; V.pitch = 0; DT = {}; window.CCSTATE.DT = DT; DMODS = []; T = null; NAV = null; MC = null; HL = null; rbRetry(); };
+  ws.onerror = function () { try { ws.close(); } catch (e) { } };
+}
+function rbRetry() { setTimeout(rbConnect, rbBack); rbBack = Math.min(10000, rbBack * 1.6); }
+function rbPing() {            // aller-retour réel PC ↔ robot : appel d'un service léger
+  if (!S.rb) return; var id = "c" + (++callN), t0 = performance.now();
+  calls[id] = function () { V.rtt = performance.now() - t0; }; rbSend({ op: "call_service", id: id, service: "/rosapi/get_time", args: {} });
+  setTimeout(function () { if (calls[id]) { delete calls[id]; V.rtt = NaN; } }, 4000);
+}
+
+/* ---------- diagnostics agrégés : tâches, modules, valeurs dérivées ---------- */
+function onDiag(m) {
+  var tasks = {}, mods = [];
+  m.status.forEach(function (s) {
+    var p = s.name.split("/"), last = p[p.length - 1], lv = s.level === 3 ? 2 : s.level;     // STALE (3) = composant muet : critique
+    if (last.indexOf(": ") >= 0) { var vals = {}; (s.values || []).forEach(function (kv) { vals[kv.key] = kv.value; }); tasks[last] = { name: last, level: lv, msg: s.message, vals: vals }; }
+    else if (p.length === 3) mods.push({ name: last, level: lv, msg: s.message });
+  });
+  var g = function (n) { return tasks[n] ? tasks[n].vals : null; }, v;
+  if ((v = g("systeme: occupation CPU"))) V.cpu = num(parseFloat(v.occupation_pct));
+  if ((v = g("systeme: temperature CPU"))) V.temp = num(parseFloat(v.celsius));
+  if ((v = g("systeme: memoire"))) V.mem = 100 - 100 * parseFloat(v.disponible_mo) / parseFloat(v.total_mo);
+  if (tasks["systeme: disque"]) { var mm = /(\d+)\s*%/.exec(tasks["systeme: disque"].msg); if (mm) V.disk = +mm[1]; }
+  if ((v = g("esp32_mavlink_driver: batterie"))) { S.charging = v.chargeur === "branche"; S.gauge = v.etat_jauge || ""; }
+  if ((v = g("bamboo_mode_manager: modes du robot"))) S.robotMode = String(v.mode || "").toUpperCase() || "—";
+  if ((v = g("bamboo_teleop: traction"))) S.armed = v.motion_enabled === "True";
+  if (HL) Object.keys(tasks).forEach(function (k) { if (HL[k] != null && HL[k] !== tasks[k].level) log(tasks[k].level, k + " : " + tasks[k].msg); });
+  HL = {}; Object.keys(tasks).forEach(function (k) { HL[k] = tasks[k].level; });
+  DT = tasks; window.CCSTATE.DT = tasks; DMODS = mods;
+}
+
+/* ---------- vidéo : WebRTC (WHEP) vers le chemin MediaMTX « raw » ---------- */
+var pc = null, vidTimer = 0, vidBack = 2000, VS = { b: 0, t: 0, lost: 0, rcv: 0 };
+function vidClose() { if (pc) { try { pc.close(); } catch (e) { } pc = null; } }
+function vidRetry(why) {
+  vidClose(); if (S.vid !== "lost") log(1, "Vidéo hors ligne" + (why ? " (" + why + ")" : "") + " — nouvelle tentative"); S.vid = "lost"; V.vfps = V.vloss = V.kbps = V.jit = NaN;
+  clearTimeout(vidTimer); vidTimer = setTimeout(vidStart, vidBack); vidBack = Math.min(12000, vidBack * 1.5);
+}
+function vidStart() {
+  vidClose(); S.vid = "connecting"; VS.t = 0;
+  var p = new RTCPeerConnection({ iceServers: [] }); pc = p;
+  p.addTransceiver("video", { direction: "recvonly" });
+  p.ontrack = function (e) { stage.vid.srcObject = e.streams[0]; stage.vid.play().catch(function () { }); };
+  p.onconnectionstatechange = function () {
+    if (p !== pc) return;
+    if (p.connectionState === "connected") { S.vid = "live"; vidBack = 2000; log(0, "Vidéo WebRTC établie (flux brut)"); }
+    else if (p.connectionState === "failed" || p.connectionState === "disconnected" || p.connectionState === "closed") vidRetry(p.connectionState);
+  };
+  p.createOffer().then(function (o) { return p.setLocalDescription(o); }).then(function () {
+    return new Promise(function (ok) { if (p.iceGatheringState === "complete") return ok(); var t = setTimeout(ok, 2000); p.onicegatheringstatechange = function () { if (p.iceGatheringState === "complete") { clearTimeout(t); ok(); } }; });
+  }).then(function () {
+    return fetch(WHEP_URL, { method: "POST", headers: { "Content-Type": "application/sdp" }, body: p.localDescription.sdp });
+  }).then(function (r) { if (!r.ok) throw new Error("WHEP " + r.status); return r.text(); })
+    .then(function (sdp) { if (p === pc) return p.setRemoteDescription({ type: "answer", sdp: sdp }); })
+    .catch(function (e) { if (p === pc) vidRetry(String(e.message || e)); });
+}
+function vidStats() {
+  if (!pc || pc.connectionState !== "connected") return;
+  pc.getStats().then(function (rep) {
+    var now = performance.now();
+    rep.forEach(function (s) {
+      if (s.type === "inbound-rtp" && s.kind === "video") {
+        if (s.framesPerSecond != null) V.vfps = s.framesPerSecond; V.jit = (s.jitter || 0) * 1000;
+        if (VS.t) { var dt = (now - VS.t) / 1000, dl = s.packetsLost - VS.lost, dr = s.packetsReceived - VS.rcv; V.kbps = (s.bytesReceived - VS.b) * 8 / 1000 / dt; V.vloss = dl + dr > 0 ? 100 * Math.max(0, dl) / (dl + dr) : 0; }
+        VS.b = s.bytesReceived; VS.t = now; VS.lost = s.packetsLost; VS.rcv = s.packetsReceived;
+      }
+    });
+  }).catch(function () { });
+}
+
+/* ---------- scène : vidéo + incrustation du suivi (rien d'autre que le suivi, comme demandé) ---------- */
+function VideoView() {
+  var root = h("div", "vp"), vid = h("video"), cv = h("canvas", "ov"), ctx = cv.getContext("2d"), W = 0, H = 0;
+  vid.autoplay = true; vid.muted = true; vid.playsInline = true; vid.setAttribute("aria-label", "Caméra du robot (flux brut)"); root.append(vid, cv);
+  var fit = function () { var r = root.getBoundingClientRect(), d = Math.min(2, window.devicePixelRatio || 1); if (r.width < 2) return; cv.width = Math.round(r.width * d); cv.height = Math.round(r.height * d); W = cv.width; H = cv.height; };
+  new ResizeObserver(fit).observe(root);
+  var F = function (px, wt) { return (wt || 500) + " " + Math.round(px * (H / 600 + .55)) + "px Oxanium, system-ui, sans-serif"; };
+  function rect() { var vw = vid.videoWidth || 640, vh = vid.videoHeight || 480, k = Math.min(W / vw, H / vh); return { x: (W - vw * k) / 2, y: (H - vh * k) / 2, k: k, vw: vw, vh: vh }; }
+  function corners(x, y, w, h2, c, u) { ctx.beginPath(); [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h2, 1, -1], [x + w, y + h2, -1, -1]].forEach(function (q) { ctx.moveTo(q[0] + q[2] * c, q[1]); ctx.lineTo(q[0], q[1]); ctx.lineTo(q[0], q[1] + q[3] * c); }); ctx.stroke(); }
+  function draw(t) {
+    if (!W) fit(); if (!W) return; ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, W, H); var u = H / 600, now = performance.now();
+    if (S.vid !== "live") {
+      ctx.fillStyle = "rgba(143,199,212,.9)"; ctx.font = F(16, 500); ctx.textAlign = "center";
+      ctx.fillText(S.vid === "connecting" ? "CONNEXION VIDÉO…" : S.vid === "lost" ? "VIDÉO HORS LIGNE" : "VIDÉO ARRÊTÉE", W / 2, H / 2 - 6 * u);
+      ctx.font = F(11, 500); ctx.fillStyle = "#5f98a6"; ctx.fillText("WebRTC · " + WHEP_URL.replace("http://", ""), W / 2, H / 2 + 18 * u); ctx.textAlign = "left";
+    }
+    var r = rect(), cxr = W / 2, cyr = H / 2;
+    /* cadre de suivi : le tracking travaille sur l'image MIROIR (flip: h) alors que le flux brut ne l'est pas → x inversé */
+    if (CAMOPT.det && T && T.locked && now - TT < 600 && S.vid === "live") {
+      var bx = r.x + (r.vw - (T.bbox_x + T.bbox_w)) * r.k, by = r.y + T.bbox_y * r.k, bw = T.bbox_w * r.k, bh = T.bbox_h * r.k, c = Math.max(8 * u, Math.min(bw, bh) * .22);
+      ctx.strokeStyle = "#f1e8b4"; ctx.lineWidth = 2.2 * u; corners(bx, by, bw, bh, c, u);
+      ctx.fillStyle = "#f1e8b4"; ctx.font = F(13, 600); ctx.fillText("VISAGE  " + T.score.toFixed(2), bx, Math.max(14 * u, by - 8 * u));
+      ctx.font = F(11, 500); ctx.fillStyle = "#8fc7d4"; ctx.fillText("VERROU " + T.lock_id + " · " + T.n_faces + " VISAGE" + (T.n_faces > 1 ? "S" : "") + " · " + T.lock_age_s.toFixed(0) + " S", bx, by + bh + 16 * u);
+    }
+    if (CAMOPT.ret && S.vid === "live") { ctx.strokeStyle = "rgba(241,232,180,.85)"; ctx.lineWidth = 1.4 * u; ctx.beginPath(); ctx.arc(cxr, cyr, 26 * u, 0, 7);
+      [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (q) { ctx.moveTo(cxr + q[0] * 34 * u, cyr + q[1] * 34 * u); ctx.lineTo(cxr + q[0] * 62 * u, cyr + q[1] * 62 * u); }); ctx.stroke(); }
+    /* ruban de cap : yaw de l'IMU (Esp32Status) */
+    if (isFinite(V.yaw)) {
+      var tw = Math.min(W * .44, 520 * u), tx = cxr - tw / 2, yaw = ((V.yaw % 360) + 360) % 360; ctx.fillStyle = "rgba(4,8,11,.55)"; ctx.fillRect(tx, 12 * u, tw, 30 * u);
+      ctx.strokeStyle = "rgba(143,199,212,.9)"; ctx.fillStyle = "#8fc7d4"; ctx.font = F(11, 500); ctx.textAlign = "center"; ctx.lineWidth = 1;
+      for (var hd = Math.ceil((yaw - 45) / 5) * 5; hd <= yaw + 45; hd += 5) { var xx = cxr + (hd - yaw) / 45 * tw / 2;
+        if (hd % 10 === 0) { var mdn = ((hd % 360) + 360) % 360; ctx.beginPath(); ctx.moveTo(xx, 12 * u); ctx.lineTo(xx, 24 * u); ctx.stroke(); ctx.fillText({ 0: "N", 90: "E", 180: "S", 270: "O" }[mdn] || String(mdn), xx, 38 * u); }
+        else { ctx.beginPath(); ctx.moveTo(xx, 12 * u); ctx.lineTo(xx, 18 * u); ctx.stroke(); } }
+      ctx.fillStyle = "#f1e8b4"; ctx.beginPath(); ctx.moveTo(cxr, 44 * u); ctx.lineTo(cxr - 5 * u, 52 * u); ctx.lineTo(cxr + 5 * u, 52 * u); ctx.fill(); ctx.textAlign = "left";
+    }
+    var ly = H - 18 * u; ctx.font = F(11, 500); ctx.fillStyle = "#8fc7d4";
+    ctx.fillText("CAM  " + (S.vid === "live" ? r.vw + "×" + r.vh : "—") + "  ·  " + f(V.vfps, 0, " FPS") + "  ·  PIPELINE " + f(V.lat, 0, " MS"), 18 * u, ly);
+    ctx.fillText("CAP " + f(((V.yaw % 360) + 360) % 360, 0, "°") + "  ·  V " + f(V.speed, 2, " M/S"), 18 * u, ly - 18 * u);
+    ctx.textAlign = "right"; ctx.fillStyle = S.vid === "live" ? "#f1e8b4" : "#e7a24a"; ctx.fillText((S.vid === "live" ? (Math.floor(t / 500) % 2 ? "● " : "○ ") + "DIRECT" : "● " + (S.vid === "connecting" ? "CONNEXION" : "HORS LIGNE")), W - 18 * u, ly);
+    var det = DT["tracking_node: detection"]; if (det && det.vals.detection === "coupee" && CAMOPT.det) { ctx.textAlign = "center"; ctx.fillStyle = "#e7a24a"; ctx.font = F(11, 500); ctx.fillText("DÉTECTION COUPÉE — ACTIVE EN MODE TRACKING (TOUCHE A DE LA MANETTE)", cxr, H - 56 * u); }
+    ctx.textAlign = "left"; ctx.strokeStyle = "#f1e8b4"; ctx.lineWidth = 2 * u; var m2 = 16 * u, c2 = 22 * u; ctx.beginPath();
+    [[m2, 58 * u, 1, 1], [W - m2, 58 * u, -1, 1], [m2, H - 56 * u, 1, -1], [W - m2, H - 56 * u, -1, -1]].forEach(function (q) { ctx.moveTo(q[0] + q[2] * c2, q[1]); ctx.lineTo(q[0], q[1]); ctx.lineTo(q[0], q[1] + q[3] * c2); }); ctx.stroke();
+  }
+  return { root: root, vid: vid, draw: draw };
+}
+var stage = VideoView(); $("#slotBig").appendChild(stage.root);
+
+/* ---------- constructeurs de contenu ---------- */
+var ICON = {
+  mission: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>', vitals: '<path d="M2 12h5l2-6 4 12 2-6h7"/>',
+  config: '<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>', calib: '<circle cx="12" cy="12" r="9"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4M9 15l6-6"/>' };
+var MODES = [["mission", "Mission", "Objectifs · carte"], ["vitals", "Vitaux", "Énergie · santé"], ["config", "Config", "Réseau · manette"], ["calib", "Calib", "Étalonnage · tuning"]];
+function infoModal(title, tag, lines) {
+  dlgShow({ tag: tag, title: title, body: [h("div", "callout", "<strong>Pas encore branché</strong><p>" + lines[0] + "</p>"), h("p", "mdesc", lines[1])], foot: [dbtn("Fermer", "pri", dlgClose)] });
+}
+
+/* ---------- mode VITAUX ---------- */
+function panelVitals(pb) {
+  var accs = h("div", "accs rv"); accs.style.setProperty("--i", 0); pb.appendChild(accs); var list = [], Acc = W.Accordion(accs, list, true, REG);
+  var taskLv = function (re) { var lv = -1; Object.keys(DT).forEach(function (k) { if (re.test(k)) lv = Math.max(lv, DT[k].level); }); return lv; };
+  /* 1. SANTÉ (en premier) */
+  var sant = h("div", "prm"), mx = Matrix(), an = h("div", "anom"), lastK = ""; sant.append(mx.root, an);
+  REG.push(function () { mx.update(); var kk = Object.keys(DT).sort().map(function (k) { return k + DT[k].level; }).join("|"); if (kk === lastK) return; lastK = kk; an.replaceChildren(); var any = false;
+    Object.keys(DT).sort().forEach(function (k) { var t = DT[k]; if (t.level) { any = true; an.appendChild(h("div", t.level === 2 ? "l2" : "", "<b>" + (t.level === 2 ? "CRIT" : "WARN") + "</b>")); an.lastChild.appendChild(document.createTextNode(k + " — " + t.msg)); } });
+    if (!any) an.appendChild(h("div", "ok", Object.keys(DT).length ? "Aucune anomalie" : "En attente des diagnostics…")); });
+  Acc("Santé", function () { var n = Object.keys(DT).length; if (!n) return ["en attente", -1]; var w = 0, c = 0; Object.keys(DT).forEach(function (k) { if (DT[k].level === 1) w++; else if (DT[k].level >= 2) c++; });
+    return [c ? c + " critique" + (c > 1 ? "s" : "") + (w ? " · " + w + " avert." : "") : w ? w + " avertissement" + (w > 1 ? "s" : "") : "nominale · " + n + " tâches", c ? 2 : w ? 1 : 0]; }, sant, true);
+  /* 2. ÉNERGIE */
+  var en = h("div", "prm"), r = h("div", "row2");
+  var g = Gauge({ label: "Charge", unit: "%", min: 0, max: 100, warn: 30, crit: 15, dir: "down", src: "/battery · percentage (absent sur chargeur)" }); r.appendChild(attach(g, function () { return V.soc; }, 0).root);
+  REG.push(function () { g.setUnit(isFinite(V.soc) ? "%" : S.charging ? "EN CHARGE" : "—"); });
+  var col = h("div", "prm"); col.style.alignContent = "center";
+  col.appendChild(attach(Bar({ label: "Tension", unit: "V", min: 9, max: 12.6, dec: 2, warn: 11.2, crit: 10.6, dir: "down", src: "/battery · voltage" }), function () { return V.bat_v; }, 1).root);
+  col.appendChild(attach(Bar({ label: "Courant", unit: "A", min: 0, max: 5, dec: 2, warn: 3, crit: 4, src: "/battery · current (valeur absolue)" }), function () { return V.cur; }, 2).root);
+  var st = h("div", "micro"); REG.push(function () { var t = (S.charging ? "Chargeur branché" : "Sur batterie") + (S.gauge ? " · jauge : " + S.gauge : ""); if (st.textContent !== t) st.textContent = t; }); col.appendChild(st);
+  r.appendChild(col); en.appendChild(r);
+  Acc("Énergie", function () { var l = lvOf(V.soc, 30, 15, "down"); if (isFinite(V.soc)) return [Math.round(V.soc) + " %" + (isFinite(V.bat_v) ? " · " + V.bat_v.toFixed(1) + " V" : ""), l]; return [isFinite(V.bat_v) ? (S.charging ? "en charge · " : "") + V.bat_v.toFixed(1) + " V" : "—", isFinite(V.bat_v) ? 0 : -1]; }, en);
+  /* 3. SYSTÈME RPi */
+  var sy = h("div", "prm"), r3 = h("div", "row3");
+  [["CPU", "%", 80, 92, "cpu", "diagnostics · système: occupation CPU"], ["Temp.", "°C", 70, 80, "temp", "diagnostics · température CPU"], ["Mémoire", "%", 85, 95, "mem", "diagnostics · mémoire"]].forEach(function (x, k) {
+    r3.appendChild(attach(Gauge({ label: x[0], unit: x[1], min: 0, max: 100, warn: x[2], crit: x[3], sm: true, src: x[5] }), function () { return V[x[4]]; }, 3 + k).root); });
+  sy.appendChild(r3); sy.appendChild(attach(Bar({ label: "Disque", unit: "%", min: 0, max: 100, warn: 80, crit: 92, src: "diagnostics · système: disque" }), function () { return V.disk; }, 6).root);
+  Acc("Système RPi", function () { if (!isFinite(V.cpu) && !isFinite(V.temp)) return ["—", -1]; var l = Math.max(lvOf(V.cpu, 80, 92), lvOf(V.temp, 70, 80), lvOf(V.mem, 85, 95), lvOf(V.disk, 80, 92)); return ["CPU " + f(V.cpu, 0, " %") + " · " + f(V.temp, 0, " °C"), l]; }, sy);
+  /* 4. MOUVEMENT */
+  var mo = h("div", "prm"), r4 = h("div", "row2"), hz = Horizon(); r4.appendChild(hz.root); REG.push(function () { hz.set(V.roll, V.pitch, isFinite(V.yaw)); });
+  var c2 = h("div", "prm"); c2.style.alignContent = "center";
+  c2.appendChild(attach(Bar({ label: "Roue gauche", unit: "rpm", min: 0, max: 250, src: "/wheel_rpm [0]" }), function () { return V.rpmL; }, 7).root);
+  c2.appendChild(attach(Bar({ label: "Roue droite", unit: "rpm", min: 0, max: 250, src: "/wheel_rpm [1]" }), function () { return V.rpmR; }, 8).root);
+  c2.appendChild(attach(Bar({ label: "Cap", unit: "°", min: 0, max: 360, fn: function (x) { return Math.round(x) + "°"; }, src: "/esp32_status · yaw" }), function () { return isFinite(V.yaw) ? ((V.yaw % 360) + 360) % 360 : NaN; }, 9).root);
+  r4.appendChild(c2); mo.appendChild(r4);
+  Acc("Mouvement", function () { if (!isFinite(V.yaw)) return ["—", -1]; var mv = (V.rpmL || 0) + (V.rpmR || 0) > 1; return [(mv ? "en mouvement · " : "à l'arrêt · ") + "cap " + Math.round(((V.yaw % 360) + 360) % 360) + "°", 0]; }, mo);
+  /* 5. SERVICES */
+  var se = h("div", "prm"), sv2 = h("div", "svcs"); srcTag(sv2, "/diagnostics_agg · un module par service ; pilotage docker : jalon suivant"); var lastM = ""; se.appendChild(sv2);
+  REG.push(function () { var kk = DMODS.map(function (m) { return m.name + m.level; }).join("|"); if (kk === lastM) return; lastM = kk; sv2.querySelectorAll(".li").forEach(function (e) { e.remove(); });
+    DMODS.forEach(function (m) { var li = h("div", "li", '<i class="dotc ' + ["", "w", "e"][m.level] + '"></i><b></b>'); li.lastChild.textContent = m.name.replace(/ \(.*\)$/, ""); li.title = m.name + " — " + m.msg; sv2.appendChild(li); }); });
+  Acc("Services", function () { var n = DMODS.length; if (!n) return ["—", -1]; var bad = DMODS.filter(function (m) { return m.level > 0; }).length; return [bad ? bad + " / " + n + " à vérifier" : n + " modules OK", bad ? 1 : 0]; }, se);
+  /* ouverture : Santé par défaut ; plusieurs sections peuvent rester ouvertes ; l'etat survit au changement de mode */
+  var saved = null; try { saved = JSON.parse(sessionStorage.getItem("cc.vitals.open") || "null"); } catch (e) { }
+  var open = HASH.acc != null ? String(HASH.acc).split(",").map(Number) : saved || [0];
+  open.forEach(function (i) { if (list[i]) list[i].setOpen(true, true); });
+  list.forEach(function (a, i) { a.onToggle = function () { try { sessionStorage.setItem("cc.vitals.open", JSON.stringify(list.map(function (x, k) { return x.isOpen() ? k : -1; }).filter(function (k) { return k >= 0; }))); } catch (e) { } }; });
+}
+function stripVitals(st) {
+  [["FPS capture", "fps", 1, "/videotracking/stats · capture_fps", "fpsC", { warn: 20, crit: 12, dir: "down", min: 0, max: 35 }], ["FPS suivi", "fps", 1, "/videotracking/stats · detect_fps (cycles du suivi)", "fpsD", { warn: 10, crit: 7, dir: "down", min: 0, max: 35 }],
+   ["FPS HUD", "fps", 1, "/videotracking/stats · overlay_fps", "fpsO", { warn: 10, crit: 6, dir: "down", min: 0, max: 20 }], ["Latence", "ms", 0, "/videotracking/stats · latency_ms", "lat", { warn: 80, crit: 150, min: 0, max: 220 }],
+   ["Latence max", "ms", 0, "/videotracking/stats · latency_ms_max", "latMax", { warn: 120, crit: 250, min: 0, max: 400 }], ["CPU", "%", 0, "diagnostics · système: occupation CPU", "cpu", { warn: 80, crit: 92, min: 0, max: 100 }]].forEach(function (x, i) {
+    st.appendChild(attach(Stat(Object.assign({ label: x[0], unit: x[1], dec: x[2], src: x[3] }, x[5])), function () { return V[x[4]]; }, i).root); });
+}
+
+/* ---------- mode MISSION (lecture seule : l'état de la navigation) ---------- */
+function navFresh() { return !!NAV && performance.now() - NAVT < 6000; }
+function missionText() {
+  if (!navFresh()) return ["Aucune mission — pile de navigation arrêtée", "off"];
+  if (NAV.goal) return ["Navigation — vers " + NAV.goal + " · " + f(num(NAV.distance_remaining), 1, " m"), "run"];
+  return ["Navigation — " + (NAV.submode || "?") + (NAV.detail ? " · " + NAV.detail : ""), "run"];
+}
+function panelMission(pb) {
+  var b1 = block("Navigation", 0, "/navigation/state");
+  b1.appendChild(KV([
+    ["Pile NAV", function () { return navFresh() ? "en marche" : ["arrêtée (A long en mode NAV)", 0]; }], ["Sous-mode", function () { return navFresh() ? NAV.submode || "—" : "—"; }], ["Carte courante", function () { return navFresh() ? NAV.map_name || "—" : "—"; }],
+    ["But", function () { return navFresh() ? (NAV.goal || "aucun") + (NAV.goal_status ? " · " + NAV.goal_status : "") : "—"; }], ["Distance restante", function () { return navFresh() ? f(num(NAV.distance_remaining), 1, " m") : "—"; }],
+    ["Reprises", function () { return navFresh() ? String(NAV.recoveries) : "—"; }], ["Localisation", function () { return navFresh() ? [NAV.loc_state + (isFinite(num(NAV.map_match)) ? " · " + Math.round(NAV.map_match * 100) + " %" : ""), NAV.loc_state === "ok" ? 0 : 1] : "—"; }],
+    ["Capteurs manquants", function () { return navFresh() ? ((NAV.missing_sensors && NAV.missing_sensors.length) ? [NAV.missing_sensors.join(", "), 2] : "aucun") : "—"; }]], "NavState (le superviseur publie seulement quand la pile NAV tourne)"));
+  pb.appendChild(b1);
+  var b2 = block("Objectifs", 1, "faisabilité"), L = h("div", "lst"); srcTag(L, "analyse du code existant — pilotage depuis cette page : jalon 2");
+  [["Exploration", "ok", "Prêt", "NavCommand exploration / auto_explore existent"], ["Identifier & suivre", "part", "Partiel", "visages seulement ; classes d'objets à ajouter"], ["Ronde", "part", "Partiel", "goto de destination existe ; enchaînement à écrire"],
+   ["Surveillance", "todo", "À construire", "moteur d'alertes à écrire"], ["Retour base", "part", "Partiel", "goto home existe ; accostage à faire"]].forEach(function (x) {
+    var li = h("div", "li", '<i class="dotc ' + (x[1] === "ok" ? "" : x[1] === "part" ? "w" : "e") + '"></i><div><b></b><small></small></div><span class="st ' + x[1] + '">' + x[2] + '</span>'); li.querySelector("b").textContent = x[0]; li.querySelector("small").textContent = x[3]; L.appendChild(li); });
+  b2.appendChild(L); pb.appendChild(b2);
+  var b3 = block("Carte", 2, "/map"), mw = h("div", "card fr"); mw.innerHTML = '<div class="micro">Carte de navigation</div><p class="pdesc" style="margin:0">Le tracé de la carte arrive au jalon 2. Il demande la pile NAV (lidar + SLAM), éteinte au repos.</p>'; b3.appendChild(mw); pb.appendChild(b3);
+}
+function stripMission(st) {
+  [["Distance restante", "m", 1, "NavState · distance_remaining", function () { return navFresh() ? num(NAV.distance_remaining) : NaN; }, {}], ["Reprises", "", 0, "NavState · recoveries", function () { return navFresh() ? num(NAV.recoveries) : NaN; }, { warn: 2, crit: 5 }],
+   ["Localisation", "%", 0, "NavState · map_match", function () { return navFresh() ? num(NAV.map_match) * 100 : NaN; }, { warn: 75, crit: 55, dir: "down", min: 0, max: 100 }],
+   ["Gates ouvertes", "", 0, "NavState · gate_status", function () { return navFresh() ? (NAV.gate_status || []).filter(function (s) { return s === "ouverte"; }).length : NaN; }, { min: 0, max: 8 }],
+   ["Vitesse", "m/s", 2, "/esp32_status · vx", function () { return V.speed; }, { min: 0, max: .4 }], ["Batterie", "%", 0, "/battery · percentage", function () { return V.soc; }, { warn: 30, crit: 15, dir: "down", min: 0, max: 100 }]].forEach(function (x, i) {
+    st.appendChild(attach(Stat(Object.assign({ label: x[0], unit: x[1], dec: x[2], src: x[3] }, x[5])), x[4], i).root); });
+}
+
+/* ---------- mode CONFIG : sections dépliables, lecture seule ---------- */
+function panelConfig(pb) {
+  var accs = h("div", "accs rv"); accs.style.setProperty("--i", 0); pb.appendChild(accs); var list = [];
+  var Acc = W.Accordion(accs, list, false, REG);
+  var ap = h("div", "prm"), c = h("div", "card fr"); c.innerHTML = '<div class="big">Bamboo</div><div class="tags2"><span class="badge ok">5 GHz</span><span class="badge">WPA2</span><span class="badge">10.3.141.1</span></div>';
+  srcTag(c, "✗ canal et clients : lecture hôte (iw / leases) à exposer"); ap.appendChild(c);
+  var op = h("a", "btn", "Ouvrir RaspAP"); op.href = AP_UI; op.target = "_blank"; op.rel = "noopener"; op.style.textAlign = "center"; op.style.textDecoration = "none"; op.style.display = "block"; ap.appendChild(op);
+  ap.appendChild(h("p", "pdesc", "RaspAP n'est joignable que depuis le Wi-Fi « Bamboo » (adresse 10.3.141.1)."));
+  Acc("Point d'accès", function () { return ["Bamboo · 10.3.141.1", 0]; }, ap);
+  var pd = h("div", "prm"), pc2 = h("div", "card fr"); pc2.style.gridTemplateColumns = "1fr auto"; pc2.style.alignItems = "center";
+  var pst = h("div"); pst.innerHTML = '<div class="micro">Manette · /gamepad/connected</div><div style="font:300 22px var(--display);letter-spacing:.1em;margin-top:4px"><i class="dotc" id="padDot" style="display:inline-block;margin-right:10px"></i><span id="padTxt">—</span></div>';
+  var pa = h("a", "btn pri", "Appairer"); pa.href = PORTAL; pa.target = "_blank"; pa.rel = "noopener"; pa.style.textDecoration = "none"; pa.title = "Ouvre le portail : assistant d'appairage";
+  pc2.append(pst, pa); pd.appendChild(pc2); pd.appendChild(KV([["Périphérique", function () { var t = DT["js0: peripherique"]; return t ? [t.msg, t.level] : "—"; }], ["Bluetooth", function () { var t = DT["bluetooth: adaptateur"]; return t ? [t.msg, t.level] : "—"; }],
+    ["Traction", function () { return S.armed == null ? "—" : S.armed ? ["armée", 1] : "désarmée"; }]], "diagnostics · js0, bluetooth, traction ; signal Bluetooth ✗ à exposer"));
+  REG.push(function () { var t = $("#padTxt"), d = $("#padDot"); if (t) { t.textContent = S.pad == null ? "—" : S.pad ? "Connectée" : "Absente"; d.className = "dotc " + (S.pad ? "" : "w"); } });
+  Acc("Manette", function () { return S.pad == null ? ["—", -1] : S.pad ? ["connectée", 0] : ["non connectée", 1]; }, pd);
+  var rg = h("div", "prm");
+  rg.appendChild(KV([["Mode du robot", function () { return S.robotMode; }], ["Carte moteurs", function () { return E32 ? (E32.board_config_ok ? "configuration lue" : ["carte muette", 2]) : "—"; }],
+    ["Ticks / tour", function () { return E32 ? f(num(E32.board_cpr), 0) : "—"; }], ["Circonférence", function () { return E32 ? f(num(E32.board_circ_mm), 1, " mm") : "—"; }], ["Demi-voie", function () { return E32 ? f(num(E32.board_apb_mm), 1, " mm") : "—"; }],
+    ["PID carte Kp · Ki · Kd", function () { return E32 ? f(num(E32.board_pid_kp), 2) + " · " + f(num(E32.board_pid_ki), 2) + " · " + f(num(E32.board_pid_kd), 2) : "—"; }],
+    ["Compensation", function () { return MC ? MC.variant + (MC.identity ? " (neutre)" : "") + (MC.bypass ? " · contournée" : "") : "—"; }],
+    ["Seuils batterie", function () { var t = DT["esp32_mavlink_driver: batterie"]; return t ? t.vals.seuil_warn_v + " V · " + t.vals.seuil_error_v + " V" : "—"; }]], "Esp32Status · MotionCompensationState · diagnostics — modification : jalon 2"));
+  Acc("Réglages", function () { return ["Mode · " + S.robotMode, 0]; }, rg);
+  if (HASH.acc != null && list[+HASH.acc]) list[+HASH.acc].setOpen(true, true);
+}
+function stripConfig(st) {
+  [["Liaison", "ms", 0, "aller-retour rosbridge (/rosapi/get_time)", function () { return S.rb ? V.rtt : NaN; }, { warn: 80, crit: 200, min: 0, max: 250 }], ["FPS vidéo", "fps", 0, "WebRTC · inbound-rtp framesPerSecond", function () { return V.vfps; }, { warn: 12, crit: 6, dir: "down", min: 0, max: 35 }],
+   ["Pertes vidéo", "%", 1, "WebRTC · paquets perdus", function () { return V.vloss; }, { warn: 3, crit: 10, min: 0, max: 20 }], ["Gigue", "ms", 1, "WebRTC · jitter", function () { return V.jit; }, { warn: 30, crit: 80, min: 0, max: 100 }],
+   ["Débit vidéo", "kbit/s", 0, "WebRTC · bytesReceived", function () { return V.kbps; }, { min: 0, max: 3000 }], ["Latence pipeline", "ms", 0, "/videotracking/stats · latency_ms", function () { return V.lat; }, { warn: 80, crit: 150, min: 0, max: 220 }]].forEach(function (x, i) {
+    st.appendChild(attach(Stat(Object.assign({ label: x[0], unit: x[1], dec: x[2], src: x[3] }, x[5])), x[4], i).root); });
+}
+
+/* ---------- mode CALIB (lecture seule : état réel de l'asservissement et de la batterie) ---------- */
+function calText() { if (BC && BC.phase && BC.phase !== "idle") return ["Batterie — " + (BC.activity || BC.phase), "run"]; return ["Aucune calibration en cours", "off"]; }
+function panelCalib(pb) {
+  var b1 = block("Asservissement lacet", 0, "PID"), sc = Scope(); b1.appendChild(sc.root); RAFP.push(sc.draw);
+  b1.appendChild(h("div", "legend micro", '<span><i style="background:#f1e8b4"></i>Consigne wz</span><span><i style="background:#9fc6d2"></i>Gyro gz</span><span><i style="background:#5f98a6"></i>Roues</span>'));
+  b1.appendChild(KV([["Consigne wz", function () { return f(V.wzIn, 3, " rad/s"); }], ["Gyro gz", function () { return f(V.gz, 3, " rad/s"); }], ["Lacet des roues", function () { return f(V.ww, 3, " rad/s"); }],
+    ["Écart roues − gyro", function () { var d = V.ww - V.gz; return [f(d, 3, " rad/s"), lvOf(Math.abs(d), .12, .25)]; }], ["Glissement appliqué", function () { return f(V.slip, 3, " s"); }], ["Terme PI", function () { return MC ? f(V.pi, 3, " rad/s") + (MC.pi_active ? " (actif)" : "") : "—"; }]], "MotionCompensationState — réglage des gains : jalon 2")); pb.appendChild(b1);
+  var b2 = block("Calibration batterie", 1, "/bamboo_calibration/battery");
+  var q = function () { return BC && isFinite(num(BC.quality_pct)) ? [Math.round(BC.quality_pct) + " % · " + BC.quality_label, BC.quality_label === "faible" ? 1 : 0] : "—"; };
+  b2.appendChild(KV([["Procédure", function () { return BC ? BC.procedure || "—" : "—"; }], ["Phase", function () { return BC ? BC.phase + (BC.activity ? " · " + BC.activity : "") : "—"; }], ["Capacité mesurée", function () { return BC ? f(num(BC.capacity_ah), 2, " Ah") + " / réf. " + f(num(BC.capacity_ref_ah), 2, " Ah") : "—"; }],
+    ["Qualité du pack", q], ["Tension au repos", function () { return BC ? f(num(BC.v_rest), 2, " V") : "—"; }], ["Résultat du", function () { return BC && BC.date ? BC.date : "—"; }], ["Arrêt", function () { return BC && BC.stop_reason ? BC.stop_reason : "—"; }]], "BatteryCalibState — lancement des procédures : jalon 2")); pb.appendChild(b2);
+  var b3 = block("Procédures", 2, "à venir"), L = h("div", "lst"); srcTag(L, "action Calibrate (py_trees) — pilotage depuis cette page : jalon 2");
+  [["Glissement · rotation", "armement requis"], ["Asservissement lacet (PID)", "écriture des gains à créer"], ["Batterie · charge pleine", "existe côté robot"], ["Batterie · décharge", "existe côté robot"], ["Géométrie des roues", "existe côté robot"], ["Intégrer un composant", "assistant à concevoir"]].forEach(function (x) {
+    var li = h("div", "li", '<i class="dotc o"></i><div><b></b><small></small></div>'); li.querySelector("b").textContent = x[0]; li.querySelector("small").textContent = x[1]; L.appendChild(li); }); b3.appendChild(L); pb.appendChild(b3);
+}
+function stripCalib(st) {
+  [["Vitesse roues", "m/s", 2, "MotionCompensationState · v_wheels", function () { return V.vw; }, { min: 0, max: .4 }], ["Lacet roues", "rad/s", 2, "MotionCompensationState · w_wheels", function () { return V.ww; }, { min: -1, max: 1 }],
+   ["Gyro Z", "rad/s", 2, "MotionCompensationState · gz", function () { return V.gz; }, { min: -1, max: 1 }], ["Écart roues/gyro", "rad/s", 3, "w_wheels − gz", function () { return V.ww - V.gz; }, { warn: .12, crit: .25, min: -.3, max: .3, lvFn: function (x) { return lvOf(Math.abs(x), .12, .25); } }],
+   ["Glissement", "s", 2, "MotionCompensationState · slip", function () { return V.slip; }, { min: 0, max: 1 }], ["Terme PI", "rad/s", 3, "MotionCompensationState · pi_term", function () { return V.pi; }, { min: -.2, max: .5 }]].forEach(function (x, i) {
+    st.appendChild(attach(Stat(Object.assign({ label: x[0], unit: x[1], dec: x[2], src: x[3] }, x[5])), x[4], i).root); });
+}
+var BUILD = { mission: [panelMission, stripMission], vitals: [panelVitals, stripVitals], config: [panelConfig, stripConfig], calib: [panelCalib, stripCalib] };
+var TITLE = { vitals: ["Vitaux", "Énergie · santé"], config: ["Config", "Réseau · manette"] };
+
+/* ======================= orchestration ======================= */
+function setHeader(m) {
+  var ph = $("#ph"); ph.replaceChildren();
+  if (m === "mission" || m === "calib") {
+    var b = h("button", "phbtn"); b.type = "button"; b.setAttribute("aria-haspopup", "dialog"); b.appendChild(h("span", "", m === "mission" ? "Mission" : "Calibration")); b.appendChild(h("i", "chev"));
+    b.onclick = function () { infoModal(m === "mission" ? "Définir une mission" : "Lancer une calibration", m === "mission" ? "Assistant // mission" : "Assistant // calibration",
+      m === "mission" ? ["Le choix et l'engagement des missions arrivent au jalon 2.", "Ce premier jalon est en lecture seule : aucune commande ne part vers le robot depuis cette page."] : ["Le lancement des calibrations arrive au jalon 2.", "Ce premier jalon est en lecture seule : l'état de l'asservissement et de la batterie est affiché en direct."]); };
+    var t = h("div", "phtxt", '<i class="pulse off"></i><span></span>'); ph.append(b, t);
+    var dot = t.firstChild, sp = t.lastChild, fn = m === "mission" ? missionText : calText;
+    REG.push(function () { var x = fn(); if (sp.textContent !== x[0]) { sp.textContent = x[0]; sp.title = x[0]; } dot.classList.toggle("off", x[1] !== "run"); });
+  } else { ph.appendChild(h("h2", "", TITLE[m][0])); ph.appendChild(h("span", "micro", TITLE[m][1])); }
+}
+function setMode(m, instant) {
+  var pnl = $("#panel"), pb = $("#pb"), strip = $("#strip");
+  var go = function () { REG.length = 0; RAFP.length = 0; S.mode = m; pb.replaceChildren(h("div", "sweep")); strip.replaceChildren(); setHeader(m); BUILD[m][0](pb); BUILD[m][1](strip); pb.scrollTop = 0;
+    pnl.classList.remove("out"); pnl.classList.remove("in"); void pnl.offsetWidth; pnl.classList.add("in"); };
+  var btns = [].slice.call(document.querySelectorAll(".mode")); btns.forEach(function (b) { b.setAttribute("aria-pressed", b.dataset.mode === m); });
+  var act = btns.filter(function (b) { return b.dataset.mode === m; })[0], sb = $("#selb");
+  if (instant) sb.style.transition = "none"; sb.style.transform = "translateY(" + act.offsetTop + "px)"; if (instant) { void sb.offsetWidth; sb.style.transition = ""; }
+  if (instant || reduce) go(); else { pnl.classList.add("out"); setTimeout(go, 150); }
+}
+function dlgShow(o) {
+  var d = $("#dlg"); d.className = o.wide ? "wide" : "";
+  var mh = h("div", "mh", '<span class="micro">' + o.tag + '</span><i class="pulse" style="margin:0"></i>'), mb = h("div", "mb"), t = h("h3", "", o.title); t.id = "dlgT"; mb.appendChild(t);
+  o.body.forEach(function (n) { if (n) mb.appendChild(n); }); var mf = h("div", "mf"); o.foot.forEach(function (n) { mf.appendChild(n); }); d.replaceChildren(mh, mb, mf); if (!d.open) d.showModal();
+}
+function dbtn(label, cls, fn) { var b = h("button", "btn " + (cls || ""), label); b.type = "button"; b.onclick = fn; return b; }
+function dlgClose() { var d = $("#dlg"); if (d.open) d.close(); }
+function openJournal() {
+  var list = h("div", "jl"), seg = h("div", "seg"), cnt = h("span", "micro"), pause = dbtn("Pause", "", function () { S.jPause = !S.jPause; pause.textContent = S.jPause ? "Reprendre" : "Pause"; if (!S.jPause) fill(); });
+  var fill = function () { list.replaceChildren(); JLOG.filter(jpass).slice(-120).forEach(function (e) { list.appendChild(jrow(e, false)); }); list.scrollTop = list.scrollHeight; cnt.textContent = JLOG.length + " lignes en mémoire"; };
+  ["Tout", "Avertissements", "Critiques"].forEach(function (n, k) { var b = h("button", "sb", n); b.type = "button"; b.setAttribute("aria-pressed", k === JFILTER); b.onclick = function () { JFILTER = k; [].forEach.call(seg.children, function (x, i) { x.setAttribute("aria-pressed", i === k); }); fill(); }; seg.appendChild(b); });
+  var tools = h("div", "jtools"); tools.append(seg, pause); S.jPause = false; JL = list; S.unread = 0; S.unreadLv = 0; jbadge(); fill();
+  dlgShow({ tag: "Journal // temps réel", title: "Journal du robot", wide: true, body: [tools, list, cnt, h("div", "srcnote", "/rosout (INFO et au-dessus) · changements d'état de /diagnostics_agg · événements de cette page")], foot: [dbtn("Fermer", "pri", dlgClose)] });
+}
+$("#dlg").addEventListener("close", function () { JL = null; });
+
+var mdiv = $("#modes"); MODES.forEach(function (m) { var b = h("button", "mode"); b.type = "button"; b.dataset.mode = m[0]; b.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + ICON[m[0]] + '</svg><b>' + m[1] + '</b><small>' + m[2] + '</small>'; b.onclick = function () { setMode(m[0]); }; mdiv.appendChild(b); });
+var wave = $("#wave"); for (var wi = 0; wi < 28; wi++) wave.appendChild(h("i"));
+var mb = $("#mbat"); for (var mi = 0; mi < 8; mi++) mb.appendChild(h("i"));
+var typed = "Module de dialogue non connecté. Prévu : consignes en langage naturel, compte rendu de mission, alertes parlées."; var ti = 0;
+function typeAI() { var t = $("#aitxt"); if (ti <= typed.length) { t.innerHTML = typed.slice(0, ti) + '<span class="cur"></span>'; ti++; setTimeout(typeAI, reduce ? 0 : 38); } }
+$("#camOn").onclick = function () {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { $("#camOn").textContent = "Webcam bloquée en HTTP simple"; $("#camOn").title = "Le navigateur n'autorise la webcam qu'en HTTPS ou sur localhost"; return; }
+  navigator.mediaDevices.getUserMedia({ video: true }).then(function (s) { $("#opvid").srcObject = s; $("#opcam").classList.add("on"); }).catch(function () { $("#camOn").textContent = "Accès refusé"; });
+};
+function toggleSrc(on) { document.body.classList.toggle("srcs", on); }
+var chips = $("#vchips"); [["det", "Suivi"], ["ret", "Réticule"]].forEach(function (x) { var c = h("button", "chip", x[1]); c.type = "button"; c.setAttribute("aria-pressed", CAMOPT[x[0]]); c.onclick = function () { CAMOPT[x[0]] = !CAMOPT[x[0]]; c.setAttribute("aria-pressed", CAMOPT[x[0]]); }; chips.appendChild(c); });
+var vst = h("span", "chip static", "Connexion…"); chips.appendChild(vst);
+$("#jbtn").onclick = openJournal;
+document.addEventListener("keydown", function (e) {
+  if (e.ctrlKey || e.metaKey || e.altKey || document.querySelector("dialog[open]")) return; if (e.target.closest && e.target.closest("input,textarea")) return;
+  var k = e.key.toLowerCase(); if (k >= "1" && k <= "4") setMode(MODES[+k - 1][0]); else if (k === "s") toggleSrc(!document.body.classList.contains("srcs")); else if (k === "j") openJournal();
+});
+
+/* pastilles de santé du pied de page : uniquement ce qui n'est pas vert, comme la carte santé du HUD */
+var pillSig = "", pillEls = {};
+function pillsUpdate() {
+  var items = [], add = function (k, lv, txt, title) { if (lv) items.push([k, lv, txt, title || txt]); };
+  if (!S.rb) add("rb", 2, "Rosbridge hors ligne");
+  if (S.vid === "lost") add("vid", 1, "Vidéo hors ligne");
+  if (isFinite(V.soc)) add("bat", lvOf(V.soc, 30, 15, "down"), "Batterie " + Math.round(V.soc) + " %");
+  Object.keys(DT).forEach(function (k) { var t = DT[k]; if (t.level) { var n = t.name.split(": "), s = (n[1] || n[0]) + (t.msg && t.msg !== "OK" ? " · " + t.msg : ""); add(k, t.level, s.length > 54 ? s.slice(0, 53) + "…" : s, k + " — " + t.msg); } });
+  items.sort(function (a, b) { return b[1] - a[1]; }); var shown = items.slice(0, 7), more = items.length - shown.length;
+  var sig = shown.map(function (i) { return i[0] + i[1]; }).join("|") + more;
+  if (sig !== pillSig) { pillSig = sig; pillEls = {}; var box = $("#pills"); box.replaceChildren();
+    var mk = function (k, lv, txt, title) { var p = h("span", "pill rv"); p.dataset.lv = lv; p.title = title || txt; p.innerHTML = "<i></i><span></span>"; p.lastChild.textContent = txt; pillEls[k] = p.lastChild; box.appendChild(p); };
+    if (!shown.length) mk("ok", 0, S.rb && Object.keys(DT).length ? "Tous systèmes nominaux" : "En attente des données…"); shown.forEach(function (i) { mk(i[0], i[1], i[2], i[3]); }); if (more > 0) mk("more", 0, "+" + more); }
+  shown.forEach(function (i) { if (pillEls[i[0]] && pillEls[i[0]].textContent !== i[2]) pillEls[i[0]].textContent = i[2]; });
+}
+function sigq(r) { return r < 25 ? 4 : r < 60 ? 3 : r < 150 ? 2 : 1; }
+function hdrUpdate() {
+  var el = (performance.now() - S.t0) / 1000; $("#mtime").textContent = hms(el); $("#opSess").textContent = "Session " + ms2(el);
+  $("#mt").textContent = S.rb ? S.robotMode : "HORS LIGNE"; $("#mchip").querySelector(".pulse").classList.toggle("off", !S.rb);
+  var r = S.rb ? V.rtt : NaN, il = $("#iLink"); il.dataset.lv = !S.rb ? 2 : lvOf(r, 80, 200); $("#iLinkT").textContent = !S.rb ? "HORS LIGNE" : isFinite(r) ? Math.round(r) + " ms" : "…";
+  [].forEach.call($("#sigb").children, function (b, k) { b.classList.toggle("on", S.rb && isFinite(r) && k < sigq(r)); });
+  var ib = $("#iBat"), BL = lvOf(V.soc, 30, 15, "down"); ib.dataset.lv = BL;
+  $("#iBatT").textContent = isFinite(V.soc) ? Math.round(V.soc) + " %" : S.charging ? "CHARGE " + f(V.bat_v, 1, " V") : f(V.bat_v, 1, " V");
+  var cells = isFinite(V.soc) ? Math.round(V.soc / 12.5) : (S.charging ? 8 : 0); [].forEach.call($("#mbat").children, function (b, k) { b.classList.toggle("on", k < cells); });
+  var ip = $("#iPad"); ip.dataset.lv = S.pad === false ? 1 : 0; $("#iPadT").textContent = S.pad == null ? "—" : S.pad ? "Connectée" : "Absente";
+  var vs = vst; vs.textContent = S.vid === "live" ? "● Direct" : S.vid === "connecting" ? "Connexion…" : S.vid === "lost" ? "Hors ligne" : "Arrêtée"; vs.className = "chip static" + (S.vid === "live" ? " live" : "");
+  var st = $("#stage"), lossy = isFinite(V.vloss) && V.vloss > 10; st.classList.toggle("degr", S.vid === "lost" || lossy); $("#glitchT").textContent = S.vid === "lost" ? "VIDÉO HORS LIGNE" : "SIGNAL DÉGRADÉ";
+  var worstLv = 0; Object.keys(DT).forEach(function (k) { worstLv = Math.max(worstLv, DT[k].level); }); st.classList.toggle("crit", worstLv === 2);
+}
+setInterval(function () { REG.forEach(function (fn) { fn(); }); hdrUpdate(); pillsUpdate(); }, 250);
+setInterval(rbPing, 2000); setInterval(vidStats, 2000);
+var wv = wave.children;
+function frame(ts) {
+  stage.draw(ts); RAFP.forEach(function (fn) { fn(ts); });
+  for (var i = 0; i < wv.length; i++) wv[i].style.height = (4 + (Math.sin(ts / 420 + i * .6) * .5 + .5) * 6 + (Math.sin(ts / 1100 + i * 1.7) * .5 + .5) * 5) + "px";
+  requestAnimationFrame(frame);
+}
+if (HASH.src) toggleSrc(true);
+setMode(HASH.mode && BUILD[HASH.mode] ? HASH.mode : "vitals", true);
+log(0, "Session ouverte"); typeAI(); rbConnect(); vidStart();
+if (HASH.open === "journal") openJournal();
+window.CC = { V: V, S: S, inject: function (topic, msg) { var d = HANDLERS[topic]; if (d) d[3](msg); }, state: function () { return { rb: S.rb, vid: S.vid, tasks: Object.keys(DT).length, mods: DMODS.length, V: V, pad: S.pad, mode: S.robotMode, charging: S.charging, T: T }; } };
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
