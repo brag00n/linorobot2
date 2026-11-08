@@ -493,9 +493,11 @@ else
 fi
 if [ "$APPLY" = "1" ]; then
     systemctl daemon-reload
-    systemctl enable --now bamboo-camwatch.timer >/dev/null 2>&1         && act "bamboo-camwatch.timer actif (surveillance de la camera toutes les 30 s ; reset USB desactive)"         || warn "bamboo-camwatch.timer : activation en echec (journalctl -u bamboo-camwatch)"
+    systemctl enable --now bamboo-camwatch.timer >/dev/null 2>&1 \
+        && act "bamboo-camwatch.timer actif (surveillance de la camera toutes les 30 s ; reset USB desactive)" \
+        || warn "bamboo-camwatch.timer : activation en echec (journalctl -u bamboo-camwatch)"
 elif [ "$(systemctl is-active bamboo-camwatch.timer 2>/dev/null)" = "active" ]; then
-    ok "bamboo-camwatch.timer actif ($(cat /run/bamboo-camwatch/state.json 2>/dev/null | sed -E 's/.*"status":"([^"]*)".*//'))"
+    ok "bamboo-camwatch.timer actif ($(sed -E 's/.*"status":"([^"]*)".*//' /run/bamboo-camwatch/state.json 2>/dev/null))"
 else
     warn "bamboo-camwatch.timer inactif : une camera figee ne sera pas relancee"
 fi
