@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#04080b">
+<title>Bamboo · Catalogue du thème</title>
+<!--
+  CATALOGUE DU THEME « console » : tous les widgets et éléments graphiques du Command Center,
+  classés par type, avec des DONNÉES ALÉATOIRES pour voir leur aspect et leur comportement.
+  Aucun accès au robot : cette page n'ouvre ni rosbridge ni vidéo. Elle utilise les MÊMES
+  fichiers que le Command Center (../cc/cc.css, ../cc/widgets.js) -- ce qu'on voit ici est
+  exactement ce qu'on aura là-bas.
+    · filtres par type en haut · « Animer » : valeurs aléatoires continues · « Pause » les fige
+    · chaque spécimen a ses propres boutons pour forcer un niveau (normal / avertissement / critique / sans donnée)
+    · #t=<type>  ouvre directement un type (jauges, barres, courbes, ...) · #pause fige l'animation (captures)
+-->
+<link rel="stylesheet" href="../cc/cc.css">
+</head>
+<body class="cat">
+<div class="catw">
+  <header class="cath">
+    <h1>Bamboo<b>CC</b> · thème</h1>
+    <div class="catb" id="filters" role="toolbar" aria-label="Filtrer par type"></div>
+    <div class="catb">
+      <button class="btn" id="anim" type="button" aria-pressed="true">Animer</button>
+      <button class="btn" id="reroll" type="button">Nouvelles valeurs</button>
+      <a class="btn" href="../cc/" style="text-decoration:none">Command Center</a>
+    </div>
+  </header>
+  <div class="catg" id="cat"></div>
+  <p class="catf">Pastille en haut à droite d'un widget : <b style="color:#58c98a">vert</b> = donnée reçue · <b style="color:var(--amber)">orange</b> = pas d'info reçue · <b style="color:var(--alert)">rouge</b> = non implémenté (source marquée ✗).</p>
+</div>
+<dialog id="dlg" aria-labelledby="dlgT"></dialog>
+<script src="../cc/widgets.js"></script>
+<script>
+(function () {
+"use strict";
+var W = window.W, $ = W.$, h = W.h, sv = W.sv, clamp = W.clamp, lvOf = W.lvOf, rng = W.rng, rnd = W.rnd, Gauge = W.Gauge, Bar = W.Bar, Stat = W.Stat, Horizon = W.Horizon, Scope = W.Scope, KV = W.KV, Matrix = W.Matrix, attach = W.attach, srcTag = W.srcTag, StatusDot = W.StatusDot, reduce = W.reduce, pad = W.pad;
+var HASH = {}; location.hash.replace(/^#/, "").split("&").forEach(function (p) { if (p) { var a = p.split("="); HASH[a[0]] = a[1] === undefined ? true : a[1]; } });
+window.CCSTATE = { DT: {} };                                  // Matrix lit les diagnostics : ici ils sont fabriques
+var REG = []; W.setRegistry(REG);
+var ANIM = !HASH.pause;
+
+/* ---- generateur de valeurs : marche aleatoire bornee, avec forçage de niveau ---- */
+function Walk(min, max, start) {
+  var v = start == null ? rnd(min, max) : start, force = null, drop = false, spd = (max - min) * .06;
+  return { get: function () { if (drop) return NaN; if (force != null) return force; return v; },
+    step: function () { v = clamp(v + (rng() - .5) * 2 * spd + (rng() < .03 ? (rng() - .5) * (max - min) * .5 : 0), min, max); },
+    force: function (x) { force = x; drop = false; }, free: function () { force = null; drop = false; }, none: function () { drop = true; }, jump: function () { v = rnd(min, max); } };
+}
+var TICKERS = [];                                              // chaque spécimen ajoute { step, refresh }
+function control(box, items) {                                 // ligne de boutons d'un specimen
+  var row = h("div", "ctl"), btns = [];
+  items.forEach(function (it) { var b = h("button", "", it[0]); b.type = "button"; b.onclick = function () { it[1](); btns.forEach(function (x) { x.setAttribute("aria-pressed", x === b); }); }; row.appendChild(b); btns.push(b); });
+  box.appendChild(row); return row;
+}
+function Spec(parent, name, desc, build) {
+  var box = h("div", "spec"); box.appendChild(h("div", "nm", name)); box.appendChild(h("div", "ds", desc)); var st = h("div", "st2"); box.appendChild(st); parent.appendChild(box); build(st, box); return box;
+}
+function levels(box, walk, w, c, dir, min, max) {              // boutons de forçage de niveau
+  var mid = (min + max) / 2, ok = dir === "down" ? [mid * 1.4, w * .92, c * .8] : [mid * .5, w * 1.05, c * 1.1];
+  control(box, [["Libre", function () { walk.free(); }], ["Normal", function () { walk.force(clamp(ok[0], min, max)); }], ["Avert.", function () { walk.force(clamp(ok[1], min, max)); }], ["Critique", function () { walk.force(clamp(ok[2], min, max)); }], ["Sans donnée", function () { walk.none(); }]]);
+}
+function bindNum(w, walk) { TICKERS.push({ step: function () { walk.step(); }, refresh: function () { w.ready && w.set(walk.get()); } }); }
+
+/* ======================= catalogue ======================= */
+var TYPES = [];
+function Type(id, title, hint, width, fill) { TYPES.push({ id: id, title: title, hint: hint, width: width, fill: fill }); }
+
+Type("jauges", "Métrique numérique — jauge radiale", "Valeur unique bornée : charge, CPU, température. Arc animé, graduations qui s'allument, onde à chaque changement de niveau.", 230, function (g) {
+  [["Standard · normal en haut", false, 0, 100, 80, 92, "up", "CPU"], ["Inversée · bas = mauvais", false, 0, 100, 30, 15, "down", "Charge"], ["Petite (sm) · panneau dense", true, 0, 100, 70, 80, "up", "Temp."]].forEach(function (c) {
+    Spec(g, c[0], "Seuils " + c[4] + " / " + c[5] + (c[6] === "down" ? " (vers le bas)" : ""), function (st, box) {
+      var w = Gauge({ label: c[7], unit: "%", min: c[2], max: c[3], warn: c[4], crit: c[5], dir: c[6], sm: c[1], src: "démo · valeurs aléatoires" }), wk = Walk(c[2], c[3]); st.appendChild(attach(w, function () { return wk.get(); }, 0).root); bindNum(w, wk); levels(box, wk, c[4], c[5], c[6], c[2], c[3]); }); });
+  Spec(g, "Sans source implémentée", "Pastille rouge : la source est marquée ✗.", function (st) { var w = Gauge({ label: "Wi-Fi", unit: "dBm", min: -95, max: -30, src: "✗ wpa_cli signal_poll : à exposer" }); st.appendChild(attach(w, function () { return NaN; }, 0).root); });
+});
+Type("barres", "Métrique numérique — barre segmentée", "Valeur unique en liste verticale : tension, courant, régime. Les segments s'allument l'un après l'autre à l'initialisation.", 300, function (g) {
+  [["Standard", 0, 250, 200, 235, "up", "rpm"], ["Inversée", 9, 12.6, 11.2, 10.6, "down", "V"], ["Longue (52 segments)", 0, 100, 80, 92, "up", "%"]].forEach(function (c, i) {
+    Spec(g, c[0], "Seuils " + c[3] + " / " + c[4], function (st, box) {
+      var w = Bar({ label: c[0].split(" ")[0], unit: c[6], min: c[1], max: c[2], dec: c[6] === "V" ? 2 : 0, warn: c[3], crit: c[4], dir: c[5], seg: i === 2 ? 52 : 26, src: "démo · valeurs aléatoires" }), wk = Walk(c[1], c[2]);
+      st.appendChild(attach(w, function () { return wk.get(); }, 0).root); bindNum(w, wk); levels(box, wk, c[3], c[4], c[5], c[1], c[2]); }); });
+});
+Type("courbes", "Métrique numérique — valeur + courbe d'historique", "Tuile du bandeau bas : grande valeur et sparkline de 44 points avec point lumineux. Clignote en rouge si critique.", 210, function (g) {
+  [["Standard", 0, 100, 80, 92, "up", "%"], ["Inversée", 0, 35, 20, 12, "down", "fps"], ["Plage libre (auto-échelle)", null, null, null, null, "up", "m/s"]].forEach(function (c) {
+    Spec(g, c[0], c[1] == null ? "Pas de min/max : l'échelle suit les valeurs." : "Seuils " + c[3] + " / " + c[4], function (st, box) {
+      var lo = c[1] == null ? 0 : c[1], hi = c[2] == null ? 1 : c[2], w = Stat({ label: "Exemple", unit: c[6], dec: c[6] === "m/s" ? 2 : 0, min: c[1], max: c[2], warn: c[3], crit: c[4], dir: c[5], src: "démo · valeurs aléatoires" }), wk = Walk(lo, hi);
+      st.style.minHeight = "92px"; st.appendChild(attach(w, function () { return wk.get(); }, 0).root); bindNum(w, wk); if (c[3] != null) levels(box, wk, c[3], c[4], c[5], lo, hi); }); });
+});
+Type("oscillo", "Métrique numérique — oscilloscope", "Trois traces superposées défilantes avec grille et échelle automatique : consigne, gyro, roues.", 480, function (g) {
+  Spec(g, "Oscilloscope 3 traces", "Réponse à un échelon, bruit gaussien léger.", function (st, box) {
+    var sc = Scope(), t = 0, y = 0, v = 0, SCbuf = []; st.appendChild(sc.root); window.CCSTATE.SC = SCbuf; sc.setOk(true);
+    for (var pf = 0; pf < 300; pf++) { t += .1; var c0 = (t % 6) < 3 ? .8 : 0; for (var q = 0; q < 3; q++) { var a0 = 70 * (c0 - y) - 9 * v; v += a0 * .1 / 3; y += v * .1 / 3; } SCbuf.push([c0, y + (rng() - .5) * .03, y * .96 + (rng() - .5) * .04]); }
+    for (var pf = 0; pf < 300; pf++) { t += .1; var c0 = (t % 6) < 3 ? .8 : 0; for (var q = 0; q < 3; q++) { var a0 = 70 * (c0 - y) - 9 * v; v += a0 * .1 / 3; y += v * .1 / 3; } SCbuf.push([c0, y + (rng() - .5) * .03, y * .96 + (rng() - .5) * .04]); }
+    TICKERS.push({ step: function () { t += .1; var cmd = (t % 6) < 3 ? .8 : 0; for (var i = 0; i < 3; i++) { var a = 70 * (cmd - y) - 9 * v; v += a * .1 / 3; y += v * .1 / 3; } SCbuf.push([cmd, y + (rng() - .5) * .03, y * .96 + (rng() - .5) * .04]); if (SCbuf.length > 300) SCbuf.shift(); }, refresh: function () { sc.draw(); } });
+    W.RAF.push(function () { sc.draw(); });
+  });
+});
+Type("horizon", "Métrique numérique — horizon artificiel", "Roulis et tangage de l'IMU : le plan tourne, les repères restent.", 200, function (g) {
+  Spec(g, "Horizon", "Roulis ±30°, tangage ±20°.", function (st, box) { var hz = Horizon(); st.appendChild(hz.root); var r = Walk(-30, 30, 0), p = Walk(-20, 20, 0); TICKERS.push({ step: function () { r.step(); p.step(); }, refresh: function () { hz.set(r.get(), p.get()); } });
+    control(box, [["Libre", function () { r.free(); p.free(); }], ["À plat", function () { r.force(0); p.force(0); }], ["Penché", function () { r.force(24); p.force(-12); }], ["Sans donnée", function () { r.none(); p.none(); }]]); });
+});
+Type("tableaux", "Texte — liste clé / valeur", "Lignes étiquette + valeur, couleur par niveau : détails de navigation, calibration, réglages.", 340, function (g) {
+  Spec(g, "Tableau clé / valeur", "Les valeurs prennent la couleur de leur niveau.", function (st, box) {
+    var a = Walk(0, 3), mode = 0; var rows = [["Pile NAV", function () { return "en marche"; }], ["Distance restante", function () { return a.get().toFixed(1) + " m"; }], ["Reprises", function () { var n = Math.round(a.get()); return [String(n), n >= 3 ? 2 : n >= 2 ? 1 : 0]; }], ["Localisation", function () { return ["ok · 93 %", 0]; }], ["Capteurs manquants", function () { return mode ? ["lidar", 2] : "aucun"; }]];
+    st.appendChild(KV(rows, "démo · lignes fabriquées")); TICKERS.push({ step: function () { a.step(); }, refresh: function () { } });
+    control(box, [["Sans alerte", function () { mode = 0; }], ["Capteur manquant", function () { mode = 1; }]]); });
+});
+Type("matrice", "État — matrice de santé", "Une case par tâche de diagnostic ; une case qui change de niveau rebondit. Survol = nom de la tâche.", 380, function (g) {
+  Spec(g, "Matrice de santé (38 tâches)", "Bascule aléatoire de quelques tâches en avertissement / critique.", function (st, box) {
+    var mx = Matrix(), lv = {}; for (var i = 0; i < 38; i++) lv["tâche " + pad(i + 1) + ": exemple"] = { name: "tâche " + pad(i + 1), level: 0, msg: "OK", vals: {} }; window.CCSTATE.DT = lv; st.appendChild(mx.root);
+    function shuffle(n) { Object.keys(lv).forEach(function (k) { lv[k].level = 0; lv[k].msg = "OK"; }); var ks = Object.keys(lv); for (var j = 0; j < n; j++) { var k = ks[Math.floor(rng() * ks.length)]; lv[k].level = rng() < .35 ? 2 : 1; lv[k].msg = lv[k].level === 2 ? "critique (démo)" : "avertissement (démo)"; } }
+    shuffle(3); TICKERS.push({ step: function () { if (rng() < .08) shuffle(Math.floor(rng() * 5)); }, refresh: function () { mx.update(); } });
+    control(box, [["Aléatoire", function () { shuffle(4); }], ["Tout vert", function () { shuffle(0); }], ["Beaucoup d'alertes", function () { shuffle(12); }], ["Vide (sans diagnostics)", function () { window.CCSTATE.DT = {}; }]]); });
+});
+Type("pastilles", "État — pastilles, étapes, badges", "Éléments d'état : pastilles de santé du pied de page, étapes d'une procédure, badges de faisabilité.", 300, function (g) {
+  Spec(g, "Pastilles de santé", "Niveau 1 ambre, niveau 2 rouge clignotant.", function (st) { var p = h("div", "pills"); p.style.flexWrap = "wrap"; [[0, "Tous systèmes nominaux"], [1, "Disque 85 %"], [2, "CPU 96 %"], [1, "Manette non connectée"]].forEach(function (x) { var e = h("span", "pill"); e.dataset.lv = x[0]; e.innerHTML = "<i></i><span></span>"; e.lastChild.textContent = x[1]; p.appendChild(e); }); st.appendChild(p); });
+  Spec(g, "Étapes d'une procédure", "À faire · en cours · terminée · en échec.", function (st) { var u = h("ul", "steps"); [["Armement", "done"], ["Rotations par paliers", "doing"], ["Calcul du coefficient", ""], ["Enregistrement", "fail"]].forEach(function (x) { u.appendChild(h("li", x[1], x[0])); }); st.appendChild(u); });
+  Spec(g, "Badges de faisabilité", "Prêt · partiel · à construire.", function (st) { st.innerHTML = '<div class="tags2"><span class="st ok">Prêt</span><span class="st part">Partiel</span><span class="st todo">À construire</span><span class="badge">≈ 4 min</span><span class="badge ok">5 GHz</span></div>'; });
+  Spec(g, "Pastille d'état de widget", "Vert reçu · orange sans info · rouge non implémenté.", function (st) { st.className = "st2 kvw"; var t = h("div", "tags2"); [["ok", "reçue"], ["wait", "sans info"], ["todo", "non implémentée"]].forEach(function (x) { var c = h("div", "card fr"); c.style.minWidth = "120px"; c.innerHTML = '<div class="micro"></div>'; c.firstChild.textContent = x[1]; var d = h("i", "sdot"); d.dataset.s = x[0]; c.classList.add("wd"); c.appendChild(d); t.appendChild(c); }); st.appendChild(t); });
+});
+Type("progression", "Progression — jauge segmentée et voyants", "Temps restant, avancement : segments pleins / vides, et voyants d'état d'en-tête.", 300, function (g) {
+  Spec(g, "Barre de progression segmentée", "Avance tant que l'animation tourne.", function (st) { var pg = h("div", "gauge-line"); pg.style.cssText = "height:12px;background:repeating-linear-gradient(90deg,var(--line) 0 5px,transparent 5px 8px);position:relative"; var i = h("i"); i.style.cssText = "position:absolute;inset:0 auto 0 0;width:0;background:repeating-linear-gradient(90deg,var(--cream) 0 5px,transparent 5px 8px);transition:width .3s linear"; pg.appendChild(i); st.appendChild(pg); var p = 0; TICKERS.push({ step: function () { p = (p + 2.2) % 105; }, refresh: function () { i.style.width = Math.min(100, p) + "%"; } }); });
+  Spec(g, "Voyant d'activité", "Pulsation crème (actif) / gris (inactif).", function (st) { st.innerHTML = '<div class="tags2"><span class="phtxt" style="flex:none"><i class="pulse"></i><span>Actif</span></span><span class="phtxt" style="flex:none"><i class="pulse off"></i><span>Inactif</span></span><span class="jbtn btn" style="display:inline-flex"><i class="live"></i>Journal<b data-lv="1">3</b></span></div>'; });
+  Spec(g, "Indicateur d'en-tête (signal)", "Barres de signal à 4 niveaux et pile à 8 segments.", function (st, box) { var q = Walk(0, 5); st.innerHTML = '<div class="inds" style="gap:22px"><div class="ind" data-lv="0"><span class="micro">Liaison</span><span class="iv"><span class="sigb"><i style="height:4px"></i><i style="height:7px"></i><i style="height:10px"></i><i style="height:14px"></i></span><span class="lbl">—</span></span></div><div class="ind" data-lv="0"><span class="micro">Batterie</span><span class="iv"><span class="mbat"></span><span class="lbl">—</span></span></div></div>';
+    var mb = st.querySelector(".mbat"); for (var i = 0; i < 8; i++) mb.appendChild(h("i")); var ind = st.querySelectorAll(".ind"); TICKERS.push({ step: function () { q.step(); }, refresh: function () { var n = Math.floor(q.get()), p = Math.round(q.get() / 5 * 100); ind[0].querySelectorAll(".sigb i").forEach(function (b, k) { b.classList.toggle("on", k < n); }); ind[0].querySelector(".lbl").textContent = n + "/4"; ind[0].dataset.lv = n <= 1 ? 2 : n === 2 ? 1 : 0; mb.querySelectorAll("i").forEach(function (b, k) { b.classList.toggle("on", k < Math.round(p / 12.5)); }); ind[1].querySelector(".lbl").textContent = p + " %"; ind[1].dataset.lv = p <= 15 ? 2 : p <= 30 ? 1 : 0; } }); });
+});
+Type("controles", "Contrôles — boutons, bascules, curseurs", "Éléments interactifs : bouton plein / contour, contrôle segmenté, interrupteur, curseur à losange, bouton à appui maintenu.", 300, function (g) {
+  Spec(g, "Boutons", "Contour · plein (primaire) · désactivé.", function (st) { st.innerHTML = '<div class="tags2"><button class="btn" type="button">Annuler</button><button class="btn pri" type="button">Valider</button><button class="btn" type="button" disabled style="opacity:.4;cursor:not-allowed">Indisponible</button></div>'; });
+  Spec(g, "Contrôle segmenté", "Un seul actif.", function (st) { var s = h("div", "seg"); ["Compléter", "Nouvelle", "Autre"].forEach(function (x, i) { var b = h("button", "sb", x); b.type = "button"; b.setAttribute("aria-pressed", i === 0); b.onclick = function () { [].forEach.call(s.children, function (c) { c.setAttribute("aria-pressed", "false"); }); b.setAttribute("aria-pressed", "true"); }; s.appendChild(b); }); st.appendChild(s); });
+  Spec(g, "Interrupteur", "Crème = actif.", function (st) { var r = h("div", "pr tgr"); r.appendChild(h("div", "pl", "Exploration auto des gates")); var t = h("button", "tg"); t.type = "button"; t.setAttribute("role", "switch"); t.setAttribute("aria-label", "Exploration auto"); t.setAttribute("aria-checked", "true"); t.onclick = function () { t.setAttribute("aria-checked", t.getAttribute("aria-checked") !== "true"); }; r.appendChild(t); st.appendChild(r); });
+  Spec(g, "Curseur", "Losange crème, valeur à droite.", function (st) { var r = h("div", "pr"), pl = h("div", "pl", "Plancher batterie"), o = h("output"); pl.appendChild(o); var i = h("input"); i.type = "range"; i.min = 10; i.max = 40; i.value = 20; i.setAttribute("aria-label", "Plancher batterie"); var u = function () { o.textContent = i.value + " %"; i.style.setProperty("--p", (i.value - 10) / 30 * 100 + "%"); }; i.oninput = u; u(); r.append(pl, i); st.appendChild(r); });
+  Spec(g, "Appui maintenu", "Maintenir 1,1 s pour valider (actions dangereuses).", function (st) {
+    var b = h("button", "hold"); b.type = "button"; b.innerHTML = "<span>Maintenir pour engager</span>"; st.appendChild(b); var raf = 0, t0 = 0;
+    var stop = function () { cancelAnimationFrame(raf); raf = 0; b.style.setProperty("--p", 0); }, go = function () { if (raf) return; t0 = performance.now(); var f = function () { var p = clamp((performance.now() - t0) / 1100, 0, 1); b.style.setProperty("--p", p); if (p >= 1) { stop(); b.querySelector("span").textContent = "Engagé ✓"; setTimeout(function () { b.querySelector("span").textContent = "Maintenir pour engager"; }, 1200); return; } raf = requestAnimationFrame(f); }; raf = requestAnimationFrame(f); };
+    b.addEventListener("pointerdown", function (e) { e.preventDefault(); go(); }); ["pointerup", "pointerleave", "pointercancel"].forEach(function (n) { b.addEventListener(n, stop); }); b.addEventListener("keydown", function (e) { if ((e.key === " " || e.key === "Enter") && !e.repeat) { e.preventDefault(); go(); } }); b.addEventListener("keyup", stop); });
+  Spec(g, "Tuile de choix", "Icône + libellé + faisabilité ; une seule active.", function (st) { var w = h("div", "mtiles"); w.style.gridTemplateColumns = "repeat(2,1fr)"; [["Exploration", "ok", "Prêt"], ["Surveillance", "todo", "À construire"]].forEach(function (x, i) { var t = h("button", "tile"); t.type = "button"; t.setAttribute("aria-pressed", i === 0); t.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 12l5-3M12 3v2M12 19v2M3 12h2M19 12h2"/></svg><b>' + x[0] + '</b><span class="st ' + x[1] + '">' + x[2] + '</span>'; t.onclick = function () { [].forEach.call(w.children, function (c) { c.setAttribute("aria-pressed", "false"); }); t.setAttribute("aria-pressed", "true"); }; w.appendChild(t); }); st.appendChild(w); });
+});
+Type("structure", "Structure — sections, cadres, fenêtres", "Cadre à repères d'angle, section dépliable (une ou plusieurs ouvertes), carte, modale.", 420, function (g) {
+  Spec(g, "Sections dépliables · plusieurs ouvertes", "Titre + résumé coloré par niveau dans l'en-tête. Utilisé dans Vitaux.", function (st) { var host = h("div", "accs"), list = [], A = W.Accordion(host, list, true, REG); st.appendChild(host);
+    var a = Walk(0, 100, 70); A("Énergie", function () { return [Math.round(a.get()) + " % · 12,1 V", lvOf(a.get(), 30, 15, "down")]; }, h("div", "pdesc", "Contenu de la section : jauges, barres…"), true); A("Santé", function () { return ["2 avertissements", 1]; }, h("div", "pdesc", "Matrice et anomalies."), true); A("Services", function () { return ["—", -1]; }, h("div", "pdesc", "Pas de donnée : point gris.")); TICKERS.push({ step: function () { a.step(); }, refresh: function () { } }); });
+  Spec(g, "Sections dépliables · une seule ouverte", "Utilisé dans Config.", function (st) { var host = h("div", "accs"), list = [], A = W.Accordion(host, list, false, REG); st.appendChild(host); A("Point d'accès", function () { return ["Bamboo · 5 GHz", 0]; }, h("div", "pdesc", "Réglages du Wi-Fi."), true); A("Manette", function () { return ["non connectée", 1]; }, h("div", "pdesc", "Appairage.")); });
+  Spec(g, "Cadre à repères d'angle", "Classe « fr » ; « hi » met les repères en crème.", function (st) { st.innerHTML = '<div class="fr" style="padding:18px"><span class="micro">cadre standard</span></div><div class="fr hi" style="padding:18px;margin-top:10px"><span class="micro">cadre mis en avant</span></div>'; });
+  Spec(g, "Modale", "Fenêtre centrée, repères crème, fond assombri.", function (st) { var b = h("button", "btn pri", "Ouvrir une modale"); b.type = "button"; b.onclick = function () { var d = $("#dlg"); d.innerHTML = '<div class="mh"><span class="micro">Assistant // exemple</span><i class="pulse" style="margin:0"></i></div><div class="mb"><h3 id="dlgT">Titre de la modale</h3><div class="callout"><strong>À faire maintenant</strong><p>Texte d\'instruction avec un geste à accomplir.</p></div><ul class="steps"><li class="done">Étape terminée</li><li class="doing">Étape en cours</li><li>Étape à venir</li></ul></div><div class="mf"><button class="btn" id="x1" type="button">Annuler</button><button class="btn pri" id="x2" type="button">Valider</button></div>'; d.className = ""; d.showModal(); $("#x1").onclick = $("#x2").onclick = function () { d.close(); }; }; st.appendChild(b); });
+});
+Type("texte", "Texte — typographie", "Échelle typographique du thème (police Oxanium) : titres, valeurs, micro-texte, monospace.", 360, function (g) {
+  Spec(g, "Échelle", "Du plus grand au plus petit.", function (st) { st.innerHTML = '<div style="font:300 46px/1 var(--display);letter-spacing:.04em">8889</div><div style="font:300 28px/1.15 var(--display);letter-spacing:.06em;text-transform:uppercase;margin-top:8px">Titre de modale</div><div style="font:600 15px/1.3 var(--display);letter-spacing:.1em;text-transform:uppercase;color:var(--ink2);margin-top:8px">Nom de carte</div><div style="margin-top:6px;color:var(--ink2)">Texte courant, lisible sur fond sombre.</div><div class="micro" style="margin-top:8px">Micro-texte espacé</div><div style="font:12px var(--mono);color:var(--mute);margin-top:6px">/battery · voltage — monospace</div>'; });
+  Spec(g, "Palette", "Un ton cyan décliné, un accent crème, deux alertes.", function (st) { var t = h("div", "tags2"); [["--line", "filet"], ["--line-hi", "cadre"], ["--mute", "micro"], ["--ink2", "texte 2"], ["--ink", "texte"], ["--seg", "actif"], ["--cream", "accent"], ["--amber", "avert."], ["--alert", "critique"]].forEach(function (x) { var c = h("div"); c.style.cssText = "width:62px;font:500 9px var(--display);letter-spacing:.1em;text-transform:uppercase;color:var(--mute);text-align:center"; c.innerHTML = '<div style="height:30px;background:var(' + x[0] + ');border:1px solid var(--line)"></div>' + x[1]; t.appendChild(c); }); st.appendChild(t); });
+});
+
+/* ---- rendu ---- */
+var cat = $("#cat"), filters = $("#filters"), shown = {};
+W.RAF = [];
+var all = h("button", "sb", "Tout"); all.type = "button"; all.setAttribute("aria-pressed", "true"); filters.appendChild(all);
+var btnByType = {}; TYPES.forEach(function (t) { var b = h("button", "sb", t.title.split(" — ")[0] === "Métrique numérique" ? t.title.split(" — ")[1] : t.title.split(" — ")[1] || t.title); b.type = "button"; b.setAttribute("aria-pressed", "false"); filters.appendChild(b); btnByType[t.id] = b; });
+var secs = {};
+TYPES.forEach(function (t) { var s = h("section", "cats"); s.id = "t-" + t.id; var hd = h("h2"); hd.appendChild(document.createTextNode(t.title)); s.appendChild(hd); s.appendChild(h("div", "ds", t.hint)); s.lastChild.style.cssText = "font:13px/1.45 var(--display);color:var(--mute);margin:-4px 0 2px"; var gr = h("div", "catgrid"); gr.style.setProperty("--w", t.width + "px"); s.appendChild(gr); cat.appendChild(s); secs[t.id] = s; t.fill(gr); });
+function filter(id) { all.setAttribute("aria-pressed", id === "all"); TYPES.forEach(function (t) { btnByType[t.id].setAttribute("aria-pressed", t.id === id); secs[t.id].style.display = id === "all" || id === t.id ? "" : "none"; }); try { history.replaceState(null, "", id === "all" ? "#" : "#t=" + id); } catch (e) { } }
+all.onclick = function () { filter("all"); }; TYPES.forEach(function (t) { btnByType[t.id].onclick = function () { filter(t.id); }; });
+filter(HASH.t && secs[HASH.t] ? HASH.t : "all");
+
+$("#anim").onclick = function () { ANIM = !ANIM; $("#anim").setAttribute("aria-pressed", ANIM); $("#anim").textContent = ANIM ? "Animer" : "Pause"; };
+$("#anim").setAttribute("aria-pressed", ANIM); if (!ANIM) $("#anim").textContent = "Pause";
+$("#reroll").onclick = function () { TICKERS.forEach(function (t) { if (t.jump) t.jump(); }); for (var i = 0; i < 40; i++) TICKERS.forEach(function (t) { t.step(); }); };
+TICKERS.forEach(function (t) { for (var i = 0; i < 30; i++) t.step(); });                                    // etat de depart varie
+setInterval(function () { if (ANIM) TICKERS.forEach(function (t) { t.step(); }); TICKERS.forEach(function (t) { t.refresh(); }); REG.forEach(function (f) { f(); }); }, 250);
+(function raf(ts) { W.RAF.forEach(function (f) { f(ts); }); requestAnimationFrame(raf); })();
+window.CAT = { types: TYPES.map(function (t) { return t.id; }), specs: function () { return document.querySelectorAll(".spec").length; } };
+})();
+</script>
+</body>
+</html>
