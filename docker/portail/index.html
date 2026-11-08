@@ -3,164 +3,255 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#04080b">
 <title>Bamboo · Poste de bord</title>
 <!--
-  Portail des flux et outils du robot BambooWS, servi sur :8000 par le service compose
-  `portail` (busybox httpd, docker/docker-compose.yaml). Page STATIQUE et AUTONOME : aucune
-  police ni script exterieur (le robot n'a pas forcement Internet), et AUCUNE adresse en dur --
+  Portail des flux et outils du robot BambooWS, servi sur :8000 par le service compose `portail`
+  (busybox httpd, docker/docker-compose.yaml). Page STATIQUE et AUTONOME : aucune ressource
+  externe (polices Oxanium embarquees dans fonts/, licence OFL), et AUCUNE adresse en dur --
   chaque lien est construit depuis l'hote qui a servi la page (location.hostname), donc il suit
-  le RPi meme si la box lui donne une autre IP.
+  le RPi meme si la box lui donne une autre IP. Seule exception : le point d'acces Wi-Fi, dont
+  l'adresse (10.3.141.1) est fixe.
+  THEME « console » : fond noir bleute, UN seul ton cyan decline en luminosites, accent creme pour
+  l'element principal, rouge/ambre reserves aux alertes, filets de 1 px. Les ports (grands chiffres
+  fins) tiennent la place des numeros de drones du modele. Modales de l'assistant d'appairage :
+  etat lu sur /cgi-bin/pad (JSON ecrit par l'hote), la page n'affiche que l'etape en cours.
 -->
 <style>
-  /* Plan : un poste de bord -- en-tete en plaque d'immatriculation du robot, puis des rangees
-     de "prises" groupees par usage (piloter, regarder, superviser), chacune avec son port. */
+  @font-face { font-family: "Oxanium"; font-weight: 300; font-display: swap;
+    src: url("fonts/oxanium-300.ttf") format("truetype"); }
+  @font-face { font-family: "Oxanium"; font-weight: 500; font-display: swap;
+    src: url("fonts/oxanium-500.ttf") format("truetype"); }
+  @font-face { font-family: "Oxanium"; font-weight: 600; font-display: swap;
+    src: url("fonts/oxanium-600.ttf") format("truetype"); }
+
   :root {
-    --bg: #f3f5f2;          /* gris-vert tres clair, celui d'un chassis peint */
-    --panel: #ffffff;
-    --ink: #1c2420;
-    --muted: #5d6a63;
-    --rule: #d7ddd8;
-    --accent: #2f7d4f;      /* vert bambou */
-    --accent-ink: #ffffff;
-    --live: #2f7d4f;
-    --warn: #b7791f;
+    --bg: #04080b;            /* noir bleuté, sans dégradé */
+    --panel: #070f13;
+    --line: #1d4a57;          /* filets : cyan sombre */
+    --line-hi: #3c8ea3;       /* cadres et repères actifs */
+    --ink: #d4f1f7;           /* texte principal, cyan glacé */
+    --ink2: #8fc7d4;          /* texte secondaire */
+    --mute: #5f98a6;          /* micro-texte (6:1 sur le fond) */
+    --cream: #f1e8b4;         /* accent : l'élément important, comme « A1 » de la référence */
+    --alert: #e5604a;
+    --amber: #e7a24a;
+    --seg: #9fc6d2;           /* remplissage du segment actif */
+    --display: "Oxanium", "Bahnschrift", "Segoe UI", system-ui, sans-serif;
     --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
-    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
-    color-scheme: light;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #121815; --panel: #1a221e; --ink: #e4ebe6; --muted: #93a39a; --rule: #2b3631;
-      --accent: #5fbf85; --accent-ink: #0d1411; --live: #5fbf85; --warn: #e0a84a;
-      color-scheme: dark;
-    }
+    color-scheme: dark;
   }
   * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 16px; }
   html, body { margin: 0; }
   body {
-    background: var(--bg); color: var(--ink); font: 15px/1.5 var(--sans);
+    background-color: var(--bg);
+    /* trame de points de la référence */
+    background-image: radial-gradient(circle, rgb(111 183 200 / .20) 1px, transparent 1.4px);
+    background-size: 22px 22px;
+    color: var(--ink); font: 400 15px/1.55 var(--display);
     padding: max(20px, env(safe-area-inset-top)) 16px max(28px, env(safe-area-inset-bottom));
   }
-  .wrap { max-width: 980px; margin: 0 auto; display: grid; gap: 28px;
-    grid-template-columns: minmax(0, 1fr); }
+  .wrap { max-width: 1040px; margin: 0 auto; display: grid; gap: 34px; grid-template-columns: minmax(0, 1fr); }
 
-  header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 22px; }
-  .plate {
-    font: 700 22px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase;
-    padding: 10px 14px; border: 2px solid var(--ink); border-radius: 6px; background: var(--panel);
+  /* ---- micro-texte : capitales fines très espacées --------------------------------- */
+  .micro { font: 500 10.5px/1.2 var(--display); letter-spacing: .22em; text-transform: uppercase;
+    color: var(--mute); }
+
+  /* ---- en-tête ---------------------------------------------------------------------- */
+  header { display: grid; gap: 14px; }
+  .top { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px;
+    padding-bottom: 12px; border-bottom: 1px solid var(--line); position: relative; }
+  .top::after { content: ""; position: absolute; left: 0; bottom: -4px; width: 84px; height: 3px;
+    background: var(--cream); }
+  .plate { margin: 0; font: 300 clamp(34px, 7vw, 52px)/1 var(--display); letter-spacing: .16em;
+    text-transform: uppercase; color: var(--ink); }
+  .plate b { font-weight: 600; color: var(--cream); }
+  .plate small { display: block; margin-top: 10px; font: 500 10.5px/1.2 var(--display);
+    letter-spacing: .24em; color: var(--mute); }
+  .node { text-align: right; display: grid; gap: 4px; }
+  .node strong { font: 300 22px/1 var(--display); letter-spacing: .1em; color: var(--ink); }
+
+  /* contrôle segmenté (la référence : ONLINE / OFFLINE / REPAIR / MIA) */
+  nav.seg { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  nav.seg a { display: block; text-align: center; text-decoration: none; padding: 11px 6px;
+    min-height: 44px; border: 1px solid var(--line-hi); border-radius: 8px; color: var(--ink2);
+    font: 500 12px/1.3 var(--display); letter-spacing: .2em; text-transform: uppercase; }
+  nav.seg a:hover { border-color: var(--cream); color: var(--ink); }
+  nav.seg a[aria-current="true"] { background: var(--seg); border-color: var(--seg); color: var(--bg); font-weight: 600; }
+  nav.seg a:focus-visible { outline: 2px solid var(--cream); outline-offset: 2px; }
+
+  /* ---- sections --------------------------------------------------------------------- */
+  section { display: grid; gap: 14px; min-width: 0; }
+  h2 { margin: 0; display: flex; align-items: center; gap: 12px; font: 500 12px/1 var(--display);
+    letter-spacing: .3em; text-transform: uppercase; color: var(--ink2); }
+  h2 i { font-style: normal; color: var(--cream); letter-spacing: .1em; }
+  h2::after { content: ""; flex: 1; height: 1px; background: var(--line);
+    background-image: linear-gradient(90deg, var(--line-hi) 0 18px, transparent 18px); }
+
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); }
+
+  /* ---- carte : cadre 1 px, repères d'angle, chiffre fin ----------------------------- */
+  .card {
+    position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px;
+    align-content: start; padding: 16px 18px 16px; min-width: 0; width: 100%;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 3px;
+    color: inherit; text-decoration: none; text-align: left; font: inherit; cursor: pointer;
+    transition: border-color .15s, background .15s;
   }
-  .plate small { display: block; font: 500 11px/1.2 var(--mono); letter-spacing: .1em;
-    color: var(--muted); margin-top: 6px; }
-  .host { font: 13px/1.4 var(--mono); color: var(--muted); }
-  .host b { color: var(--ink); font-weight: 600; }
+  .card::before, .card::after { content: ""; position: absolute; width: 12px; height: 12px;
+    border: 0 solid var(--line-hi); transition: border-color .15s; }
+  .card::before { top: -1px; left: -1px; border-top-width: 2px; border-left-width: 2px; }
+  .card::after { right: -1px; bottom: -1px; border-right-width: 2px; border-bottom-width: 2px; }
+  .card:hover { border-color: var(--line-hi); background: #091820; }
+  .card:hover::before, .card:hover::after { border-color: var(--cream); }
+  .card:focus-visible { outline: 2px solid var(--cream); outline-offset: 3px; }
 
-  section { display: grid; gap: 12px; min-width: 0; }
-  h2 { margin: 0; font: 600 12px/1 var(--sans); letter-spacing: .14em; text-transform: uppercase;
-    color: var(--muted); display: flex; align-items: center; gap: 10px; }
-  h2::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+  .idx { grid-column: 1; align-self: center; }
+  .ring { grid-column: 2; grid-row: 1; width: 26px; height: 26px; border-radius: 50%;
+    border: 2px dotted var(--line-hi); position: relative; }
+  .ring::after { content: ""; position: absolute; inset: 5px; border-radius: 50%; border: 1px solid var(--line); }
+  .port { grid-column: 1 / -1; font: 300 46px/1.05 var(--display); letter-spacing: .04em;
+    color: var(--ink); font-variant-numeric: tabular-nums; margin-top: 6px; }
+  .port.word { font-size: 30px; letter-spacing: .1em; text-transform: uppercase; padding-top: 6px; }
+  .name { grid-column: 1 / -1; font: 600 15px/1.3 var(--display); letter-spacing: .1em;
+    text-transform: uppercase; color: var(--ink2); }
+  .what { grid-column: 1 / -1; color: var(--ink2); font-size: 14px; margin-top: 4px; }
+  .url { grid-column: 1 / -1; font: 12px/1.4 var(--mono); color: var(--mute); overflow-wrap: anywhere; }
+  .pad-state { grid-column: 1 / -1; font: 500 10.5px/1.4 var(--display); letter-spacing: .18em;
+    text-transform: uppercase; color: var(--mute); }
+  .pad-state:empty { display: none; }
+  .tags { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .tag { font: 500 10.5px/1 var(--display); letter-spacing: .14em; text-transform: uppercase;
+    padding: 6px 8px; border: 1px solid var(--line-hi); border-radius: 2px; color: var(--ink2); }
+  .tag.slow { border-color: color-mix(in srgb, var(--amber) 60%, transparent); color: var(--amber); }
 
-  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); }
-  a.card {
-    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-content: start;
-    padding: 16px 16px 14px; background: var(--panel); border: 1px solid var(--rule);
-    border-radius: 10px; color: inherit; text-decoration: none; min-width: 0;
-    transition: border-color .15s, transform .15s;
-  }
-  a.card:hover { border-color: var(--accent); transform: translateY(-1px); }
-  a.card:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-  .name { font-weight: 650; font-size: 16px; }
-  .port { font: 600 12px/1.6 var(--mono); color: var(--muted); border: 1px solid var(--rule);
-    border-radius: 4px; padding: 0 6px; align-self: start; font-variant-numeric: tabular-nums; }
-  .what { grid-column: 1 / -1; color: var(--muted); font-size: 14px; }
-  .url { grid-column: 1 / -1; font: 12px/1.4 var(--mono); color: var(--muted);
-    overflow-wrap: anywhere; }
-  .tags { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
-  .tag { font: 600 11px/1 var(--sans); letter-spacing: .04em; padding: 5px 7px; border-radius: 99px;
-    background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
-  .tag.slow { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+  /* la prise principale : le HUD à piloter, en accent crème */
+  .card.main { border-color: color-mix(in srgb, var(--cream) 55%, var(--line));
+    background: linear-gradient(135deg, rgb(241 232 180 / .08), transparent 55%), var(--panel);
+    padding: 20px 20px 18px; }
+  .card.main::before, .card.main::after { border-color: var(--cream); width: 16px; height: 16px; }
+  .card.main .port { color: var(--cream); font-size: 62px; }
+  .card.main .name { color: var(--ink); font-size: 17px; }
+  .card.main .ring { border-color: var(--cream); }
+  .card.main .tag { border-color: color-mix(in srgb, var(--cream) 60%, transparent); color: var(--cream); }
 
-  /* La prise principale : le HUD a piloter, mise en avant seule. */
-  a.card.main { background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
-    padding: 20px; }
-  a.card.main .what, a.card.main .url { color: var(--accent-ink); opacity: .85; }
-  a.card.main .port { color: var(--accent-ink); border-color: currentColor; opacity: .85; }
-  a.card.main .name { font-size: 20px; }
-  a.card.main .tag { background: color-mix(in srgb, var(--accent-ink) 22%, transparent);
-    color: var(--accent-ink); }
+  /* ---- ligne VLC en tuile ------------------------------------------------------------ */
+  .copy { display: grid; gap: 6px; }
+  .copy code { display: block; padding: 11px 14px; border: 1px solid var(--line); border-radius: 3px;
+    background: var(--panel); font: 13px/1.4 var(--mono); color: var(--ink); overflow-x: auto; white-space: nowrap; }
+  footer { display: grid; gap: 10px; border-top: 1px solid var(--line); padding-top: 14px; color: var(--mute);
+    font-size: 13px; }
 
-  .copy { font: 12px/1.4 var(--mono); color: var(--muted); display: grid; gap: 6px; }
-  .copy code { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
-    padding: 8px 10px; overflow-x: auto; white-space: nowrap; color: var(--ink); }
-  footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule); padding-top: 14px; }
-  @media (prefers-reduced-motion: reduce) { a.card { transition: none; } a.card:hover { transform: none; } }
+  /* ---- boutons ---------------------------------------------------------------------- */
+  .btn { font: 500 12px/1 var(--display); letter-spacing: .2em; text-transform: uppercase; cursor: pointer;
+    min-height: 44px; padding: 12px 18px; border-radius: 8px; border: 1px solid var(--line-hi);
+    background: transparent; color: var(--ink2); transition: background .15s, color .15s, border-color .15s; }
+  .btn:hover { border-color: var(--cream); color: var(--ink); }
+  .btn.primary { background: var(--seg); border-color: var(--seg); color: var(--bg); font-weight: 600; }
+  .btn.primary:hover { background: var(--cream); border-color: var(--cream); color: var(--bg); }
+  .btn:focus-visible { outline: 2px solid var(--cream); outline-offset: 2px; }
 
-  /* Carte-bouton (meme gabarit qu'une carte-lien) et assistant d'appairage en modales. */
-  button.card { font: inherit; text-align: left; cursor: pointer; width: 100%;
-    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-content: start;
-    padding: 16px 16px 14px; background: var(--panel); border: 1px solid var(--rule);
-    border-radius: 10px; color: inherit; transition: border-color .15s, transform .15s; }
-  button.card:hover { border-color: var(--accent); transform: translateY(-1px); }
-  button.card:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-  .pad-state { grid-column: 1 / -1; font: 12px/1.4 var(--mono); color: var(--muted); }
-  dialog { width: min(520px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto;
-    padding: 0; border: 1px solid var(--rule); border-radius: 12px; background: var(--panel);
+  /* ---- modale ----------------------------------------------------------------------- */
+  dialog { width: min(540px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto; padding: 0;
+    border: 1px solid var(--line-hi); border-radius: 3px; background: var(--panel); color: var(--ink); }
+  dialog::backdrop { background: rgb(2 5 7 / .82); }
+  dialog::before, dialog::after { content: ""; position: absolute; width: 16px; height: 16px;
+    border: 0 solid var(--cream); pointer-events: none; }
+  dialog::before { top: 0; left: 0; border-top-width: 2px; border-left-width: 2px; }
+  dialog::after { right: 0; bottom: 0; border-right-width: 2px; border-bottom-width: 2px; }
+  .mhead { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 12px 22px; border-bottom: 1px solid var(--line); }
+  .mhead .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cream); }
+  .mhead .dot.ok { background: var(--seg); } .mhead .dot.bad { background: var(--alert); }
+  .mbody { padding: 22px 22px 6px; display: grid; gap: 16px; }
+  .mbody h3 { margin: 0; font: 300 28px/1.15 var(--display); letter-spacing: .06em; text-transform: uppercase;
     color: var(--ink); }
-  dialog::backdrop { background: rgb(0 0 0 / .5); }
-  .mbody { padding: 22px 22px 8px; display: grid; gap: 14px; }
-  .mbody h3 { margin: 0; font-size: 19px; line-height: 1.25; }
-  .mbody p { margin: 0; }
-  .mfoot { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; padding: 14px 22px 20px; }
-  .btn { font: 600 15px/1 var(--sans); padding: 12px 18px; border-radius: 8px; cursor: pointer;
-    border: 1px solid var(--rule); background: var(--panel); color: var(--ink); min-height: 44px; }
-  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-  .btn:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-  .steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 14px; }
-  .steps li { display: flex; gap: 10px; align-items: baseline; color: var(--muted); }
-  .steps li::before { content: "○"; font-family: var(--mono); width: 1.2em; flex: none; }
-  .steps li.doing { color: var(--ink); font-weight: 600; }
-  .steps li.doing::before { content: "▶"; color: var(--accent); }
-  .steps li.done::before { content: "✓"; color: var(--live); }
-  .steps li.fail { color: var(--warn); font-weight: 600; }
-  .steps li.fail::before { content: "✗"; }
-  .callout { padding: 12px 14px; border-radius: 8px; border-left: 4px solid var(--accent);
-    background: color-mix(in srgb, var(--accent) 10%, transparent); }
-  .callout.warn { border-left-color: var(--warn);
-    background: color-mix(in srgb, var(--warn) 12%, transparent); }
-  .bar { height: 6px; border-radius: 3px; background: var(--rule); overflow: hidden; }
-  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 1s linear; }
-  table.kv { border-collapse: collapse; width: 100%; font-size: 14px; }
-  table.kv th { text-align: left; font-weight: 500; color: var(--muted); padding: 4px 12px 4px 0; width: 38%; }
-  table.kv td { padding: 4px 0; font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
-  details.journal { font: 12px/1.5 var(--mono); color: var(--muted); }
+  .mbody p { margin: 0; color: var(--ink2); }
+  .mfoot { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; padding: 16px 22px 22px; }
+
+  .callout { padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--cream);
+    background: rgb(241 232 180 / .06); color: var(--ink); }
+  .callout strong { display: block; margin-bottom: 4px; font: 600 12px/1.3 var(--display);
+    letter-spacing: .2em; text-transform: uppercase; color: var(--cream); }
+  .callout p { color: var(--ink); }
+  .callout.warn { border-left-color: var(--alert); background: rgb(229 96 74 / .08); }
+
+  /* étapes : repères dessinés en CSS (indépendants de la police) */
+  .steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px;
+    font: 500 12px/1.3 var(--display); letter-spacing: .14em; text-transform: uppercase; }
+  .steps li { display: flex; align-items: center; gap: 12px; color: var(--mute); }
+  .steps li::before { content: ""; width: 10px; height: 10px; flex: none; border: 1px solid var(--line-hi); }
+  .steps li.doing { color: var(--cream); }
+  .steps li.doing::before { background: var(--cream); border-color: var(--cream); }
+  .steps li.done { color: var(--ink2); }
+  .steps li.done::before { background: var(--seg); border-color: var(--seg); }
+  .steps li.fail { color: var(--alert); }
+  .steps li.fail::before { background: var(--alert); border-color: var(--alert); }
+
+  /* jauge segmentée (la référence : barres horizontales fines à segments) */
+  .gauge { --pct: 0%; height: 12px; background:
+      repeating-linear-gradient(90deg, var(--line) 0 5px, transparent 5px 8px); position: relative; }
+  .gauge i { position: absolute; inset: 0 auto 0 0; width: var(--pct); transition: width 1s linear;
+    background: repeating-linear-gradient(90deg, var(--cream) 0 5px, transparent 5px 8px); }
+
+  table.kv { border-collapse: collapse; width: 100%; }
+  table.kv tr { border-bottom: 1px solid var(--line); }
+  table.kv th { text-align: left; padding: 7px 12px 7px 0; width: 40%; font: 500 10.5px/1.3 var(--display);
+    letter-spacing: .2em; text-transform: uppercase; color: var(--mute); }
+  table.kv td { padding: 7px 0; font: 13px/1.4 var(--mono); color: var(--ink); overflow-wrap: anywhere; }
+  details.journal { font: 12px/1.5 var(--mono); color: var(--mute); }
+  details.journal summary { cursor: pointer; font: 500 10.5px/1.4 var(--display); letter-spacing: .2em;
+    text-transform: uppercase; }
   details.journal pre { margin: 6px 0 0; white-space: pre-wrap; max-height: 9em; overflow: auto; }
-  @media (prefers-reduced-motion: reduce) { button.card, .bar i { transition: none; }
-    button.card:hover { transform: none; } }
+
+  @media (max-width: 520px) {
+    nav.seg { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .node { text-align: left; }
+    .card.main .port { font-size: 54px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .card, .card::before, .card::after, nav.seg a, .btn, .gauge i { transition: none; }
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <div class="plate">BambooWS<small>bamboo4WD V4 · RPi4 + ESP32</small></div>
-    <div class="host">robot joint par <b id="host">…</b><br>liens construits depuis cette adresse</div>
+    <div class="top">
+      <h1 class="plate">Bamboo<b>WS</b><small>BAMBOO4WD V4 · RPI4 + ESP32</small></h1>
+      <div class="node"><span class="micro">Nœud joint par</span><strong id="host">…</strong></div>
+    </div>
+    <nav class="seg" aria-label="Sections">
+      <a href="#h-pilot" aria-current="true">Piloter</a><a href="#h-look">Regarder</a>
+      <a href="#h-sup">Superviser</a><a href="#h-pad">Maintenance</a>
+    </nav>
   </header>
 
   <section aria-labelledby="h-pilot">
-    <h2 id="h-pilot">Piloter</h2>
+    <h2 id="h-pilot"><i>01</i> Piloter</h2>
     <div class="grid">
       <a class="card main" data-port="8889" data-path="/hud/">
-        <span class="name">HUD temps réel</span><span class="port">:8889</span>
+        <span class="idx micro">Flux principal</span><i class="ring" aria-hidden="true"></i>
+        <span class="port">8889</span>
+        <span class="name">HUD temps réel</span>
         <span class="what">Image annotée (modes, NAV, carte, batterie) en H.264. Le retard ne s'accumule pas, même si le Wi-Fi perd des paquets.</span>
         <span class="url"></span>
         <span class="tags"><span class="tag">WebRTC</span><span class="tag">~0,3 s</span><span class="tag">recommandé</span></span>
       </a>
       <a class="card" data-port="8080" data-path="/stream?topic=/video/stream&amp;type=ros_compressed">
-        <span class="name">HUD MJPEG</span><span class="port">:8080</span>
+        <span class="idx micro">Flux 02</span><i class="ring" aria-hidden="true"></i>
+        <span class="port">8080</span>
+        <span class="name">HUD MJPEG</span>
         <span class="what">Même image, sans encodage H.264. Accumule du retard quand le Wi-Fi faiblit.</span>
         <span class="url"></span>
         <span class="tags"><span class="tag">MJPEG</span><span class="tag slow">retard possible</span></span>
       </a>
       <a class="card" data-port="8888" data-path="/hud/">
-        <span class="name">HUD HLS</span><span class="port">:8888</span>
+        <span class="idx micro">Flux 03</span><i class="ring" aria-hidden="true"></i>
+        <span class="port">8888</span>
+        <span class="name">HUD HLS</span>
         <span class="what">Lecture la plus robuste, sans UDP. Pour regarder, pas pour piloter.</span>
         <span class="url"></span>
         <span class="tags"><span class="tag">HLS</span><span class="tag slow">2 à 6 s</span></span>
@@ -169,38 +260,46 @@
   </section>
 
   <section aria-labelledby="h-look">
-    <h2 id="h-look">Regarder</h2>
+    <h2 id="h-look"><i>02</i> Regarder</h2>
     <div class="grid">
       <a class="card" data-port="8080" data-path="/stream?topic=/video/raw&amp;type=ros_compressed">
-        <span class="name">Caméra brute</span><span class="port">:8080</span>
+        <span class="idx micro">Source 01</span><i class="ring" aria-hidden="true"></i>
+        <span class="port">8080</span>
+        <span class="name">Caméra brute</span>
         <span class="what">Image de la webcam, sans incrustation.</span>
         <span class="url"></span>
         <span class="tags"><span class="tag">MJPEG</span></span>
       </a>
       <a class="card" data-port="8080" data-path="/">
-        <span class="name">Flux ROS</span><span class="port">:8080</span>
+        <span class="idx micro">Source 02</span><i class="ring" aria-hidden="true"></i>
+        <span class="port">8080</span>
+        <span class="name">Flux ROS</span>
         <span class="what">Liste des topics vidéo de web_video_server : stream, viewer, snapshot.</span>
         <span class="url"></span>
         <span class="tags"><span class="tag">web_video_server</span></span>
       </a>
     </div>
     <div class="copy">
-      <span>Dans VLC (Média › Ouvrir un flux réseau) :</span>
+      <span class="micro">Dans VLC · Média › Ouvrir un flux réseau</span>
       <code id="rtsp"></code>
     </div>
   </section>
 
   <section aria-labelledby="h-sup">
-    <h2 id="h-sup">Superviser</h2>
+    <h2 id="h-sup"><i>03</i> Superviser</h2>
     <div class="grid">
-      <a class="card" data-scheme="https" data-ext="https://app.foxglove.dev/~/view?ds=foxglove-websocket&amp;ds.url=ws%3A%2F%2F{host}%3A8765">
-        <span class="name">Foxglove</span><span class="port">:8765</span>
+      <a class="card" data-ext="https://app.foxglove.dev/~/view?ds=foxglove-websocket&amp;ds.url=ws%3A%2F%2F{host}%3A8765">
+        <span class="idx micro">Console</span><i class="ring" aria-hidden="true"></i>
+        <span class="port">8765</span>
+        <span class="name">Foxglove</span>
         <span class="what">Topics, carte, lidar et diagnostics en direct. Ouvre Foxglove sur la connexion du robot.</span>
         <span class="url"></span>
         <span class="tags"><span class="tag">WebSocket</span><span class="tag slow">fermer pendant la NAV</span></span>
       </a>
       <a class="card" data-port="9002" data-path="/">
-        <span class="name">Portainer</span><span class="port">:9002</span>
+        <span class="idx micro">Conteneurs</span><i class="ring" aria-hidden="true"></i>
+        <span class="port">9002</span>
+        <span class="name">Portainer</span>
         <span class="what">Conteneurs Docker du robot : état, journaux, redémarrages.</span>
         <span class="url"></span>
         <span class="tags"><span class="tag">Docker</span></span>
@@ -209,16 +308,20 @@
   </section>
 
   <section aria-labelledby="h-pad">
-    <h2 id="h-pad">Maintenance</h2>
+    <h2 id="h-pad"><i>04</i> Maintenance</h2>
     <div class="grid">
       <a class="card" data-ext="http://10.3.141.1:8081/" data-show="10.3.141.1:8081">
-        <span class="name">Point d'accès Wi-Fi</span><span class="port">:8081</span>
+        <span class="idx micro">Réseau</span><i class="ring" aria-hidden="true"></i>
+        <span class="port">8081</span>
+        <span class="name">Point d'accès Wi-Fi</span>
         <span class="what">Interface RaspAP du Wi-Fi « Bamboo » : nom et mot de passe du réseau, appareils connectés, journaux. Liée à l'adresse du point d'accès : injoignable depuis la box.</span>
         <span class="url"></span>
         <span class="tags"><span class="tag">RaspAP</span><span class="tag slow">depuis le Wi-Fi Bamboo seulement</span></span>
       </a>
       <button type="button" class="card" id="pad-open" aria-haspopup="dialog">
-        <span class="name">Appairer la manette</span><span class="port">Bluetooth</span>
+        <span class="idx micro">Assistant</span><i class="ring" aria-hidden="true"></i>
+        <span class="port word">Bluetooth</span>
+        <span class="name">Appairer la manette</span>
         <span class="what">Refait l'appairage de la manette (mode XInput) étape par étape, sans ligne de commande. À utiliser quand elle ne se reconnecte plus, par exemple après une partie sur la Switch.</span>
         <span class="pad-state" id="pad-line" aria-live="polite"></span>
         <span class="tags"><span class="tag">assistant</span><span class="tag slow">Home + X à faire</span></span>
@@ -226,19 +329,20 @@
     </div>
   </section>
 
-  <footer>Les flux H.264 démarrent à la demande : la première image arrive après 1 à 3 s. Un seul onglet HUD à la fois quand la navigation tourne.</footer>
+  <footer>
+    <span>Les flux H.264 démarrent à la demande : la première image arrive après 1 à 3 s. Un seul onglet HUD à la fois quand la navigation tourne.</span>
+  </footer>
+
 </div>
 
-<!-- Assistant d'appairage : UN seul <dialog>, dont le contenu est redessine a chaque etape
-     (consigne -> attente -> detail du resultat). L'etat vient de /cgi-bin/pad (JSON ecrit par
-     l'hote) ; la page ne decide rien, elle affiche l'etape en cours. -->
 <dialog id="pad-dlg" aria-labelledby="pad-title">
+  <div class="mhead"><span class="micro" id="pad-tag">Assistant // appairage manette</span><i class="dot" id="pad-dot" aria-hidden="true"></i></div>
   <div class="mbody" id="pad-body"></div>
   <div class="mfoot" id="pad-foot"></div>
 </dialog>
 
 <script>
-  // Toutes les adresses partent de l'hote qui a servi la page : rien n'est ecrit en dur.
+  // Adresses : toujours depuis l'hôte qui a servi la page (en file:// → repli sur l'IP habituelle).
   (function () {
     var host = location.hostname || "192.168.1.164";
     document.getElementById("host").textContent = host;
@@ -247,13 +351,30 @@
       var url = a.dataset.ext
         ? a.dataset.ext.replace("{host}", encodeURIComponent(host))
         : "http://" + host + ":" + a.dataset.port + a.dataset.path;
-      a.href = url;
-      a.target = "_blank";
-      a.rel = "noopener";
+      a.href = url; a.target = "_blank"; a.rel = "noopener";
       var u = a.querySelector(".url");
-      // data-show : libelle d'une adresse FIXE (le point d'acces n'a qu'une adresse, la sienne).
       if (u) u.textContent = a.dataset.show || (a.dataset.ext ? "ws://" + host + ":8765" : url.replace(/^http:\/\//, ""));
     });
+
+    // Segment actif de la navigation = section visible.
+    var links = [].slice.call(document.querySelectorAll("nav.seg a"));
+    // UN seul segment actif : le dernier titre passé sous le haut de l'écran. (Marquer chaque
+    // section visible en allumait plusieurs d'un coup dans une fenêtre haute.)
+    var heads = [].slice.call(document.querySelectorAll("section h2"));
+    function sync() {
+      var cur = heads[0].id;
+      // En haut de page on reste sur le premier segment : dans une fenetre haute, plusieurs
+      // titres passent sous le seuil des 35 % sans que l'on ait defile.
+      if (window.scrollY > 8) {
+        heads.forEach(function (h) { if (h.getBoundingClientRect().top < window.innerHeight * 0.35) cur = h.id; });
+      }
+      links.forEach(function (l) {
+        l.setAttribute("aria-current", l.getAttribute("href") === "#" + cur ? "true" : "false");
+      });
+    }
+    window.addEventListener("scroll", sync, { passive: true });
+    window.addEventListener("resize", sync);
+    sync();
   })();
 
   // ---- Assistant d'appairage de la manette ------------------------------------------------
@@ -263,6 +384,7 @@
     var body = document.getElementById("pad-body");
     var foot = document.getElementById("pad-foot");
     var line = document.getElementById("pad-line");
+    var dot = document.getElementById("pad-dot");
     var timer = null, st = null, busy = false;
     var TOTAL = 75;                              // = BAMBOO_PAD_SCAN_S de l'hote, pour la barre
 
@@ -274,8 +396,11 @@
       (kids || []).forEach(function (c) { e.appendChild(c); });
       return e;
     }
+    // Le bouton principal prend le focus a l'ouverture : sans cela, le navigateur le donne au
+    // premier element focalisable (le « Journal technique »), cercle d'un anneau parasite.
     function btn(label, cls, fn) {
       var b = el("button", { type: "button", "class": "btn " + (cls || ""), text: label });
+      if (/primary/.test(cls || "")) b.setAttribute("autofocus", "");
       b.addEventListener("click", fn);
       return b;
     }
@@ -298,7 +423,8 @@
         el("pre", { text: log.join("\n") })]);
       return d;
     }
-    function show(title, nodes, buttons) {
+    function show(title, nodes, buttons, tone) {
+      dot.className = "dot " + (tone || "");
       body.replaceChildren(el("h3", { id: "pad-title", text: title }));
       nodes.forEach(function (n) { if (n) body.appendChild(n); });
       foot.replaceChildren.apply(foot, buttons);
@@ -309,7 +435,7 @@
     function screenIntro(err) {
       var n = [
         el("p", { text: "Cet assistant supprime les anciens appairages de manette du robot, cherche la manette, l'appaire et vérifie que le robot la voit." }),
-        el("div", { "class": "callout", text: "Tu auras un geste à faire sur la manette : l'éteindre puis la rallumer avec Home + X. L'assistant te dira quand." }),
+        el("div", { "class": "callout" }, [el("strong", { text: "Geste à faire" }), el("p", { text: "Éteindre la manette puis la rallumer avec Home + X. L'assistant te dira quand." })]),
         el("p", { text: "Seules les manettes sont oubliées : les autres appareils Bluetooth ne sont pas touchés." })];
       if (err) n.push(el("div", { "class": "callout warn", text: err }));
       show("Appairer la manette", n, [btn("Annuler", "", closeAll),
@@ -322,10 +448,10 @@
         n.push(el("div", { "class": "callout" }, [
           el("strong", { text: "À faire maintenant sur la manette" }),
           el("p", { text: s.instruction })]));
-        var bar = el("div", { "class": "bar", role: "progressbar", "aria-label": "Temps de recherche restant" },
+        var bar = el("div", { "class": "gauge", role: "progressbar", "aria-label": "Temps de recherche restant" },
           [el("i", {})]);
         var left = Math.max(0, s.remaining || 0);
-        bar.firstChild.style.width = (100 * (1 - left / TOTAL)).toFixed(0) + "%";
+        bar.style.setProperty("--pct", (100 * (1 - left / TOTAL)).toFixed(0) + "%");
         n.push(bar, el("p", { "class": "pad-state", text: "Recherche en cours · il reste " + Math.round(left) + " s" }));
       } else if (s.instruction) {
         n.push(el("p", { text: s.instruction }));
@@ -339,17 +465,17 @@
       var tbl = el("table", { "class": "kv" }, r.rows.map(function (row) {
         return el("tr", {}, [el("th", { text: row[0] }), el("td", { text: row[1] })]);
       }));
-      var n = [el("div", { "class": "callout", text: "La manette est appairée et le robot la voit. Elle se reconnectera seule à l'allumage (Home, sans X)." }), tbl];
+      var n = [el("div", { "class": "callout" }, [el("strong", { text: "Terminé" }), el("p", { text: "La manette est appairée et le robot la voit. Elle se reconnectera seule à l'allumage (Home, sans X)." })]), tbl];
       (r.warnings || []).forEach(function (w) { n.push(el("div", { "class": "callout warn", text: w })); });
       n.push(stepsList(s.steps), journal(s.log));
-      show("Manette appairée", n, [btn("Fermer", "primary", closeAll)]);
+      show("Manette appairée", n, [btn("Fermer", "primary", closeAll)], "ok");
     }
     function screenError(s) {
-      var n = [el("div", { "class": "callout warn", text: s.message || "Échec." })];
+      var n = [el("div", { "class": "callout warn" }, [el("strong", { text: "Échec" }), el("p", { text: s.message || "Échec." })])];
       if (s.hint) n.push(el("p", { text: s.hint }));
       n.push(stepsList(s.steps), journal(s.log));
       show("L'appairage a échoué", n, [btn("Fermer", "", closeAll),
-        btn("Réessayer", "primary", start)]);
+        btn("Réessayer", "primary", start)], "bad");
     }
     function screenUnavailable() {
       show("Assistant indisponible", [el("div", { "class": "callout warn",
