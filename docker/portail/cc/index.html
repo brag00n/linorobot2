@@ -28,9 +28,11 @@
       <div class="mtime" id="mtime">00:00:00</div>
     </div>
     <div class="inds">
+      <div class="ind" id="iTrac" data-lv="0"><span class="micro">Traction</span><span class="iv"><span class="pulse off" id="tracPulse"></span><span id="iTracT">—</span></span><em class="src">/teleop/state · armed · armed_latched</em></div>
       <div class="ind" id="iPad" data-lv="0"><span class="micro">Manette</span><span class="iv"><svg class="pico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 8h11a4.5 4.5 0 0 1 4.4 3.6l.6 3.4a2.4 2.4 0 0 1-4.1 2.1L16 15.5H8L5.6 17.1a2.4 2.4 0 0 1-4.1-2.1l.6-3.4A4.5 4.5 0 0 1 6.5 8z"/><path d="M8 10.5v3M6.5 12h3"/></svg><span class="sigb" id="sigp"><i style="height:4px"></i><i style="height:7px"></i><i style="height:10px"></i><i style="height:14px"></i></span><span id="iPadT">Connectée</span></span><em class="src todo">✗ RSSI Bluetooth : à exposer par l'hôte</em></div>
       <div class="ind" id="iLink" data-lv="0"><span class="micro">Liaison Wi-Fi</span><span class="iv"><span class="sigb" id="sigb"><i style="height:4px"></i><i style="height:7px"></i><i style="height:10px"></i><i style="height:14px"></i></span><span id="iLinkT">−45 dBm · 5G</span></span><em class="src todo">✗ wpa_cli signal_poll : à exposer</em></div>
       <div class="ind" id="iBat" data-lv="0"><span class="micro">Batterie</span><span class="iv"><span class="mbat" id="mbat"></span><span id="iBatT">78 %</span></span><em class="src">/battery · BatteryCalibState · soc_pct</em></div>
+      <div class="ind" id="iCC" data-lv="0"><span class="micro">Liaison CC</span><span class="iv"><span class="pulse off" id="ccPulse"></span><span id="iCCT">—</span></span><em class="src">/cc/heartbeat (page → robot) · /cc/guard/state (robot → page)</em></div>
     </div>
     <div class="hb"></div>
   </header>
@@ -85,7 +87,11 @@ var REG = [], RAFP = []; W.setRegistry(REG); window.CCSTATE = window.CCSTATE || 
 var HASH = {}; location.hash.replace(/^#/, "").split("&").forEach(function (p) { if (p) { var a = p.split("="); HASH[a[0]] = a[1] === undefined ? true : a[1]; } });
 /* ======================= Command Center : données réelles (rosbridge) + vidéo WebRTC ======================= */
 var HOST = HASH.host || location.hostname || "192.168.1.164";
-var RB_URL = "ws://" + HOST + ":9090", WHEP_URL = "http://" + HOST + ":8889/raw/whep";
+/* Page servie en HTTPS (proxy Caddy :8443) : tout passe par la meme origine (wss + WHEP relayes), car une page
+   HTTPS ne peut pas ouvrir ws:// ni http:// (contenu mixte). En HTTP : acces direct comme avant (sans webcam). */
+var SECURE = location.protocol === "https:";
+var RB_URL = SECURE ? "wss://" + location.host + "/rosbridge" : "ws://" + HOST + ":9090",
+    WHEP_URL = SECURE ? "https://" + location.host + "/raw/whep" : "http://" + HOST + ":8889/raw/whep";
 var PORTAL = "http://" + HOST + ":8000/", AP_UI = "http://10.3.141.1:8081/";
 var Z = parseFloat(HASH.z) || 0.75;                          // le bon niveau d'affichage = 75 % (retour utilisateur)
 document.documentElement.style.setProperty("--z", Z);
@@ -118,6 +124,8 @@ var HANDLERS = {
   "/motion_compensation/state": ["bamboo_interfaces/msg/MotionCompensationState", 100, 1, function (m) {
     MC = m; V.ww = num(m.w_wheels); V.gz = num(m.gz); V.slip = num(m.slip); V.pi = num(m.pi_term); V.wzIn = num(m.wz_in); V.vw = num(m.v_wheels);
     SC.buf.push([V.wzIn, V.gz, V.ww]); if (SC.buf.length > 300) SC.buf.shift(); }],
+  "/teleop/state": ["bamboo_interfaces/msg/TeleopState", 0, 1, function (m) { TR = { armed: !!m.armed, latched: !!m.armed_latched }; TRT = performance.now(); }],
+  "/cc/guard/state": ["std_msgs/msg/String", 0, 1, function (m) { try { GS = JSON.parse(m.data); GST = performance.now(); } catch (e) { } }],
   "/gamepad/connected": ["std_msgs/msg/Bool", 500, 1, function (m) { var p = !!m.data; if (S.pad !== null && p !== S.pad) log(p ? 0 : 1, p ? "Manette connectée" : "Manette déconnectée"); S.pad = p; }],
   "/navigation/state": ["bamboo_interfaces/msg/NavState", 500, 1, function (m) { NAV = m; NAVT = performance.now(); }],
   "/bamboo_calibration/battery": ["bamboo_interfaces/msg/BatteryCalibState", 1000, 1, function (m) { BC = m; }],
@@ -126,12 +134,22 @@ var HANDLERS = {
     if (m.level < 20) return; var l = m.level >= 40 ? 2 : m.level >= 30 ? 1 : 0, t = "[" + m.name + "] " + String(m.msg).replace(/\s+/g, " ");
     log(l, t.length > 220 ? t.slice(0, 219) + "…" : t); }]
 };
+/* ---------- battement de coeur : la page dit au robot « je suis la, ma video aussi » ----------
+   Toutes les 0,5 s. Le robot (cc_guard) s'arrete si 1,5 s sans battement ou si la video est fausse depuis 3 s.
+   `video` = lecteur WebRTC reellement connecte ET images qui avancent. Un onglet masque ralentit ses
+   minuteries : il sera traite par le robot comme silencieux, ce qui est le comportement sur voulu. */
+var TR = null, TRT = 0, GS = null, GST = 0, TABID = Math.random().toString(36).slice(2, 8), hbSeq = 0;
+function hbSend() {
+  if (!ws || ws.readyState !== 1) return;
+  rbSend({ op: "publish", topic: "/cc/heartbeat", msg: { data: JSON.stringify({ id: TABID, seq: ++hbSeq, video: S.vid === "live" && V.vfps > 0 }) } });
+}
 var ws = null, rbBack = 1000, callN = 0, calls = {}, lastRb = 0;
 function rbSend(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
 function rbConnect() {
   try { ws = new WebSocket(RB_URL); } catch (e) { return rbRetry(); }
   ws.onopen = function () {
-    S.rb = true; rbBack = 1000; log(0, "rosbridge connecté (" + HOST + ":9090)");
+    rbSend({ op: "advertise", topic: "/cc/heartbeat", type: "std_msgs/msg/String" });
+    S.rb = true; rbBack = 1000; log(0, "rosbridge connecté (" + RB_URL.replace(/^wss?:\/\//, "") + ")");
     Object.keys(HANDLERS).forEach(function (t, i) { var d = HANDLERS[t]; rbSend({ op: "subscribe", id: "s" + i, topic: t, type: d[0], throttle_rate: d[1], queue_length: d[2] }); });
   };
   ws.onmessage = function (ev) {
@@ -224,7 +242,7 @@ function VideoView() {
     if (S.vid !== "live") {
       ctx.fillStyle = "rgba(143,199,212,.9)"; ctx.font = F(16, 500); ctx.textAlign = "center";
       ctx.fillText(S.vid === "connecting" ? "CONNEXION VIDÉO…" : S.vid === "lost" ? "VIDÉO HORS LIGNE" : "VIDÉO ARRÊTÉE", W / 2, H / 2 - 6 * u);
-      ctx.font = F(11, 500); ctx.fillStyle = "#5f98a6"; ctx.fillText("WebRTC · " + WHEP_URL.replace("http://", ""), W / 2, H / 2 + 18 * u); ctx.textAlign = "left";
+      ctx.font = F(11, 500); ctx.fillStyle = "#5f98a6"; ctx.fillText("WebRTC · " + WHEP_URL.replace(/^https?:\/\//, ""), W / 2, H / 2 + 18 * u); ctx.textAlign = "left";
     }
     var r = rect(), cxr = W / 2, cyr = H / 2;
     /* cadre de suivi : le tracking travaille sur l'image MIROIR (flip: h) alors que le flux brut ne l'est pas → x inversé */
@@ -492,13 +510,27 @@ function hdrUpdate() {
   var ib = $("#iBat"), BL = lvOf(V.soc, 30, 15, "down"); ib.dataset.lv = BL;
   $("#iBatT").textContent = isFinite(V.soc) ? Math.round(V.soc) + " %" : S.charging ? "CHARGE " + f(V.bat_v, 1, " V") : f(V.bat_v, 1, " V");
   var cells = isFinite(V.soc) ? Math.round(V.soc / 12.5) : (S.charging ? 8 : 0); [].forEach.call($("#mbat").children, function (b, k) { b.classList.toggle("on", k < cells); });
+  var gs = (GS && performance.now() - GST < 3000) ? GS : null, ic = $("#iCC"), icl = 0, ict = "—";
+  if (!S.rb) { icl = 2; ict = "HORS LIGNE"; }
+  else if (!gs) { icl = 1; ict = "GARDE-FOU ?"; }
+  else if (gs.tripped) { icl = 2; ict = "ROBOT ARRÊTÉ"; }
+  else if (gs.pilot && gs.pilot !== TABID && gs.cc === "ok") { icl = 1; ict = "AUTRE ONGLET"; }
+  else if (gs.cc !== "ok") { icl = 1; ict = "CC ?"; }
+  else if (gs.video === "ok") { ict = "CC OK · VIDÉO OK"; }
+  else { icl = gs.video === "lost" ? 2 : 1; ict = "VIDÉO PERDUE"; }
+  ic.dataset.lv = icl; $("#iCCT").textContent = ict; $("#ccPulse").classList.toggle("off", icl !== 0);
+  ic.title = gs && gs.reason ? gs.reason : "";
+  var it = $("#iTrac"), tr = (S.rb && TR) ? TR : null;
+  it.dataset.lv = !tr ? 1 : tr.latched ? 2 : tr.armed ? 1 : 0;
+  $("#iTracT").textContent = !tr ? "—" : tr.latched ? "ARMÉE VERROUILLÉE" : tr.armed ? "ARMÉE" : "DÉSARMÉE";
+  $("#tracPulse").classList.toggle("off", !tr || !tr.armed);
   var ip = $("#iPad"); ip.dataset.lv = S.pad === false ? 1 : 0; $("#iPadT").textContent = S.pad == null ? "—" : S.pad ? "Connectée" : "Absente";
   var vs = vst; vs.textContent = S.vid === "live" ? "● Direct" : S.vid === "connecting" ? "Connexion…" : S.vid === "lost" ? "Hors ligne" : "Arrêtée"; vs.className = "chip static" + (S.vid === "live" ? " live" : "");
   var st = $("#stage"), lossy = isFinite(V.vloss) && V.vloss > 10; st.classList.toggle("degr", S.vid === "lost" || lossy); $("#glitchT").textContent = S.vid === "lost" ? "VIDÉO HORS LIGNE" : "SIGNAL DÉGRADÉ";
   var worstLv = 0; Object.keys(DT).forEach(function (k) { worstLv = Math.max(worstLv, DT[k].level); }); st.classList.toggle("crit", worstLv === 2);
 }
 setInterval(function () { REG.forEach(function (fn) { fn(); }); hdrUpdate(); pillsUpdate(); }, 250);
-setInterval(rbPing, 2000); setInterval(vidStats, 2000);
+setInterval(hbSend, 500); setInterval(rbPing, 2000); setInterval(vidStats, 2000);
 var wv = wave.children;
 function frame(ts) {
   stage.draw(ts); RAFP.forEach(function (fn) { fn(ts); });
