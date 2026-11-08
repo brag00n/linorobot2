@@ -514,6 +514,15 @@ for p in 9090 8765 8554 8889; do
     if ss -ltn 2>/dev/null | grep -q ":$p "; then ok "port $p en ecoute"
     else warn "port $p muet (rosbridge / foxglove / RTSP / WebRTC selon le cas)"; fi
 done
+# HTTPS (2026-11-08) : proxy Caddy :8443 et mode de rosbridge. Mode https = liste blanche + :9090 lie a
+# la boucle locale ; mode http (defaut) = comportement historique. Bascule : docker/secure.sh.
+if ss -ltn 2>/dev/null | grep -q ":8443 "; then ok "proxy HTTPS en ecoute : https://<rpi>:8443/cc/"
+else warn "proxy HTTPS muet (:8443) : docker compose up -d proxy"; fi
+if grep -qx "BAMBOO_SECURE=https" "$ROS_REPO/docker/.env" 2>/dev/null; then
+    if ss -ltn 2>/dev/null | grep -E ":9090 " | grep -vq "127.0.0.1"; then
+        warn "mode https mais rosbridge :9090 ecoute encore sur le reseau (ROSBRIDGE_BIND)"
+    else ok "mode https : rosbridge lie a 127.0.0.1, liste blanche active"; fi
+else warn "mode http : rosbridge :9090 ouvert sans restriction (durcir : docker/secure.sh https)"; fi
 # Encodeur materiel du flux hud (pose a l'etape 1, apparait apres le reboot).
 if grep -qx "bcm2835-codec-encode" /sys/class/video4linux/video*/name 2>/dev/null; then
     ok "encodeur H.264 materiel present : flux HUD http://<rpi>:8889/hud"

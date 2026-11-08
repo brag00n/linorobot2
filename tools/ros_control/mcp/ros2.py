@@ -8,7 +8,8 @@ ROS2 qui tourne DANS LE CONTENEUR sur le RPi, via le service **rosbridge** deja 
 dans le compose linorobot2 (rosbridge_suite, WebSocket JSON `:9090`). Aucun code ROS a
 ecrire cote RPi : on active le service et on s'y connecte en client WebSocket.
 
-  ROS2_BRIDGE_URL : URL du rosbridge (defaut ws://127.0.0.1:9090). Deux options reseau :
+  ROS2_BRIDGE_URL : URL du rosbridge (defaut ws://127.0.0.1:9090). Mode HTTPS du robot : wss://<IP>:8443/rosbridge
+                    (certificat auto-signe accepte ; ROS2_BRIDGE_CA=<racine.crt> pour le verifier). Deux options reseau :
     - tunnel SSH : `ssh -L 9090:localhost:9090 <user>@<rpi>` -> laisser 127.0.0.1.
     - direct     : `ws://<IP_RPi>:9090` (conteneur en network_mode: host).
 
@@ -94,7 +95,13 @@ class Bridge:
                 "dependance manquante : 'websocket-client'. Installer dans tools/.venv :\n"
                 "  tools/.venv/Scripts/python.exe -m pip install websocket-client")
         try:
-            return websocket.create_connection(self.url, timeout=self.timeout)
+            # wss:// (proxy HTTPS du robot, docker/secure.sh https) : le certificat vient de l'autorite
+            # INTERNE de Caddy, inconnue de ce PC. On chiffre sans verifier l'identite (reseau local) ;
+            # pour verifier, exporter ROS2_BRIDGE_CA vers la racine du robot (docs §6.12).
+            ca = os.environ.get("ROS2_BRIDGE_CA", "")
+            sslopt = {} if not self.url.startswith("wss://") else (
+                {"ca_certs": ca} if ca else {"cert_reqs": 0, "check_hostname": False})
+            return websocket.create_connection(self.url, timeout=self.timeout, sslopt=sslopt)
         except Exception as e:
             raise BridgeError(
                 "connexion a %s impossible (%s). Le conteneur RPi tourne-t-il "

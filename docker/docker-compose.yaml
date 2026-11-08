@@ -37,6 +37,7 @@ volumes:
   # web, reglages de l'interface). Volume nomme : l'interface web y ecrit, ca doit survivre a un
   # --force-recreate. Repartir de zero : `docker volume rm bamboov4_humble_ap_state`.
   ap_state:
+  proxy_data:
 
 services:   
   base:
@@ -148,6 +149,7 @@ services:
       - LINOROBOT2_DEPTH_SENSOR=${DEPTH_SENSOR} 
       - DISPLAY=${DISPLAY} 
       - QT_X11_NO_MITSHM=1
+      - BAMBOO_SECURE=${BAMBOO_SECURE:-http}
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - $HOME/.Xauthority:/root/.Xauthority
@@ -163,14 +165,14 @@ services:
       - ..:/root/linorobot2_ws/src/linorobot2:ro
       - ws_build:/root/linorobot2_ws/build:ro
       - ws_install:/root/linorobot2_ws/install:ro
+    # Interrupteur HTTP/HTTPS (2026-11-08) : `docker/secure.sh https|http` ecrit BAMBOO_SECURE et
+    # ROSBRIDGE_BIND dans .env. En https : liste blanche + :9090 lie a 127.0.0.1 (le proxy Caddy est
+    # alors le seul chemin reseau). En http (defaut) : comme avant. Voir rosbridge/start.sh.
     ports:
-      - "9090:9090"
-    # L'espace de travail est source S'IL EST CONSTRUIT : sinon le bridge demarre quand meme,
-    # avec les seuls types ROS standard.
-    command: >
-      bash -lc "test -f /root/linorobot2_ws/install/setup.bash &&
-      source /root/linorobot2_ws/install/setup.bash;
-      ros2 launch rosbridge_server rosbridge_websocket_launch.xml"
+      - "${ROSBRIDGE_BIND:-0.0.0.0}:9090:9090"
+    # L'espace de travail est source S'IL EST CONSTRUIT (fait par start.sh) : sinon le bridge
+    # demarre quand meme, avec les seuls types ROS standard.
+    command: bash /root/linorobot2_ws/src/linorobot2/docker/rosbridge/start.sh
 
 #--- foxglovebridge : A LA DEMANDE depuis le 2026-11-08 (retire du profil `boot`).
 #    Il prenait ~70 % d'un coeur en permanence, sur un RPi deja a un load de 6 a 10 sur 4 coeurs,
@@ -362,6 +364,18 @@ services:
       - /run/bamboo-pad:/run/bamboo-pad
     ports:
       - "8000:8000"
+
+#--- Proxy HTTPS (2026-11-08) : https://<rpi>:8443/ -> portail, rosbridge (wss), video WHEP. Caddy,
+#    certificat de l'autorite interne (`tls internal`, volume proxy_data). Reseau de l'hote : il
+#    joint les services par localhost. Les ports HTTP existants ne changent pas. Voir docker/proxy/.
+  proxy:
+    image: caddy:2-alpine
+    profiles: ["boot"]
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - proxy_data:/data
 
 #--- Driver ESP32 (pont MAVLink) : proprietaire du serie, telemetrie + cmd_vel gatee.
 #    LECTURE SEULE par defaut (enable_cmd_vel:=false du YAML) ; L6 : enable_cmd_vel:=true.

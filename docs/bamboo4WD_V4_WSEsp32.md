@@ -561,17 +561,24 @@ et non dans le conteneur de diagnostic — cela reviendrait à donner Docker à 
   et ~60 Ko quand la caméra va bien. Il traverse toute la chaîne (caméra → gscam → serveur web).
 - **Niveau 1** : après **3 échecs de suite**, redémarre `bamboo_video`. Si l'échec persiste, le
   répète et le consigne ; **plafonné à 3 reprises par heure**, puis abandon signalé.
-- **Niveau 2 (reset du port USB `1-1.1`) : DÉSACTIVÉ** (`BAMBOO_CAMWATCH_USB=0`). La caméra est sur
-  le même hub (`1-1`) que le pont série CP2102N de la carte ESP32 (`1-1.2`). À essayer **une fois**,
-  utilisateur présent, en observant la liaison série de l'ESP32, avant de l'activer.
+- **Niveau 2 (reset du port USB `1-1.1`) : DÉSACTIVÉ, et à LAISSER ainsi** (`BAMBOO_CAMWATCH_USB=0`).
+  Essayé une fois le 2026-11-08, robot désarmé : basculer `authorized` de `1-1.1` n'a **pas** rendu la
+  caméra (elle est revenue « autorisée » mais sans `/dev/video0`, `UVC -110` toutes les 5 s) et a **figé
+  les lectures du bus** (`lsusb` bloqué plusieurs minutes). L'ESP32 (`1-1.2`) n'a pas été coupé. **Seul un
+  redémarrage du RPi** (coupure de l'alimentation du bus) a réglé la panne ; un débranchement manuel
+  ferait de même, mais la prise est coincée.
 - **Garde-fous** : rien dans les 4 premières minutes du RPi, ni si le conteneur est arrêté
   volontairement, ni dans les 90 s après son démarrage, ni si `/run/bamboo-camwatch/pause` existe
   (maintenance). État écrit dans `/run/bamboo-camwatch/state.json`.
 - **Essai sans risque** : `BAMBOO_CAMWATCH_DRY=1` décrit sans agir.
 
+**Deuxième panne** (2026-11-08, ~13 h après la première) : même signature `UVC probe -110`. Deux gels en
+quelques heures désignent l'alimentation USB (hub partagé avec le CP2102N, câble ou prise) plutôt qu'un accident :
+à suivre ; brancher la webcam sur un port direct du RPi ou un hub alimenté est la piste.
+
 **Mesure** : une rafale de sondes 150 fois plus fréquente que la réalité laisse le flux du HUD à
 13 img/s (13,1 sans sonde) et `web_video_server` à 73 Mo, 13 fils, sans fuite. Installé par l'étape 8
-de `install_bambooWS.sh`. **Pas encore éprouvé sur une vraie panne.**
+de `install_bambooWS.sh`. **Niveau 1 insuffisant sur la deuxième panne** (le redémarrage de `bamboo_video` ne rend pas une caméra gelée côté noyau).
 
 ### 6.11 Foxglove à la demande
 
@@ -582,6 +589,62 @@ main : `docker compose --profile tools up -d foxglovebridge` (port 8765), puis l
 « Foxglove » du portail pointe vers ce service quand il est lancé.
 
 ---
+
+### 6.12 Garde-fou du Command Center et HTTPS (2026-11-08)
+
+**Règle.** Tant que le robot bouge (traction armée ou but de navigation actif) et qu'un Command Center (CC)
+a été vu, il faut un CC vivant et une vidéo connectée. Sinon : arrêt, but annulé, traction désarmée, ligne
+`GARDE-FOU CC : …` (ERROR) au journal. La manette n'est **jamais** exigée (l'armement verrouillé « ARM B VÉROU »
+reste valable sans elle). Rien d'armé, ou aucun CC jamais vu depuis le démarrage : le garde-fou dort, la
+manette seule se comporte comme avant. Un CC disparu alors que rien n'est armé est oublié.
+
+| Perte | Délai | Cause journalisée |
+|---|---|---|
+| plus de battement | 1,5 s | `CC silencieux depuis …` |
+| vidéo non connectée (battement bon) | 3 s | `video perdue depuis …` |
+
+**Mécanisme.** La page publie un battement toutes les 0,5 s sur `/cc/heartbeat` (`{id, seq, video}`, `video` =
+WebRTC réellement connecté et images qui avancent). Le nœud `cc_guard` (bamboo_control) publie
+`/cc/guard/state` (voyant « Liaison CC » du bandeau, après la batterie), `/cc/guard/link` (page + vidéo saines)
+et `/cc/guard/enable` (voie `cc` du multiplexeur, priorité 95, sans interface de pilotage pour l'instant) ;
+sur perte il publie `/cc/guard/stop`, que `bamboo_teleop` exécute. Un seul onglet pilote (le plus ancien
+vivant) ; les autres affichent « AUTRE ONGLET » et prennent la place 1,5 s après sa disparition.
+L'indicateur « Traction » (désarmée / armée / verrouillée) précède « Manette ». Services d'armement :
+`/cc/guard/arm` et `/cc/guard/arm_locked` (SetBool), refusés sans liaison saine ; désarmer est toujours accepté.
+
+**HTTPS.** Un proxy Caddy (service `proxy`, `docker/proxy/Caddyfile`, réseau hôte) sert
+`https://<hôte>:8443/` : `/` → portail, `/rosbridge` → rosbridge (wss), `/raw/whep` → MediaMTX. La webcam
+du PC exige ce contexte sécurisé. Certificat de l'autorité interne de Caddy (volume `proxy_data`) pour
+`192.168.1.164`, `10.3.141.1`, `bamboo.local` : chaque appareil l'accepte une fois. **Autre IP** : l'ajouter à la
+première ligne du Caddyfile puis `docker compose restart proxy`. Les ports HTTP (`:8000`, `:8889/hud`, `:9090`)
+restent en place.
+
+**Interrupteur HTTP / HTTPS** (`docker/secure.sh`, lance sur le RPi) :
+
+| Mode | rosbridge `:9090` | Liste blanche |
+|---|---|---|
+| `http` (défaut) | ouvert au réseau | aucune (comme avant) |
+| `https` | lié à `127.0.0.1` : seul `wss://<hôte>:8443/rosbridge` joint le réseau | active |
+
+`./secure.sh https` / `./secure.sh http` / `./secure.sh` (affiche le mode). **Repli en cas de problème** :
+`./secure.sh http`, puis ouvrir `http://<hôte>:8000/cc/` (tout fonctionne, sauf la webcam du PC). Si c'est
+Caddy qui est en cause : `docker compose stop proxy`. Une seule instance rosbridge sert CC, HUD et outils MCP.
+
+**Liste blanche** (`docker/rosbridge/start.sh`) : topics lus (dont `/teleop/state`, `/cc/guard/state`) ; services
+`/rosapi/*`, `/bamboo/*`, arm, `/nav_supervisor/command`, `*/get_parameters|set_parameters|…`. Limite
+assumée : rosbridge ne distingue pas lecture et écriture dans `topics_glob`, donc **aucun** topic de commande n'y
+figure (`/cmd_vel*`, `/cc/guard/{enable,link,stop}`, `/navigation/enable`, `/servo/cmd`, `/videotracking/mode_cmd`) :
+une consigne ou un faux `link` ne peut pas être publié depuis le réseau. Les écritures utiles passent par des
+services. Vérifié sur une instance d'essai : `/cmd_vel_cc` et `/cc/guard/link` refusés (aucun éditeur créé),
+`/cc/heartbeat` accepté. Une liste trop étroite se voit tout de suite : un widget orange ou un service refusé ; ajouter
+le motif dans `start.sh` puis `./secure.sh https`.
+
+**Outils MCP.** `ROS2_BRIDGE_URL=wss://<hôte>:8443/rosbridge` (le certificat auto-signé est accepté ;
+`ROS2_BRIDGE_CA=<racine.crt>` pour le vérifier). Le chemin direct `ws://<hôte>:9090` ne marche plus en mode `https`.
+
+**Limites.** Pas d'authentification : quiconque est sur le Wi-Fi et accepte le certificat a les droits du CC
+(un jeton dans Caddy, écarté pour l'instant, l'ajouterait). Le HUD et le portail restent en HTTP clair. Un onglet
+masqué peut suspendre WebRTC : le robot le traite comme une vidéo perdue (arrêt), le comportement sûr.
 
 ## 7. État d'avancement
 
@@ -600,7 +663,11 @@ main : `docker compose --profile tools up -d foxglovebridge` (port 8765), puis l
   contrôle IMU validé au repos ; calibration au sol à faire.
 - **Point d'accès Wi-Fi, assistant d'appairage de la manette** (2026-11-06) : faits (§6.8).
 - **Command Center, jalon 1** (2026-11-08) : lecture seule, branché au robot (§6.9) ; surveillance de
-  la caméra (§6.10) ; Foxglove à la demande (§6.11). **Jalon 2 (commandes) : à faire.**
+  la caméra (§6.10) ; Foxglove à la demande (§6.11). **Jalon 2, incrément 1 (2026-11-08)** : garde-fou du CC (battement 1,5 s / vidéo 3 s → arrêt, but annulé,
+  désarmement), voyants « Liaison CC » et « Traction », services d'armement, HTTPS (proxy Caddy `:8443`),
+  interrupteur `secure.sh`, liste blanche rosbridge, MCP en `wss` (§6.12) : **faits et éprouvés roues
+  levées** (onglet fermé, vidéo coupée, armement verrouillé sans manette, HUD seul). **Restent** : boutons
+  d'armement dans la page (appui maintenu), réglages/mode robot, missions, pilotage clavier/manette BT du PC.
 - **Suite** — URDF/TF, EKF (vx roues + vyaw IMU), SLAM, navigation : **à faire**.
 
 ---

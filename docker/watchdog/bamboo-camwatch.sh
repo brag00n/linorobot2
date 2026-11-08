@@ -19,9 +19,10 @@
 #   - encore en echec apres   : niveau 2 -> reinitialiser le port USB de la camera, puis redemarrer
 #                               DESACTIVE PAR DEFAUT (BAMBOO_CAMWATCH_USB=0) : la camera 1-1.1 est
 #                               sur un HUB USB qui porte aussi le pont serie de la carte ESP32
-#                               (CP2102N, 1-1.2). Tant que le reset n'a pas ete ESSAYE UNE FOIS
-#                               sous surveillance (liaison serie de l'ESP32 observee), seul le
-#                               niveau 1 agit ; un echec persistant est alors signale, pas traite.
+#                               (CP2102N, 1-1.2). ESSAYE le 2026-11-08, robot desarme : SANS
+#                               EFFET (la camera revient sans /dev/video0, UVC -110) et il fige les
+#                               lectures du bus plusieurs minutes. Seul un redemarrage du RPi a
+#                               repare. A LAISSER A 0 ; un echec persistant est signale, pas traite.
 #   - plus de MAX_PER_H reprises en 1 h : on ARRETE (abandon) et on le dit -- une camera morte ne
 #     doit pas faire redemarrer le robot en boucle.
 # GARDE-FOUS : pas d'action pendant les MIN_UPTIME premieres secondes du RPi, ni si le conteneur est

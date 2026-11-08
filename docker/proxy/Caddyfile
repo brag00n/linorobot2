@@ -1,0 +1,35 @@
+# Proxy HTTPS du robot (2026-11-08) : termine le TLS sur :8443 et relaie vers les services en clair
+# de l'hote. Pourquoi : la webcam du PC (getUserMedia) et, a verifier, la manette Bluetooth du PC
+# (Gamepad API) exigent un contexte securise ; et une page HTTPS ne peut pas ouvrir ws:// ni un WHEP
+# en http:// (contenu mixte). Les ports HTTP existants (HUD :8000, :8889/hud, :9090) NE CHANGENT PAS.
+#
+# Certificat : autorite interne de Caddy (`tls internal`), propre a ce robot, stockee dans le volume
+# proxy_data. Chaque appareil l'accepte une fois (voir docs, §6.12). La cle privee ne sort jamais.
+#
+# NOMS COUVERTS : la box peut changer l'IP du RPi ; ajouter ici la nouvelle adresse puis
+# `docker compose restart proxy`. Un navigateur n'envoie pas de SNI pour une IP, d'ou la liste
+# explicite plutot qu'un joker.
+{
+	admin off
+	auto_https disable_redirects
+}
+
+https://192.168.1.164:8443, https://10.3.141.1:8443, https://bamboo.local:8443 {
+	tls internal
+
+	# rosbridge (WebSocket) : wss://<hote>:8443/rosbridge -> ws://localhost:9090
+	handle_path /rosbridge* {
+		reverse_proxy localhost:9090
+	}
+
+	# Video WebRTC brute du CC : signalisation WHEP seulement (https://<hote>:8443/raw/whep).
+	# Les paquets media (UDP :8189) vont directement au RPi, sans passer ici.
+	handle /raw/* {
+		reverse_proxy localhost:8889
+	}
+
+	# Tout le reste : le portail (page d'accueil, /cc/, /theme/).
+	handle {
+		reverse_proxy localhost:8000
+	}
+}
