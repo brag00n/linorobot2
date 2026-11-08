@@ -249,7 +249,15 @@ function VideoView() {
     ctx.fillText("CAM  " + (S.vid === "live" ? r.vw + "×" + r.vh : "—") + "  ·  " + f(V.vfps, 0, " FPS") + "  ·  PIPELINE " + f(V.lat, 0, " MS"), 18 * u, ly);
     ctx.fillText("CAP " + f(((V.yaw % 360) + 360) % 360, 0, "°") + "  ·  V " + f(V.speed, 2, " M/S"), 18 * u, ly - 18 * u);
     ctx.textAlign = "right"; ctx.fillStyle = S.vid === "live" ? "#f1e8b4" : "#e7a24a"; ctx.fillText((S.vid === "live" ? (Math.floor(t / 500) % 2 ? "● " : "○ ") + "DIRECT" : "● " + (S.vid === "connecting" ? "CONNEXION" : "HORS LIGNE")), W - 18 * u, ly);
-    var det = DT["tracking_node: detection"]; if (det && det.vals.detection === "coupee" && CAMOPT.det) { ctx.textAlign = "center"; ctx.fillStyle = "#e7a24a"; ctx.font = F(11, 500); ctx.fillText("DÉTECTION COUPÉE — ACTIVE EN MODE TRACKING (TOUCHE A DE LA MANETTE)", cxr, H - 56 * u); }
+    var det = DT["tracking_node: detection"];
+    if (det && det.vals.detection === "coupee" && CAMOPT.det) {
+      // Bandeau sombre derriere le texte : l'ambre seul est illisible sur une image claire (salon, fenetre).
+      var msg = "DÉTECTION COUPÉE — ACTIVE EN MODE TRACKING (TOUCHE A DE LA MANETTE)";
+      ctx.font = F(11, 500); ctx.textAlign = "center"; var mw = ctx.measureText(msg).width + 28 * u, mh = 24 * u, my = H - 56 * u;
+      ctx.fillStyle = "rgba(4,8,11,.82)"; ctx.fillRect(cxr - mw / 2, my - 17 * u, mw, mh);
+      ctx.strokeStyle = "rgba(231,162,74,.7)"; ctx.lineWidth = 1; ctx.strokeRect(cxr - mw / 2, my - 17 * u, mw, mh);
+      ctx.fillStyle = "#e7a24a"; ctx.fillText(msg, cxr, my);
+    }
     ctx.textAlign = "left"; ctx.strokeStyle = "#f1e8b4"; ctx.lineWidth = 2 * u; var m2 = 16 * u, c2 = 22 * u; ctx.beginPath();
     [[m2, 58 * u, 1, 1], [W - m2, 58 * u, -1, 1], [m2, H - 56 * u, 1, -1], [W - m2, H - 56 * u, -1, -1]].forEach(function (q) { ctx.moveTo(q[0] + q[2] * c2, q[1]); ctx.lineTo(q[0], q[1]); ctx.lineTo(q[0], q[1] + q[3] * c2); }); ctx.stroke();
   }

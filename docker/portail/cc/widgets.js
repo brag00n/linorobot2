@@ -36,7 +36,9 @@ function scramble(e, txt, ms) {
   e._scr = true; var n = txt.length, t0 = performance.now();
   var iv = setInterval(function () {
     var k = (performance.now() - t0) / (ms || 650);
-    if (k >= 1) { e.textContent = txt; e._scr = false; clearInterval(iv); return; }
+    // A la fin on pose la valeur la PLUS RECENTE (e._want, posee par set() pendant l'animation) et non
+    // celle capturee au lancement : une valeur arrivee entre-temps (ou stable) restait sinon masquee.
+    if (k >= 1) { e.textContent = e._want != null ? e._want : txt; e._want = null; e._scr = false; clearInterval(iv); return; }
     var s = ""; for (var i = 0; i < n; i++) { var c = txt.charAt(i); s += (i < k * n || !/[0-9]/.test(c)) ? c : String(Math.floor(rng() * 10)); }
     e.textContent = s;
   }, 45);
@@ -72,7 +74,7 @@ function Gauge(o) {
     var ok = isFinite(v); sd.set(ok); if (!ok) v = min; var p = clamp((v - min) / (max - min), 0, 1); val.style.strokeDashoffset = 100 - p * 100;
     var on = Math.round(p * N); for (var j = 0; j <= N; j++) tk[j].classList.toggle("on", p > 0 && j <= on);
     var s = ok ? fmt(v, o.dec || 0) : "—";
-    if (s !== last) { if (!gv._scr) gv.textContent = s; if (last !== "") flashEl(gv); last = s; }
+    if (s !== last) { if (gv._scr) gv._want = s; else gv.textContent = s; if (last !== "") flashEl(gv); last = s; }
     var L = lvOf(v, o.warn, o.crit, o.dir); if (L !== lastLv) { root.dataset.lv = L; root.classList.remove("rp"); void root.offsetWidth; root.classList.add("rp"); lastLv = L; }
   }, intro: function () { scramble(gv, last, 700); } };
   return w;
@@ -86,7 +88,7 @@ function Bar(o) {
   var last = "", lastLv = 0;
   return { root: root, set: function (v) {
     var ok = isFinite(v); sd.set(ok); var on = ok ? Math.round(clamp((v - min) / (max - min), 0, 1) * N) : 0; for (var j = 0; j < N; j++) it[j].classList.toggle("on", j < on);
-    var s2 = !ok ? "—" : o.fn ? o.fn(v) : fmt(v, o.dec || 0); if (s2 !== last) { if (!bv._scr) bv.textContent = s2; if (last !== "") flashEl(bv); last = s2; }
+    var s2 = !ok ? "—" : o.fn ? o.fn(v) : fmt(v, o.dec || 0); if (s2 !== last) { if (bv._scr) bv._want = s2; else bv.textContent = s2; if (last !== "") flashEl(bv); last = s2; }
     var L = lvOf(v, o.warn, o.crit, o.dir); if (L !== lastLv) { root.dataset.lv = L; lastLv = L; }
   }, intro: function () { scramble(bv, last, 600); } };
 }
@@ -98,14 +100,14 @@ function Stat(o) {
   root.append(h("div", "micro", o.label), vr, spw); srcTag(root, o.src); var sd = StatusDot(root, o.src);
   var hist = [], last = "", lastLv = 0;
   return { root: root, set: function (x) {
-    var ok = isFinite(x); sd.set(ok); if (!ok) { var sx = "—"; if (sx !== last) { if (!v._scr) v.textContent = sx; last = sx; } root.dataset.lv = "0"; lastLv = 0; return; }
+    var ok = isFinite(x); sd.set(ok); if (!ok) { var sx = "—"; if (sx !== last) { if (v._scr) v._want = sx; else v.textContent = sx; last = sx; } root.dataset.lv = "0"; lastLv = 0; return; }
     hist.push(x); if (hist.length > 44) hist.shift();
     var lo = o.min != null ? o.min : Math.min.apply(null, hist), hi = o.max != null ? o.max : Math.max.apply(null, hist); if (hi - lo < 1e-6) { hi = lo + 1; }
     var pts = hist.map(function (y, i) { return (i / 43 * 100).toFixed(1) + "," + (28 - clamp((y - lo) / (hi - lo), 0, 1) * 26).toFixed(1); });
     var off = 44 - hist.length; pts = pts.map(function (p) { var q = p.split(","); return (parseFloat(q[0]) + off / 43 * 100).toFixed(1) + "," + q[1]; });
     line.setAttribute("points", pts.join(" ")); area.setAttribute("d", "M" + pts.join("L") + "L100,30L" + pts[0].split(",")[0] + ",30Z");
     dot.style.top = (parseFloat(pts[pts.length - 1].split(",")[1]) / 30 * 100) + "%";
-    var s = o.fn ? o.fn(x) : fmt(x, o.dec || 0); if (s !== last) { if (!v._scr) v.textContent = s; if (last !== "") flashEl(v); last = s; }
+    var s = o.fn ? o.fn(x) : fmt(x, o.dec || 0); if (s !== last) { if (v._scr) v._want = s; else v.textContent = s; if (last !== "") flashEl(v); last = s; }
     var L = o.lvFn ? o.lvFn(x) : lvOf(x, o.warn, o.crit, o.dir); if (L !== lastLv) { root.dataset.lv = L; lastLv = L; }
   }, intro: function () { scramble(v, last, 700); } };
 }
