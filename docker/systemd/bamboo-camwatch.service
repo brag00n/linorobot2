@@ -1,0 +1,17 @@
+# bamboo-camwatch.service -- un passage de la surveillance de la camera (cf. le .timer).
+#
+# GABARIT : install_bambooWS.sh y substitue __COMPOSE_DIR__ avant de le poser dans
+# /etc/systemd/system/. N'est PAS active seul : c'est bamboo-camwatch.timer qui le declenche.
+# Root : il redemarre un conteneur et peut reinitialiser un port USB (/sys/.../authorized).
+#   journalctl -u bamboo-camwatch      cat /run/bamboo-camwatch/state.json
+
+[Unit]
+Description=Bamboo4WD : surveillance de la camera (relance si les images s'arretent)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=__COMPOSE_DIR__
+ExecStart=/bin/bash __COMPOSE_DIR__/watchdog/bamboo-camwatch.sh
+TimeoutStartSec=90

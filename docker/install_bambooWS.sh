@@ -454,7 +454,9 @@ fi
 od_changed=0
 # bamboo-pad.* (assistant d'appairage de la manette du portail) suit le MEME schema : le
 # conteneur `portail` depose une demande dans /run/bamboo-pad, l'hote l'execute (docker/pad/).
-for u in bamboo-ondemand.path bamboo-ondemand.service bamboo-pad.path bamboo-pad.service; do
+# bamboo-camwatch.* (surveillance de la camera) : un MINUTEUR, pas une demande. Il relance bamboo_video
+# quand plus aucune image n'arrive (blocage UVC du 2026-11-08). Hote seulement (docker/watchdog/).
+for u in bamboo-ondemand.path bamboo-ondemand.service bamboo-pad.path bamboo-pad.service bamboo-camwatch.service bamboo-camwatch.timer; do
     SRC_OD="$HERE/systemd/$u"
     DST_OD="/etc/systemd/system/$u"
     if [ ! -r "$SRC_OD" ]; then
@@ -488,6 +490,14 @@ elif [ "$(systemctl is-active bamboo-pad.path 2>/dev/null)" = "active" ]; then
     ok "bamboo-pad.path actif"
 else
     warn "bamboo-pad.path inactif : l'assistant d'appairage du portail ne fonctionnera pas"
+fi
+if [ "$APPLY" = "1" ]; then
+    systemctl daemon-reload
+    systemctl enable --now bamboo-camwatch.timer >/dev/null 2>&1         && act "bamboo-camwatch.timer actif (surveillance de la camera toutes les 30 s ; reset USB desactive)"         || warn "bamboo-camwatch.timer : activation en echec (journalctl -u bamboo-camwatch)"
+elif [ "$(systemctl is-active bamboo-camwatch.timer 2>/dev/null)" = "active" ]; then
+    ok "bamboo-camwatch.timer actif ($(cat /run/bamboo-camwatch/state.json 2>/dev/null | sed -E 's/.*"status":"([^"]*)".*//'))"
+else
+    warn "bamboo-camwatch.timer inactif : une camera figee ne sera pas relancee"
 fi
 # Le dossier doit exister AVANT le conteneur `portail` : sinon Docker le cree en root et le
 # bind-mount pointe sur un dossier que bamboo-pad.path (MakeDirectory) ne recreera pas.
