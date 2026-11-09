@@ -11,7 +11,7 @@
   Servi par le portail (:8000/cc/). Aucune commande ne part vers le robot depuis cette page.
     - donnees : rosbridge (ws://<hote>:9090), topics ROS lus en direct (batterie, IMU, roues, suivi, diagnostics, nav, journal)
     - video   : WebRTC (WHEP) vers le chemin MediaMTX « raw » (http://<hote>:8889/raw), image SANS incrustation du HUD ;
-                seul l'affichage du SUIVI (cadre, reticule, ruban de cap) est trace par cette page
+                seul l'affichage du SUIVI (cadre, reticule) est trace par cette page
     - touches : voir la table KEYS (bouton « Touches », touche H) : 1-4 modes · J journal · H touches · S sources · A/V armer · Echap desarmer
     - options : #host=<ip> (autre robot) · #z=0.85 (zoom, 0.75 par defaut) · #mode=vitals|mission|config|calib · #src · #open=journal
   Polices Oxanium (licence OFL) : ../fonts/. Maquette d'origine et captures : docker/command-center-maquette/.
@@ -187,6 +187,9 @@ function syncSubs() {
   });
 }
 var ws = null, rbBack = 1000, callN = 0, calls = {}, lastRb = 0;
+/* ESSAI RETIRE (2026-11-09) : desabonner et fermer le websocket a `pagehide` n'a pas aide. Mesure : apres une rafale de rechargements,
+   rosbridge perdait quand meme le compte de ses clients (0 client alors que la socket restait ouverte) puis allouait ~2 Mo/s jusqu'a
+   l'effondrement. Le defaut est cote serveur ; le remede est la surveillance bamboo-rbwatch (docker/watchdog). */
 function rbSend(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
 function rbConnect() {
   try { ws = new WebSocket(RB_URL); } catch (e) { return rbRetry(); }
@@ -323,30 +326,31 @@ function VideoView() {
     }
     if (CAMOPT.ret && S.vid === "live") { ctx.strokeStyle = "rgba(241,232,180,.85)"; ctx.lineWidth = 1.4 * u; ctx.beginPath(); ctx.arc(cxr, cyr, 26 * u, 0, 7);
       [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (q) { ctx.moveTo(cxr + q[0] * 34 * u, cyr + q[1] * 34 * u); ctx.lineTo(cxr + q[0] * 62 * u, cyr + q[1] * 62 * u); }); ctx.stroke(); }
-    /* ruban de cap : yaw de l'IMU (Esp32Status) */
-    if (isFinite(V.yaw)) {
-      var tw = Math.min(W * .44, 520 * u), tx = cxr - tw / 2, yaw = ((V.yaw % 360) + 360) % 360; ctx.fillStyle = "rgba(4,8,11,.55)"; ctx.fillRect(tx, 12 * u, tw, 30 * u);
-      ctx.strokeStyle = "rgba(143,199,212,.9)"; ctx.fillStyle = "#8fc7d4"; ctx.font = F(11, 500); ctx.textAlign = "center"; ctx.lineWidth = 1;
-      for (var hd = Math.ceil((yaw - 45) / 5) * 5; hd <= yaw + 45; hd += 5) { var xx = cxr + (hd - yaw) / 45 * tw / 2;
-        if (hd % 10 === 0) { var mdn = ((hd % 360) + 360) % 360; ctx.beginPath(); ctx.moveTo(xx, 12 * u); ctx.lineTo(xx, 24 * u); ctx.stroke(); ctx.fillText({ 0: "N", 90: "E", 180: "S", 270: "O" }[mdn] || String(mdn), xx, 38 * u); }
-        else { ctx.beginPath(); ctx.moveTo(xx, 12 * u); ctx.lineTo(xx, 18 * u); ctx.stroke(); } }
-      ctx.fillStyle = "#f1e8b4"; ctx.beginPath(); ctx.moveTo(cxr, 44 * u); ctx.lineTo(cxr - 5 * u, 52 * u); ctx.lineTo(cxr + 5 * u, 52 * u); ctx.fill(); ctx.textAlign = "left";
-    }
-    var ly = H - 18 * u; ctx.font = F(11, 500); ctx.fillStyle = "#8fc7d4";
-    ctx.fillText("CAM  " + (S.vid === "live" ? r.vw + "×" + r.vh : "—") + "  ·  " + f(V.vfps, 0, " FPS") + "  ·  PIPELINE " + f(V.lat, 0, " MS"), 18 * u, ly);
-    ctx.fillText("CAP " + f(((V.yaw % 360) + 360) % 360, 0, "°") + "  ·  V " + f(V.speed, 2, " M/S"), 18 * u, ly - 18 * u);
-    ctx.textAlign = "right"; ctx.fillStyle = S.vid === "live" ? "#f1e8b4" : "#e7a24a"; ctx.fillText((S.vid === "live" ? (Math.floor(t / 500) % 2 ? "● " : "○ ") + "DIRECT" : "● " + (S.vid === "connecting" ? "CONNEXION" : "HORS LIGNE")), W - 18 * u, ly);
+    /* (ruban de cap retire le 2026-11-09 : le cap IMU n'est pas fiable) */
+    var ly = r.y + r.vh * r.k - 18 * u; ctx.font = F(11, 500); ctx.fillStyle = "#8fc7d4";
+    ctx.fillText("CAM  " + (S.vid === "live" ? r.vw + "×" + r.vh : "—") + "  ·  " + f(V.vfps, 0, " FPS") + "  ·  PIPELINE " + f(V.lat, 0, " MS"), r.x + 18 * u, ly);
+    ctx.fillText("CAP " + f(((V.yaw % 360) + 360) % 360, 0, "°") + "  ·  V " + f(V.speed, 2, " M/S"), r.x + 18 * u, ly - 18 * u);
+    /* DIRECT en haut a DROITE de l'image (2026-11-09) ; les boutons Suivi / Reticule restent a gauche */
+    var live = S.vid === "live", dtxt = live ? "DIRECT" : (S.vid === "connecting" ? "CONNEXION" : "HORS LIGNE");
+    ctx.font = F(11, 600); ctx.textAlign = "right";
+    var dw = ctx.measureText(dtxt).width, dxr = r.x + r.vw * r.k - 26 * u, dyt = r.y + 36 * u;
+    ctx.fillStyle = "rgba(4,10,14,.7)"; ctx.fillRect(dxr - dw - 28 * u, dyt - 16 * u, dw + 36 * u, 24 * u);
+    ctx.fillStyle = live ? (Math.floor(t / 600) % 2 ? "#e5604a" : "#7a2d22") : "#e7a24a"; ctx.beginPath(); ctx.arc(dxr - dw - 14 * u, dyt - 4 * u, 4 * u, 0, 7); ctx.fill();
+    ctx.fillStyle = live ? "#f1e8b4" : "#e7a24a"; ctx.fillText(dtxt, dxr, dyt); ctx.textAlign = "left";
     var det = DT["tracking_node: detection"];
     if (det && det.vals.detection === "coupee" && CAMOPT.det) {
       // Bandeau sombre derriere le texte : l'ambre seul est illisible sur une image claire (salon, fenetre).
       var msg = "DÉTECTION COUPÉE — ACTIVE EN MODE TRACKING (TOUCHE A DE LA MANETTE)";
-      ctx.font = F(11, 500); ctx.textAlign = "center"; var mw = ctx.measureText(msg).width + 28 * u, mh = 24 * u, my = H - 56 * u;
+      ctx.font = F(11, 500); ctx.textAlign = "center"; var mw = ctx.measureText(msg).width + 28 * u, mh = 24 * u, my = r.y + r.vh * r.k - 44 * u;
       ctx.fillStyle = "rgba(4,8,11,.82)"; ctx.fillRect(cxr - mw / 2, my - 17 * u, mw, mh);
       ctx.strokeStyle = "rgba(231,162,74,.7)"; ctx.lineWidth = 1; ctx.strokeRect(cxr - mw / 2, my - 17 * u, mw, mh);
       ctx.fillStyle = "#e7a24a"; ctx.fillText(msg, cxr, my);
     }
-    ctx.textAlign = "left"; ctx.strokeStyle = "#f1e8b4"; ctx.lineWidth = 2 * u; var m2 = 16 * u, c2 = 22 * u; ctx.beginPath();
-    [[m2, 58 * u, 1, 1], [W - m2, 58 * u, -1, 1], [m2, H - 56 * u, 1, -1], [W - m2, H - 56 * u, -1, -1]].forEach(function (q) { ctx.moveTo(q[0] + q[2] * c2, q[1]); ctx.lineTo(q[0], q[1]); ctx.lineTo(q[0], q[1] + q[3] * c2); }); ctx.stroke();
+    /* COINS autour de l'IMAGE reelle (et non de la boite) ; couleur = etat du lien : creme sain, ambre degrade, rouge coupe / garde-fou */
+    var lt = (S.vid !== "live" || !S.rb || (GS && performance.now() - GST < 3000 && GS.tripped)) ? 2 : (!ccLinkOk() || (isFinite(V.vloss) && V.vloss > 10)) ? 1 : 0;
+    var mm = 6 * u, ccl = 26 * u, ix = r.x + mm, iy = r.y + mm, iw = r.vw * r.k - 2 * mm, ih = r.vh * r.k - 2 * mm;
+    ctx.globalAlpha = lt === 2 ? (Math.floor(t / 400) % 2 ? 1 : .35) : 1; ctx.textAlign = "left";
+    ctx.strokeStyle = lt === 2 ? "#e5604a" : lt === 1 ? "#e7a24a" : "#f1e8b4"; ctx.lineWidth = 2.4 * u; corners(ix, iy, iw, ih, ccl, u); ctx.globalAlpha = 1;
   }
   return { root: root, vid: vid, draw: draw };
 }
@@ -787,7 +791,7 @@ $("#camOn").onclick = function () {
 };
 function toggleSrc(on) { document.body.classList.toggle("srcs", on); }
 var chips = $("#vchips"); [["det", "Suivi"], ["ret", "Réticule"]].forEach(function (x) { var c = h("button", "chip", x[1]); c.type = "button"; c.setAttribute("aria-pressed", CAMOPT[x[0]]); c.onclick = function () { CAMOPT[x[0]] = !CAMOPT[x[0]]; c.setAttribute("aria-pressed", CAMOPT[x[0]]); }; chips.appendChild(c); });
-var vst = h("span", "chip static", "Connexion…"); chips.appendChild(vst);
+var vst = h("span", "chip static", "Connexion…"); vst.style.display = "none";   /* remplacee par le DIRECT dessine dans la scene */ chips.appendChild(vst);
 $("#jbtn").onclick = function () { toggleSlide("journal", openJournal); };
 $("#kbtn").onclick = function () { toggleSlide("keys", openKeys); };
 document.addEventListener("keydown", function (e) {
