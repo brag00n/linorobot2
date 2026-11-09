@@ -646,6 +646,20 @@ le motif dans `start.sh` puis `./secure.sh https`.
 (un jeton dans Caddy, écarté pour l'instant, l'ajouterait). Le HUD et le portail restent en HTTP clair. Un onglet
 masqué peut suspendre WebRTC : le robot le traite comme une vidéo perdue (arrêt), le comportement sûr.
 
+**Commandes depuis le CC (2026-11-09).**
+- *Armement* : appui maintenu 1,1 s, au bouton (Config > Traction) ou au clavier — **A** arme, **V** arme verrouillé, **Échap** désarme *et* annule le but de navigation. Lâcher la touche, perdre le focus ou masquer l'onglet annule un armement en cours. Sans manette, seul l'armement **verrouillé** tient : l'armement simple est désarmé par la règle « manette perdue » (à unifier).
+- *Missions* (panneau Mission) : pile NAV, relocalisation (locale/globale, sans armer : le robot ne tourne que s'il doit lever un doute), choix d'une destination, « Aller » et « Ronde » en appui maintenu, « Ajouter ici », **ARRÊT** (`cancel_all`) toujours disponible. Tout passe par `/nav_supervisor/command` et `/bamboo/nav_stack`.
+- *Panneaux* : Journal et Touches (bouton ou **J** / **H**), non modaux, moitié droite de l'écran entre l'en-tête et le pied de page, un seul à la fois. Les touches sont déclarées dans la table `KEYS` de la page.
+- *Mode test* : `#test=1` capture les appels de service au lieu de les envoyer (`&link=ok` force la liaison saine). À utiliser pour tout essai de gestes.
+
+**Diagnostic des arrêts.** Le battement porte `hidden` (onglet masqué), `dt` (temps réel entre deux envois) et `seq`. Le message d'arrêt par silence dit si l'onglet était masqué, si des battements ont été perdus ou si la page était seulement ralentie. Constat du 2026-11-09 : un onglet masqué ou recouvert ralentit ses minuteries du navigateur et fait couper le garde-fou ; le garder visible supprime les coupures.
+
+**Coût CPU mesuré (RPi4, 4 cœurs).** Une page CC ouverte ajoute ~45 points à rosbridge (14 % sans client, ~58 % avec) : le coût suit la cadence *source* des topics, pas le débit demandé (rosbridge convertit chaque message avant de le limiter). Les abonnements suivent donc le mode affiché, et l'onglet masqué ne garde que le garde-fou. Le flux vidéo `raw` est à 15 img/s (`-vf fps=15` ; `-r 15` placé avant `-i` n'avait aucun effet). Réduire la résolution ne change rien : le coût est le décodage JPEG d'entrée. La caméra expose du H.264 natif mais `gscam` tient le périphérique en MJPEG (un seul lecteur) ; la refonte « propriétaire unique » reste ouverte. Pile NAV lancée avec le suivi vidéo actif : load 13 à 22, hors zone saine ; sans le suivi : 6 à 8.
+
+**Panne rosbridge.** Il peut dériver (1,16 Go et 75-88 % d'un cœur après quelques heures, sans répondre) ou boucler sur `WebSocketClosedError` ; le redémarrer règle les deux. Cause non établie (soupçon : abonnements accumulés par des clients disparus). Une surveillance automatique, sur le modèle de `camwatch`, reste à écrire.
+
+**Santé.** Un module dont *tous* les nœuds sont muets est présenté « arrêté » (neutre) et non comme plusieurs pannes critiques ; le pied de page résume en deux compteurs et le problème le plus grave.
+
 ## 7. État d'avancement
 
 - **L0** — protocole hôte (`mav/bamboo.py` généré, `tools/pyproject.toml`) : **fait** (banc).

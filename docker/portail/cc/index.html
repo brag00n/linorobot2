@@ -12,7 +12,7 @@
     - donnees : rosbridge (ws://<hote>:9090), topics ROS lus en direct (batterie, IMU, roues, suivi, diagnostics, nav, journal)
     - video   : WebRTC (WHEP) vers le chemin MediaMTX « raw » (http://<hote>:8889/raw), image SANS incrustation du HUD ;
                 seul l'affichage du SUIVI (cadre, reticule, ruban de cap) est trace par cette page
-    - touches : 1-4 modes · J journal · S afficher la source de chaque donnee
+    - touches : voir la table KEYS (bouton « Touches », touche H) : 1-4 modes · J journal · H touches · S sources · A/V armer · Echap desarmer
     - options : #host=<ip> (autre robot) · #z=0.85 (zoom, 0.75 par defaut) · #mode=vitals|mission|config|calib · #src · #open=journal
   Polices Oxanium (licence OFL) : ../fonts/. Maquette d'origine et captures : docker/command-center-maquette/.
 -->
@@ -73,7 +73,7 @@
     <div class="pb" id="pb"><div class="sweep"></div></div>
   </section>
 
-  <footer class="foot fr"><span class="micro lbl">Santé</span><div class="pills" id="pills" role="status" aria-label="Santé du robot"></div><button class="btn jbtn" id="jbtn" type="button" aria-haspopup="dialog"><i class="live"></i>Journal<b id="jcount" data-lv="0" style="display:none">0</b></button></footer>
+  <footer class="foot fr"><span class="micro lbl">Santé</span><div class="pills" id="pills" role="status" aria-label="Santé du robot"></div><button class="btn jbtn" id="kbtn" type="button" aria-haspopup="dialog" title="Touches du clavier [H]">Touches</button><button class="btn jbtn" id="jbtn" type="button" aria-haspopup="dialog"><i class="live"></i>Journal<b id="jcount" data-lv="0" style="display:none">0</b></button></footer>
 </div>
 <dialog id="dlg" aria-labelledby="dlgT"></dialog>
 
@@ -139,9 +139,37 @@ var HANDLERS = {
    `video` = lecteur WebRTC reellement connecte ET images qui avancent. Un onglet masque ralentit ses
    minuteries : il sera traite par le robot comme silencieux, ce qui est le comportement sur voulu. */
 var TR = null, TRT = 0, GS = null, GST = 0, TABID = Math.random().toString(36).slice(2, 8), hbSeq = 0;
+var hbLast = 0;
 function hbSend() {
   if (!ws || ws.readyState !== 1) return;
-  rbSend({ op: "publish", topic: "/cc/heartbeat", msg: { data: JSON.stringify({ id: TABID, seq: ++hbSeq, video: S.vid === "live" && V.vfps > 0 }) } });
+  /* `hidden` et `dt` servent UNIQUEMENT au diagnostic d'un arret par silence (cc_guard les cite dans son message) : `dt` =
+     temps reellement ecoule depuis l'envoi precedent (grand = navigateur qui ralentit la page), `seq` saute = message perdu. */
+  var now = performance.now(), dt = hbLast ? Math.round(now - hbLast) : 0; hbLast = now;
+  rbSend({ op: "publish", topic: "/cc/heartbeat", msg: { data: JSON.stringify({ id: TABID, seq: ++hbSeq, video: S.vid === "live" && V.vfps > 0, hidden: !!document.hidden, dt: dt }) } });
+}
+/* ---------- abonnements PAR MODE : un topic rapide qu'aucun widget visible n'utilise ne doit pas etre abonne ----------
+   Mesure (2026-11-08) : rosbridge convertit CHAQUE message en JSON avant de l'envoyer, meme si throttle_rate le jette ensuite ;
+   le cout suit donc la cadence SOURCE (wheel_rpm 20 Hz = +7 points de CPU, motion_compensation 20 Hz = +9). Ceux-la ne servent
+   que dans certains modes. Les autres topics rapides (battery, esp32_status, track_state) nourrissent l'incrustation video et
+   l'en-tete, visibles partout : ils restent abonnes. Sans entree ici = toujours abonne. */
+var SCOPE = { "/wheel_rpm": ["vitals"], "/motion_compensation/state": ["config", "calib"] };
+var SUBS = {};                                   // topic -> id d'abonnement en cours
+var SCOPE_CLEAR = {                               // valeurs a vider quand on se desabonne (pas d'ancienne valeur affichee au retour)
+  "/wheel_rpm": function () { V.rpmL = NaN; V.rpmR = NaN; },
+  "/motion_compensation/state": function () { MC = null; V.ww = V.gz = V.slip = V.pi = V.wzIn = V.vw = NaN; SC.buf.length = 0; } };
+var SUBN = 0;
+/* Onglet MASQUE ou reduit : rien n'est affiche, donc rien n'est lu, sauf ce qui sert la securite et le retour. Le BATTEMENT de
+   coeur, lui, continue (hbSend) : un onglet masque reste le pilote tant que le navigateur lui laisse ses minuteries, et le
+   garde-fou traite un onglet gele comme perdu, ce qui est voulu. Au retour, tout est reabonne en une fois. */
+var KEEP_HIDDEN = ["/cc/guard/state", "/teleop/state", "/gamepad/connected"];
+document.addEventListener("visibilitychange", function () { syncSubs(); if (document.hidden) { log(0, "Onglet masqué : abonnements réduits au garde-fou"); } });
+function syncSubs() {
+  if (!ws || ws.readyState !== 1) return;
+  Object.keys(HANDLERS).forEach(function (t) {
+    var d = HANDLERS[t], want = (!SCOPE[t] || SCOPE[t].indexOf(S.mode) >= 0) && (!document.hidden || KEEP_HIDDEN.indexOf(t) >= 0), have = SUBS[t] != null;
+    if (want && !have) { var id = "s" + (++SUBN); SUBS[t] = id; rbSend({ op: "subscribe", id: id, topic: t, type: d[0], throttle_rate: d[1], queue_length: d[2] }); }
+    else if (!want && have) { rbSend({ op: "unsubscribe", id: SUBS[t], topic: t }); delete SUBS[t]; if (SCOPE_CLEAR[t]) SCOPE_CLEAR[t](); }
+  });
 }
 var ws = null, rbBack = 1000, callN = 0, calls = {}, lastRb = 0;
 function rbSend(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
@@ -150,7 +178,7 @@ function rbConnect() {
   ws.onopen = function () {
     rbSend({ op: "advertise", topic: "/cc/heartbeat", type: "std_msgs/msg/String" });
     S.rb = true; rbBack = 1000; log(0, "rosbridge connecté (" + RB_URL.replace(/^wss?:\/\//, "") + ")");
-    Object.keys(HANDLERS).forEach(function (t, i) { var d = HANDLERS[t]; rbSend({ op: "subscribe", id: "s" + i, topic: t, type: d[0], throttle_rate: d[1], queue_length: d[2] }); });
+    SUBS = {}; syncSubs();
   };
   ws.onmessage = function (ev) {
     var m; try { m = JSON.parse(ev.data); } catch (e) { return; } lastRb = performance.now();
@@ -158,10 +186,22 @@ function rbConnect() {
     else if (m.op === "service_response") { var c = calls[m.id]; if (c) { delete calls[m.id]; c(m); } }
     else if (m.op === "status" && m.level === "error") log(1, "rosbridge : " + String(m.msg).slice(0, 160));
   };
-  ws.onclose = function () { if (S.rb) log(1, "rosbridge perdu — nouvelle tentative"); S.rb = false; Object.keys(V).forEach(function (k) { V[k] = NaN; }); V.roll = 0; V.pitch = 0; DT = {}; window.CCSTATE.DT = DT; DMODS = []; T = null; NAV = null; MC = null; HL = null; rbRetry(); };
+  ws.onclose = function () { SUBS = {}; if (S.rb) log(1, "rosbridge perdu — nouvelle tentative"); S.rb = false; Object.keys(V).forEach(function (k) { V[k] = NaN; }); V.roll = 0; V.pitch = 0; DT = {}; window.CCSTATE.DT = DT; DMODS = []; T = null; NAV = null; MC = null; HL = null; rbRetry(); };
   ws.onerror = function () { try { ws.close(); } catch (e) { } };
 }
 function rbRetry() { setTimeout(rbConnect, rbBack); rbBack = Math.min(10000, rbBack * 1.6); }
+var CALLS_OUT = [];                       // mode ?test=1 : les appels de service sont CAPTURES ici et ne partent JAMAIS
+function rbCall(service, args, cb) {
+  if (HASH.test === "1") { CALLS_OUT.push(service + ":" + JSON.stringify(args || {})); return cb({ result: true, values: { success: true, message: "test (rien envoyé)" } }); }
+  rbCallReal(service, args, cb);
+}
+function rbCallReal(service, args, cb) {      // appel de service rosbridge avec reponse (ou echec apres 4 s)
+  if (!S.rb) return cb({ result: false, values: { message: "rosbridge non connecté" } });
+  var id = "c" + (++callN), done = false;
+  var fin = function (m) { if (!done) { done = true; delete calls[id]; cb(m); } };
+  calls[id] = fin; rbSend({ op: "call_service", id: id, service: service, args: args || {} });
+  setTimeout(function () { fin({ result: false, values: { message: "pas de réponse" } }); }, 4000);
+}
 function rbPing() {            // aller-retour réel PC ↔ robot : appel d'un service léger
   if (!S.rb) return; var id = "c" + (++callN), t0 = performance.now();
   calls[id] = function () { V.rtt = performance.now() - t0; }; rbSend({ op: "call_service", id: id, service: "/rosapi/get_time", args: {} });
@@ -172,10 +212,24 @@ function rbPing() {            // aller-retour réel PC ↔ robot : appel d'un s
 function onDiag(m) {
   var tasks = {}, mods = [];
   m.status.forEach(function (s) {
+    /* noms de l'agregateur : /Robot/<module>/<noeud>/<noeud: tache> -> p = ["", "Robot", module, noeud, tache] */
     var p = s.name.split("/"), last = p[p.length - 1], lv = s.level === 3 ? 2 : s.level;     // STALE (3) = composant muet : critique
-    if (last.indexOf(": ") >= 0) { var vals = {}; (s.values || []).forEach(function (kv) { vals[kv.key] = kv.value; }); tasks[last] = { name: last, level: lv, msg: s.message, vals: vals }; }
-    else if (p.length === 3) mods.push({ name: last, level: lv, msg: s.message });
+    if (last.indexOf(": ") >= 0) { var vals = {}; (s.values || []).forEach(function (kv) { vals[kv.key] = kv.value; }); tasks[last] = { name: last, level: lv, msg: s.message, vals: vals, stale: s.level === 3, module: p[2] || "" }; }
+    else if (p.length === 3) mods.push({ name: last, level: lv, msg: s.message, stale: s.level === 3 });
   });
+  /* GROUPE ARRETE != PLUSIEURS PANNES (2026-11-09). Quand TOUS les noeuds d'un module sont muets (STALE) ensemble, c'est le module
+     qui est arrete (conteneur coupe a la main, ou a la demande), pas quatre pannes simultanees : on les presente « arrete » (neutre)
+     au lieu de CRITIQUES. Un noeud muet dans un module dont les autres vivent reste critique. Le message des taches perimees est
+     celui d'AVANT l'arret (« desactivee », « 12,2 Hz ») : il induisait en erreur, on le remplace. */
+  var byMod = {};
+  Object.keys(tasks).forEach(function (k) { var t = tasks[k]; (byMod[t.module] = byMod[t.module] || []).push(t); });
+  var stopped = {};
+  Object.keys(byMod).forEach(function (g) {
+    var list = byMod[g];
+    if (list.length && list.every(function (t) { return t.stale; })) { stopped[g] = true; list.forEach(function (t) { t.level = 0; t.msg = "arrêté"; t.stopped = true; }); }
+  });
+  mods.forEach(function (md) { if (stopped[md.name]) { md.level = 0; md.msg = "arrêté"; md.stopped = true; } });
+  window.CCSTATE.stopped = Object.keys(stopped);
   var g = function (n) { return tasks[n] ? tasks[n].vals : null; }, v;
   if ((v = g("systeme: occupation CPU"))) V.cpu = num(parseFloat(v.occupation_pct));
   if ((v = g("systeme: temperature CPU"))) V.temp = num(parseFloat(v.celsius));
@@ -298,9 +352,12 @@ function panelVitals(pb) {
   var taskLv = function (re) { var lv = -1; Object.keys(DT).forEach(function (k) { if (re.test(k)) lv = Math.max(lv, DT[k].level); }); return lv; };
   /* 1. SANTÉ (en premier) */
   var sant = h("div", "prm"), mx = Matrix(), an = h("div", "anom"), lastK = ""; sant.append(mx.root, an);
-  REG.push(function () { mx.update(); var kk = Object.keys(DT).sort().map(function (k) { return k + DT[k].level; }).join("|"); if (kk === lastK) return; lastK = kk; an.replaceChildren(); var any = false;
+  REG.push(function () { mx.update(); var kk = Object.keys(DT).sort().map(function (k) { return k + DT[k].level + (DT[k].stopped ? "s" : ""); }).join("|"); if (kk === lastK) return; lastK = kk; an.replaceChildren(); var any = false;
     Object.keys(DT).sort().forEach(function (k) { var t = DT[k]; if (t.level) { any = true; an.appendChild(h("div", t.level === 2 ? "l2" : "", "<b>" + (t.level === 2 ? "CRIT" : "WARN") + "</b>")); an.lastChild.appendChild(document.createTextNode(k + " — " + t.msg)); } });
-    if (!any) an.appendChild(h("div", "ok", Object.keys(DT).length ? "Aucune anomalie" : "En attente des diagnostics…")); });
+    var stp = (window.CCSTATE.stopped || []);
+    if (stp.length) an.appendChild(h("div", "stp", "<b>ARRÊTÉ</b>" + stp.map(function (g) { return g.replace(/ \\(.*\\)$/, ""); }).join(", ") + " — module volontairement arrêté, pas une panne"));
+    if (!any && !stp.length) an.appendChild(h("div", "ok", Object.keys(DT).length ? "Aucune anomalie" : "En attente des diagnostics…"));
+    else if (!any) an.appendChild(h("div", "ok", "Aucune anomalie sur les modules en marche")); });
   Acc("Santé", function () { var n = Object.keys(DT).length; if (!n) return ["en attente", -1]; var w = 0, c = 0; Object.keys(DT).forEach(function (k) { if (DT[k].level === 1) w++; else if (DT[k].level >= 2) c++; });
     return [c ? c + " critique" + (c > 1 ? "s" : "") + (w ? " · " + w + " avert." : "") : w ? w + " avertissement" + (w > 1 ? "s" : "") : "nominale · " + n + " tâches", c ? 2 : w ? 1 : 0]; }, sant, true);
   /* 2. ÉNERGIE */
@@ -329,9 +386,9 @@ function panelVitals(pb) {
   Acc("Mouvement", function () { if (!isFinite(V.yaw)) return ["—", -1]; var mv = (V.rpmL || 0) + (V.rpmR || 0) > 1; return [(mv ? "en mouvement · " : "à l'arrêt · ") + "cap " + Math.round(((V.yaw % 360) + 360) % 360) + "°", 0]; }, mo);
   /* 5. SERVICES */
   var se = h("div", "prm"), sv2 = h("div", "svcs"); srcTag(sv2, "/diagnostics_agg · un module par service ; pilotage docker : jalon suivant"); var lastM = ""; se.appendChild(sv2);
-  REG.push(function () { var kk = DMODS.map(function (m) { return m.name + m.level; }).join("|"); if (kk === lastM) return; lastM = kk; sv2.querySelectorAll(".li").forEach(function (e) { e.remove(); });
-    DMODS.forEach(function (m) { var li = h("div", "li", '<i class="dotc ' + ["", "w", "e"][m.level] + '"></i><b></b>'); li.lastChild.textContent = m.name.replace(/ \(.*\)$/, ""); li.title = m.name + " — " + m.msg; sv2.appendChild(li); }); });
-  Acc("Services", function () { var n = DMODS.length; if (!n) return ["—", -1]; var bad = DMODS.filter(function (m) { return m.level > 0; }).length; return [bad ? bad + " / " + n + " à vérifier" : n + " modules OK", bad ? 1 : 0]; }, se);
+  REG.push(function () { var kk = DMODS.map(function (m) { return m.name + m.level + (m.stopped ? "s" : ""); }).join("|"); if (kk === lastM) return; lastM = kk; sv2.querySelectorAll(".li").forEach(function (e) { e.remove(); });
+    DMODS.forEach(function (m) { var li = h("div", "li" + (m.stopped ? " stopped" : ""), '<i class="dotc ' + (m.stopped ? "o" : ["", "w", "e"][m.level]) + '"></i><b></b>'); li.lastChild.textContent = m.name.replace(/ \(.*\)$/, "") + (m.stopped ? " · arrêté" : ""); li.title = m.name + " — " + m.msg; sv2.appendChild(li); }); });
+  Acc("Services", function () { var n = DMODS.length; if (!n) return ["—", -1]; var bad = DMODS.filter(function (m) { return m.level > 0; }).length, st = DMODS.filter(function (m) { return m.stopped; }).length; return [(bad ? bad + " / " + n + " à vérifier" : (n - st) + " modules OK") + (st ? " · " + st + " arrêté" + (st > 1 ? "s" : "") : ""), bad ? 1 : 0]; }, se);
   /* ouverture : Santé par défaut ; plusieurs sections peuvent rester ouvertes ; l'etat survit au changement de mode */
   var saved = null; try { saved = JSON.parse(sessionStorage.getItem("cc.vitals.open") || "null"); } catch (e) { }
   var open = HASH.acc != null ? String(HASH.acc).split(",").map(Number) : saved || [0];
@@ -352,6 +409,44 @@ function missionText() {
   if (NAV.goal) return ["Navigation — vers " + NAV.goal + " · " + f(num(NAV.distance_remaining), 1, " m"), "run"];
   return ["Navigation — " + (NAV.submode || "?") + (NAV.detail ? " · " + NAV.detail : ""), "run"];
 }
+/* ---------- MISSIONS : commandes de navigation (service /nav_supervisor/command, deja dans la liste blanche) ----------
+   Tout ce qui FAIT ROULER est un appui maintenu 1,1 s (meme geste que l'armement) et reste grise sans liaison saine (page +
+   video, onglet pilote), sans pile NAV, ou traction desarmee. L'ARRET (cancel_all) n'est jamais grise : un clic ou Echap. */
+var MS = { dest: null, msg: "", msgT: 0 };
+function msSay(t) { MS.msg = t; MS.msgT = performance.now(); }
+function navCall(cmd, arg, cb) {
+  rbCall("/nav_supervisor/command", { command: cmd, arg: arg || "" }, function (m) {
+    var ok = !!(m.result && m.values && m.values.success), msg = (m.values && m.values.message) || "erreur";
+    log(ok ? 0 : 1, "Navigation « " + cmd + (arg ? " " + arg : "") + " » : " + (ok ? "accepté" : "refusé — " + msg));
+    msSay(ok ? "" : "Refusé : " + msg); if (cb) cb(ok, msg);
+  });
+}
+function navStop() { navCall("cancel_all", "", null); }
+/* Relocalisation : le superviseur essaie d'abord SANS bouger (scan lidar contre la carte) et ne demande l'armement que si le
+   resultat est ambigu et qu'il doit tourner (nav_supervisor, _relocStart). Armer n'est donc pas un prerequis. */
+function canReloc() { return ccLinkOk() && navFresh(); }
+function whyReloc() { return !ccLinkOk() ? ccLinkWhy() : !navFresh() ? "Indisponible : pile NAV arrêtée" : ""; }
+function canRoll() { return ccLinkOk() && navFresh() && !!TR && TR.armed; }
+function whyRoll() { return !ccLinkOk() ? ccLinkWhy() : !navFresh() ? "Indisponible : pile NAV arrêtée" : !(TR && TR.armed) ? "Indisponible : traction désarmée (touche A maintenue)" : ""; }
+function holdButton(label, danger, okFn, whyFn, run) {
+  var b = h("button", "hold" + (danger ? " danger" : "")), sp = h("span", "", label); b.type = "button"; b.appendChild(sp);
+  var raf = 0, t0 = 0, busy = false;
+  var stop = function () { cancelAnimationFrame(raf); raf = 0; b.style.setProperty("--p", 0); };
+  var go = function () {
+    if (raf || busy) return;
+    if (!okFn()) { msSay(whyFn()); return; }
+    t0 = performance.now();
+    var step = function () {
+      var p = clamp((performance.now() - t0) / 1100, 0, 1); b.style.setProperty("--p", p);
+      if (p >= 1) { stop(); busy = true; sp.textContent = "…"; run(function (ok) { sp.textContent = ok ? "Fait ✓" : "Refusé ✗"; setTimeout(function () { sp.textContent = label; busy = false; }, 1400); }); return; }
+      raf = requestAnimationFrame(step); };
+    raf = requestAnimationFrame(step); };
+  b.addEventListener("pointerdown", function (e) { e.preventDefault(); go(); });
+  ["pointerup", "pointerleave", "pointercancel", "blur"].forEach(function (n) { b.addEventListener(n, stop); });
+  b.addEventListener("keydown", function (e) { if ((e.key === " " || e.key === "Enter") && !e.repeat) { e.preventDefault(); go(); } }); b.addEventListener("keyup", stop);
+  b.refresh = function () { var ok = okFn(); b.classList.toggle("dis", !ok); b.title = ok ? "" : whyFn(); };
+  return b;
+}
 function panelMission(pb) {
   var b1 = block("Navigation", 0, "/navigation/state");
   b1.appendChild(KV([
@@ -360,12 +455,66 @@ function panelMission(pb) {
     ["Reprises", function () { return navFresh() ? String(NAV.recoveries) : "—"; }], ["Localisation", function () { return navFresh() ? [NAV.loc_state + (isFinite(num(NAV.map_match)) ? " · " + Math.round(NAV.map_match * 100) + " %" : ""), NAV.loc_state === "ok" ? 0 : 1] : "—"; }],
     ["Capteurs manquants", function () { return navFresh() ? ((NAV.missing_sensors && NAV.missing_sensors.length) ? [NAV.missing_sensors.join(", "), 2] : "aucun") : "—"; }]], "NavState (le superviseur publie seulement quand la pile NAV tourne)"));
   pb.appendChild(b1);
-  var b2 = block("Objectifs", 1, "faisabilité"), L = h("div", "lst"); srcTag(L, "analyse du code existant — pilotage depuis cette page : jalon 2");
+  /* --- commandes --- */
+  var bc = block("Pilotage de mission", 1, "/nav_supervisor/command · /bamboo/nav_stack"), bw = h("div", "prm");
+  var stopB = h("button", "btn pri", "ARRÊT — annuler tout  [Échap]"); stopB.type = "button"; stopB.style.width = "100%"; stopB.style.minHeight = "50px";
+  stopB.onclick = function () { navStop(); }; bw.appendChild(stopB);
+  var stackRow = h("div", "tags2"), startB = h("button", "btn", "Démarrer la pile NAV");
+  var stopStack = holdButton("Arrêter la pile NAV (maintenir)", true, function () { return S.rb; }, function () { return "rosbridge non connecté"; },
+    function (done) { rbCall("/bamboo/nav_stack", { data: false }, function (m) { var ok = !!(m.result && m.values && m.values.success); log(ok ? 0 : 1, ok ? "Pile NAV : arrêt demandé" : "Pile NAV : refusé"); done(ok); }); });
+  startB.type = "button";
+  startB.onclick = function () { rbCall("/bamboo/nav_stack", { data: true }, function (m) { var ok = !!(m.result && m.values && m.values.success); msSay(ok ? "Pile NAV : démarrage demandé (environ 30 s)" : "Pile NAV : refusé"); log(ok ? 0 : 1, ok ? "Pile NAV : démarrage demandé" : "Pile NAV : refusé"); }); };
+  stackRow.append(startB); bw.append(stackRow, stopStack);
+  var relB = holdButton("Maintenir pour relocaliser (locale)", false, canReloc, whyReloc, function (done) { navCall("relocalize", "", function (ok) { done(ok); }); });
+  var relG = holdButton("Maintenir pour relocaliser (globale)", false, canReloc, whyReloc, function (done) { navCall("relocalize", "global", function (ok) { done(ok); }); });
+  bw.append(relB, relG);
+  bw.appendChild(h("p", "pdesc", "Relocaliser : d'abord sans bouger (scan contre la carte). Si le résultat est ambigu, le robot ne tourne que traction ARMÉE (touche A) ; sinon il demande de l'armer."));
+  var msgP = h("p", "pdesc", ""); bw.appendChild(msgP);
+  bc.appendChild(bw); pb.appendChild(bc);
+
+  var bd = block("Destinations", 2, "NavState · waypoints, dest_n/x/y"), dw = h("div", "prm"), dl = h("div", "lst"); dw.appendChild(dl);
+  var goB = holdButton("Maintenir pour aller à la destination choisie", true,
+    function () { return canRoll() && NAV.loc_state === "ok" && MS.dest != null; },
+    function () { return !canRoll() ? whyRoll() : NAV.loc_state !== "ok" ? "Indisponible : robot non localisé (" + NAV.loc_state + ")" : "Choisissez d'abord une destination"; },
+    function (done) { navCall("goto", String(MS.dest), function (ok) { done(ok); }); });
+  var patB = holdButton("Maintenir : ronde des destinations (marche / arrêt)", true,
+    function () { return canRoll() && NAV.loc_state === "ok"; }, function () { return !canRoll() ? whyRoll() : "Indisponible : robot non localisé"; },
+    function (done) { navCall("patrol", "", function (ok) { done(ok); }); });
+  var addRow = h("div", "tags2"), nameI = h("input"); nameI.type = "text"; nameI.placeholder = "nom (facultatif)"; nameI.setAttribute("aria-label", "Nom de la destination"); nameI.style.cssText = "flex:1;min-width:120px";
+  var addB = h("button", "btn", "Ajouter ici"); addB.type = "button"; addB.title = "La pose actuelle du robot devient une destination";
+  addB.onclick = function () { if (!navFresh()) { msSay("Indisponible : pile NAV arrêtée"); return; } navCall("dest_add", nameI.value.trim(), function (ok) { if (ok) nameI.value = ""; }); };
+  addRow.append(nameI, addB); dw.append(goB, patB, addRow); bd.appendChild(dw); pb.appendChild(bd);
+  var lastKey = "";
+  REG.push(function () {
+    var fresh = navFresh(), key = fresh ? JSON.stringify([NAV.dest_n, NAV.dest_name, MS.dest]) : "off";
+    if (key !== lastKey) {
+      lastKey = key; dl.replaceChildren();
+      if (!fresh) dl.appendChild(h("div", "li", "<div><b>Pile NAV arrêtée</b><small>Démarrez-la pour voir les destinations</small></div>"));
+      else {
+        var items = [{ n: "home", name: "Départ", x: NaN, y: NaN }];
+        for (var i = 0; i < (NAV.dest_n || []).length; i++) items.push({ n: NAV.dest_n[i], name: NAV.dest_name[i] || ("p" + NAV.dest_n[i]), x: NAV.dest_x[i], y: NAV.dest_y[i] });
+        items.forEach(function (it) {
+          var on = String(MS.dest) === String(it.n);
+          var li = h("div", "li" + (on ? " sel" : ""), '<i class="dotc ' + (on ? "" : "w") + '"></i><div><b></b><small></small></div>');
+          li.querySelector("b").textContent = it.name; li.querySelector("small").textContent = isFinite(it.x) ? "x " + it.x.toFixed(2) + " · y " + it.y.toFixed(2) + " m" : "point de départ de la carte";
+          li.style.cursor = "pointer"; li.setAttribute("role", "button"); li.tabIndex = 0;
+          var pick = function () { MS.dest = it.n; lastKey = ""; };
+          li.onclick = pick; li.onkeydown = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
+          dl.appendChild(li); });
+        if (items.length === 1) dl.appendChild(h("div", "li", "<div><b>Aucune destination</b><small>« Ajouter ici » enregistre la pose actuelle</small></div>"));
+      }
+    }
+    [relB, relG, goB, patB, stopStack].forEach(function (b) { b.refresh(); });
+    stopB.disabled = !S.rb; stopB.style.opacity = S.rb ? "" : ".4";
+    addB.disabled = !fresh; addB.style.opacity = fresh ? "" : ".4";
+    msgP.textContent = performance.now() - MS.msgT < 7000 ? MS.msg : "";
+  });
+  var b2 = block("Objectifs", 3, "faisabilité"), L = h("div", "lst"); srcTag(L, "analyse du code existant — pilotage depuis cette page : jalon 2");
   [["Exploration", "ok", "Prêt", "NavCommand exploration / auto_explore existent"], ["Identifier & suivre", "part", "Partiel", "visages seulement ; classes d'objets à ajouter"], ["Ronde", "part", "Partiel", "goto de destination existe ; enchaînement à écrire"],
    ["Surveillance", "todo", "À construire", "moteur d'alertes à écrire"], ["Retour base", "part", "Partiel", "goto home existe ; accostage à faire"]].forEach(function (x) {
     var li = h("div", "li", '<i class="dotc ' + (x[1] === "ok" ? "" : x[1] === "part" ? "w" : "e") + '"></i><div><b></b><small></small></div><span class="st ' + x[1] + '">' + x[2] + '</span>'); li.querySelector("b").textContent = x[0]; li.querySelector("small").textContent = x[3]; L.appendChild(li); });
   b2.appendChild(L); pb.appendChild(b2);
-  var b3 = block("Carte", 2, "/map"), mw = h("div", "card fr"); mw.innerHTML = '<div class="micro">Carte de navigation</div><p class="pdesc" style="margin:0">Le tracé de la carte arrive au jalon 2. Il demande la pile NAV (lidar + SLAM), éteinte au repos.</p>'; b3.appendChild(mw); pb.appendChild(b3);
+  var b3 = block("Carte", 4, "/map"), mw = h("div", "card fr"); mw.innerHTML = '<div class="micro">Carte de navigation</div><p class="pdesc" style="margin:0">Le tracé de la carte arrive au jalon 2. Il demande la pile NAV (lidar + SLAM), éteinte au repos.</p>'; b3.appendChild(mw); pb.appendChild(b3);
 }
 function stripMission(st) {
   [["Distance restante", "m", 1, "NavState · distance_remaining", function () { return navFresh() ? num(NAV.distance_remaining) : NaN; }, {}], ["Reprises", "", 0, "NavState · recoveries", function () { return navFresh() ? num(NAV.recoveries) : NaN; }, { warn: 2, crit: 5 }],
@@ -376,6 +525,67 @@ function stripMission(st) {
 }
 
 /* ---------- mode CONFIG : sections dépliables, lecture seule ---------- */
+/* ---------- armement depuis le CC : appui maintenu 1,1 s, au bouton OU au clavier (A / V), Echap = desarmer ----------
+   Meme geste que la manette (B long) : jamais d'armement par un simple clic ou une touche tapee. Le robot REFUSE sans
+   liaison saine (page + video, et cet onglet = pilote) ; le geste est alors ecarte avant meme l'appel. Lacher la touche,
+   perdre le focus ou masquer l'onglet ANNULE l'armement en cours. */
+var ARM = { kind: null, raf: 0, t0: 0, busy: false, p: 0, msg: "", msgT: 0, btn: {} };
+function ccLinkOk() { if (HASH.test === "1" && HASH.link === "ok") return true;   /* test local seulement : les appels sont captures */
+  return !!(GS && performance.now() - GST < 3000 && GS.cc === "ok" && GS.video === "ok" && !GS.tripped && GS.pilot === TABID); }
+function ccLinkWhy() { return GS && GS.pilot && GS.pilot !== TABID ? "Indisponible : un autre onglet pilote" : "Indisponible : liaison CC ou vidéo non saine"; }
+function armSay(t) { ARM.msg = t; ARM.msgT = performance.now(); }
+function armCancel() { cancelAnimationFrame(ARM.raf); ARM.raf = 0; ARM.kind = null; ARM.p = 0; Object.keys(ARM.btn).forEach(function (k) { ARM.btn[k].style.setProperty("--p", 0); }); }
+function armDone(kind) {
+  var svc = kind === "lock" ? "/cc/guard/arm_locked" : "/cc/guard/arm", sp = ARM.btn[kind] && ARM.btn[kind].querySelector("span");
+  ARM.busy = true; if (sp) sp.textContent = "…";
+  rbCall(svc, { data: true }, function (m) {
+    var ok = m.result && m.values && m.values.success, why = (m.values && m.values.message) || "erreur";
+    armSay(ok ? "" : "Refusé : " + why);
+    log(ok ? 1 : 0, ok ? "Traction armée depuis le CC (" + (kind === "lock" ? "verrouillée, manette non exigée" : "simple") + ")" : "Armement refusé : " + why);
+    if (sp) sp.textContent = ok ? "Fait ✓" : "Refusé ✗";
+    setTimeout(function () { ARM.busy = false; if (sp) sp.textContent = ARM.btn[kind].dataset.label; }, 1500);
+  });
+}
+function armStart(kind) {
+  if (ARM.raf || ARM.busy) return;
+  if (!ccLinkOk()) { armSay(ccLinkWhy()); log(0, "Armement ignoré : " + ccLinkWhy().replace("Indisponible : ", "")); return; }
+  ARM.kind = kind; ARM.t0 = performance.now();
+  var step = function () {
+    ARM.p = clamp((performance.now() - ARM.t0) / 1100, 0, 1);
+    if (ARM.btn[kind]) ARM.btn[kind].style.setProperty("--p", ARM.p);
+    if (ARM.p >= 1) { armCancel(); armDone(kind); return; }
+    ARM.raf = requestAnimationFrame(step);
+  };
+  ARM.raf = requestAnimationFrame(step);
+}
+function armOff() {
+  armCancel();
+  rbCall("/cc/guard/arm", { data: false }, function (m) {
+    var ok = m.result && m.values && m.values.success;
+    armSay(ok ? "" : "Désarmement : " + ((m.values && m.values.message) || "erreur")); if (ok) log(0, "Traction désarmée depuis le CC");
+  });
+}
+function armButton(kind, label, danger) {
+  var b = h("button", "hold" + (danger ? " danger" : "")), sp = h("span", "", label); b.type = "button"; b.dataset.label = label; b.appendChild(sp); ARM.btn[kind] = b;
+  b.addEventListener("pointerdown", function (e) { e.preventDefault(); armStart(kind); });
+  ["pointerup", "pointerleave", "pointercancel", "blur"].forEach(function (n) { b.addEventListener(n, armCancel); });
+  b.addEventListener("keydown", function (e) { if ((e.key === " " || e.key === "Enter") && !e.repeat) { e.preventDefault(); armStart(kind); } });
+  b.addEventListener("keyup", armCancel);
+  return b;
+}
+(function armKeys() {
+  var map = { a: "arm", v: "lock" };
+  function typing(t) { return t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)); }
+  window.addEventListener("keydown", function (e) {
+    if (e.ctrlKey || e.altKey || e.metaKey || typing(e.target)) return;
+    if (e.key === "Escape") { e.preventDefault(); armOff(); if (navFresh()) navStop(); return; }
+    var k = map[(e.key || "").toLowerCase()];
+    if (k && !e.repeat) { e.preventDefault(); armStart(k); }
+  });
+  window.addEventListener("keyup", function (e) { if (map[(e.key || "").toLowerCase()]) armCancel(); });
+  window.addEventListener("blur", armCancel);
+  document.addEventListener("visibilitychange", armCancel);
+})();
 function panelConfig(pb) {
   var accs = h("div", "accs rv"); accs.style.setProperty("--i", 0); pb.appendChild(accs); var list = [];
   var Acc = W.Accordion(accs, list, false, REG);
@@ -388,9 +598,27 @@ function panelConfig(pb) {
   var pst = h("div"); pst.innerHTML = '<div class="micro">Manette · /gamepad/connected</div><div style="font:300 22px var(--display);letter-spacing:.1em;margin-top:4px"><i class="dotc" id="padDot" style="display:inline-block;margin-right:10px"></i><span id="padTxt">—</span></div>';
   var pa = h("a", "btn pri", "Appairer"); pa.href = PORTAL; pa.target = "_blank"; pa.rel = "noopener"; pa.style.textDecoration = "none"; pa.title = "Ouvre le portail : assistant d'appairage";
   pc2.append(pst, pa); pd.appendChild(pc2); pd.appendChild(KV([["Périphérique", function () { var t = DT["js0: peripherique"]; return t ? [t.msg, t.level] : "—"; }], ["Bluetooth", function () { var t = DT["bluetooth: adaptateur"]; return t ? [t.msg, t.level] : "—"; }],
-    ["Traction", function () { return S.armed == null ? "—" : S.armed ? ["armée", 1] : "désarmée"; }]], "diagnostics · js0, bluetooth, traction ; signal Bluetooth ✗ à exposer"));
+    ["Traction (diagnostic)", function () { return S.armed == null ? "—" : S.armed ? ["armée", 1] : "désarmée"; }]], "diagnostics · js0, bluetooth, traction ; signal Bluetooth ✗ à exposer"));
   REG.push(function () { var t = $("#padTxt"), d = $("#padDot"); if (t) { t.textContent = S.pad == null ? "—" : S.pad ? "Connectée" : "Absente"; d.className = "dotc " + (S.pad ? "" : "w"); } });
   Acc("Manette", function () { return S.pad == null ? ["—", -1] : S.pad ? ["connectée", 0] : ["non connectée", 1]; }, pd);
+  var tr = h("div", "prm"), ts = h("div", "card fr"), tmsg = h("p", "pdesc", "");
+  ts.innerHTML = '<div class="micro">Traction · /teleop/state</div><div style="font:300 22px var(--display);letter-spacing:.1em;margin-top:4px" id="trTxt">—</div>';
+  tr.appendChild(ts);
+  var hArm = armButton("arm", "Maintenir pour armer  [A]", false);
+  var hLock = armButton("lock", "Maintenir pour armer verrouillé  [V]", true);
+  var bOff = h("button", "btn", "Désarmer"); bOff.type = "button";
+  bOff.onclick = armOff; bOff.textContent = "Désarmer  [Échap]";
+  tr.append(hArm, hLock, bOff, tmsg);
+  tr.appendChild(h("p", "pdesc", "Clavier : A (maintenu) armer, V (maintenu) armer verrouillé, Échap désarmer. Armer exige la page ET la vidéo en direct. Verrouillé : la perte de la manette ne désarme plus ; le garde-fou du CC (battement 1,5 s, vidéo 3 s) désarme toujours. B long à la manette désarme aussi."));
+  REG.push(function () {
+    var ok = ccLinkOk(), t = $("#trTxt");
+    [hArm, hLock].forEach(function (b) { b.classList.toggle("dis", !ok); b.title = ok ? "" : ccLinkWhy(); });
+    /* Desarmer reste TOUJOURS permis tant que rosbridge repond : jamais d'obstacle pour arreter. */
+    bOff.disabled = !S.rb; bOff.style.opacity = S.rb ? "" : ".4";
+    tmsg.textContent = performance.now() - ARM.msgT < 6000 ? ARM.msg : "";
+    if (t) { var q = (S.rb && TR) ? TR : null; t.textContent = !q ? "—" : q.latched ? "ARMÉE VERROUILLÉE" : q.armed ? "ARMÉE" : "DÉSARMÉE"; }
+  });
+  Acc("Traction", function () { return !TR || !S.rb ? ["—", -1] : TR.latched ? ["armée verrouillée", 2] : TR.armed ? ["armée", 1] : ["désarmée", 0]; }, tr);
   var rg = h("div", "prm");
   rg.appendChild(KV([["Mode du robot", function () { return S.robotMode; }], ["Carte moteurs", function () { return E32 ? (E32.board_config_ok ? "configuration lue" : ["carte muette", 2]) : "—"; }],
     ["Ticks / tour", function () { return E32 ? f(num(E32.board_cpr), 0) : "—"; }], ["Circonférence", function () { return E32 ? f(num(E32.board_circ_mm), 1, " mm") : "—"; }], ["Demi-voie", function () { return E32 ? f(num(E32.board_apb_mm), 1, " mm") : "—"; }],
@@ -445,28 +673,85 @@ function setHeader(m) {
 }
 function setMode(m, instant) {
   var pnl = $("#panel"), pb = $("#pb"), strip = $("#strip");
-  var go = function () { REG.length = 0; RAFP.length = 0; S.mode = m; pb.replaceChildren(h("div", "sweep")); strip.replaceChildren(); setHeader(m); BUILD[m][0](pb); BUILD[m][1](strip); pb.scrollTop = 0;
+  var go = function () { REG.length = 0; RAFP.length = 0; S.mode = m; syncSubs(); pb.replaceChildren(h("div", "sweep")); strip.replaceChildren(); setHeader(m); BUILD[m][0](pb); BUILD[m][1](strip); pb.scrollTop = 0;
     pnl.classList.remove("out"); pnl.classList.remove("in"); void pnl.offsetWidth; pnl.classList.add("in"); };
   var btns = [].slice.call(document.querySelectorAll(".mode")); btns.forEach(function (b) { b.setAttribute("aria-pressed", b.dataset.mode === m); });
   var act = btns.filter(function (b) { return b.dataset.mode === m; })[0], sb = $("#selb");
   if (instant) sb.style.transition = "none"; sb.style.transform = "translateY(" + act.offsetTop + "px)"; if (instant) { void sb.offsetWidth; sb.style.transition = ""; }
   if (instant || reduce) go(); else { pnl.classList.add("out"); setTimeout(go, 150); }
 }
+/* Le panneau ne couvre NI l'en-tete NI le pied de page : on mesure leur bord reel (le zoom de la page est deja applique
+   aux mesures du navigateur, d'ou la division par --z pour retrouver les unites du CSS). */
+function slideBounds() {
+  var z = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--z")) || 1, hd = document.querySelector(".hdr"), ft = document.querySelector(".foot");
+  var d = $("#dlg"), gap = 8 / z;
+  d.style.setProperty("--jt", (hd ? hd.getBoundingClientRect().bottom / z + gap : 0) + "px");
+  d.style.setProperty("--jb", (ft ? (innerHeight - ft.getBoundingClientRect().top) / z + gap : 0) + "px");
+}
+window.addEventListener("resize", function () { if ($("#dlg").classList.contains("slide")) slideBounds(); });
 function dlgShow(o) {
-  var d = $("#dlg"); d.className = o.wide ? "wide" : "";
+  var d = $("#dlg"); d.className = o.slide ? "slide" : o.wide ? "wide" : "";
   var mh = h("div", "mh", '<span class="micro">' + o.tag + '</span><i class="pulse" style="margin:0"></i>'), mb = h("div", "mb"), t = h("h3", "", o.title); t.id = "dlgT"; mb.appendChild(t);
-  o.body.forEach(function (n) { if (n) mb.appendChild(n); }); var mf = h("div", "mf"); o.foot.forEach(function (n) { mf.appendChild(n); }); d.replaceChildren(mh, mb, mf); if (!d.open) d.showModal();
+  o.body.forEach(function (n) { if (n) mb.appendChild(n); }); var mf = h("div", "mf"); o.foot.forEach(function (n) { mf.appendChild(n); }); d.replaceChildren(mh, mb, mf);
+  /* Panneau coulissant = NON MODAL (show) : la page reste vivante (video, touches de pilotage). Les vraies modales gardent showModal. */
+  if (o.slide) slideBounds();
+  if (!d.open) { if (o.slide) d.show(); else d.showModal(); }
 }
 function dbtn(label, cls, fn) { var b = h("button", "btn " + (cls || ""), label); b.type = "button"; b.onclick = fn; return b; }
-function dlgClose() { var d = $("#dlg"); if (d.open) d.close(); }
+function dlgClose(then) {
+  var d = $("#dlg"); if (!d.open) { if (then) then(); return; }
+  if (d.classList.contains("slide") && !reduce) {          // le panneau ressort vers la droite, puis se ferme
+    d.classList.add("leaving"); var done = false;
+    var fin = function () { if (done) return; done = true; d.removeEventListener("transitionend", fin); d.classList.remove("leaving"); if (d.open) d.close(); if (then) then(); };
+    d.addEventListener("transitionend", fin); setTimeout(fin, 450);
+  } else { d.close(); if (then) then(); }
+}
+/* UN SEUL panneau coulissant a la fois (Journal, Touches...) : en demander un autre ferme d'abord le precedent ; redemander
+   le meme le referme. SLIDE = nom du panneau affiche. */
+var SLIDE = null;
+function toggleSlide(name, openFn) {
+  var d = $("#dlg");
+  if (d.open && d.classList.contains("slide")) { dlgClose(SLIDE === name ? null : openFn); return; }
+  openFn();
+}
+// Un dialog non modal ne reagit pas a Echap : et c'est voulu, Echap = DESARMER (armKeys). Fermeture : bouton ou touche J.
+/* ---------- touches du clavier : UNE seule table, que lit le panneau « Touches ». Toute nouvelle touche s'y declare. ---------- */
+var KEYS = [
+  ["Navigation", [
+    [["1", "2", "3", "4"], "Changer de mode : Mission, Vitaux, Config, Calib."],
+    ["J", "Ouvrir / fermer le journal du robot."],
+    ["H", "Ouvrir / fermer cette liste des touches."],
+    ["S", "Afficher / masquer la source de chaque donnée (topic ROS)."]]],
+  ["Traction", [
+    ["A (maintenue 1,1 s)", "Armer la traction. Refusé si la liaison CC ou la vidéo n'est pas saine, ou si cet onglet n'est pas le pilote."],
+    ["V (maintenue 1,1 s)", "Armer verrouillé : la perte de la manette ne désarme plus (le garde-fou du CC désarme toujours)."],
+    ["Échap", "ARRÊT : désarme la traction et annule le but de navigation, immédiatement. Ne ferme jamais un panneau."]]],
+  ["Mission (panneau Mission)", [
+    ["Clic sur une destination", "La choisit ; « Maintenir pour aller » (1,1 s) lance le déplacement. Grisé si robot non localisé, traction désarmée ou liaison non saine."]]],
+  ["Règles communes", [
+    [["Relâcher"], "Lâcher la touche, perdre le focus ou masquer l'onglet annule un armement en cours."],
+    [["Ctrl", "Alt", "Méta"], "Les combinaisons sont ignorées, comme toute frappe dans un champ de texte."]]],
+  ["À venir", [
+    [["←↑↓→", "Z Q S D"], "Piloter le robot au clavier (jalon suivant). La manette Bluetooth du PC suivra."]]]
+];
+function openKeys() {
+  SLIDE = "keys";
+  var wrap = h("div", "kbd");
+  KEYS.forEach(function (g) {
+    wrap.appendChild(h("div", "kg", g[0]));
+    g[1].forEach(function (r) { var row = h("div", "kr"), k = h("div", "kk"); [].concat(r[0]).forEach(function (x) { k.appendChild(h("kbd", "", x)); }); row.append(k, h("div", "kd", r[1])); wrap.appendChild(row); });
+  });
+  dlgShow({ tag: "Clavier // raccourcis", title: "Touches du clavier", slide: true, body: [wrap, h("div", "srcnote", "Table KEYS de la page : chaque touche y est déclarée avec sa description")], foot: [dbtn("Fermer", "pri", dlgClose)] });
+}
 function openJournal() {
+  SLIDE = "journal";
   var list = h("div", "jl"), seg = h("div", "seg"), cnt = h("span", "micro"), pause = dbtn("Pause", "", function () { S.jPause = !S.jPause; pause.textContent = S.jPause ? "Reprendre" : "Pause"; if (!S.jPause) fill(); });
   var fill = function () { list.replaceChildren(); JLOG.filter(jpass).slice(-120).forEach(function (e) { list.appendChild(jrow(e, false)); }); list.scrollTop = list.scrollHeight; cnt.textContent = JLOG.length + " lignes en mémoire"; };
   ["Tout", "Avertissements", "Critiques"].forEach(function (n, k) { var b = h("button", "sb", n); b.type = "button"; b.setAttribute("aria-pressed", k === JFILTER); b.onclick = function () { JFILTER = k; [].forEach.call(seg.children, function (x, i) { x.setAttribute("aria-pressed", i === k); }); fill(); }; seg.appendChild(b); });
   var tools = h("div", "jtools"); tools.append(seg, pause); S.jPause = false; JL = list; S.unread = 0; S.unreadLv = 0; jbadge(); fill();
-  dlgShow({ tag: "Journal // temps réel", title: "Journal du robot", wide: true, body: [tools, list, cnt, h("div", "srcnote", "/rosout (INFO et au-dessus) · changements d'état de /diagnostics_agg · événements de cette page")], foot: [dbtn("Fermer", "pri", dlgClose)] });
+  dlgShow({ tag: "Journal // temps réel", title: "Journal du robot", slide: true, body: [tools, list, cnt, h("div", "srcnote", "/rosout (INFO et au-dessus) · changements d'état de /diagnostics_agg · événements de cette page")], foot: [dbtn("Fermer", "pri", dlgClose)] });
 }
-$("#dlg").addEventListener("close", function () { JL = null; });
+$("#dlg").addEventListener("close", function () { if (!this.open) { JL = null; SLIDE = null; } });
 
 var mdiv = $("#modes"); MODES.forEach(function (m) { var b = h("button", "mode"); b.type = "button"; b.dataset.mode = m[0]; b.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + ICON[m[0]] + '</svg><b>' + m[1] + '</b><small>' + m[2] + '</small>'; b.onclick = function () { setMode(m[0]); }; mdiv.appendChild(b); });
 var wave = $("#wave"); for (var wi = 0; wi < 28; wi++) wave.appendChild(h("i"));
@@ -480,26 +765,43 @@ $("#camOn").onclick = function () {
 function toggleSrc(on) { document.body.classList.toggle("srcs", on); }
 var chips = $("#vchips"); [["det", "Suivi"], ["ret", "Réticule"]].forEach(function (x) { var c = h("button", "chip", x[1]); c.type = "button"; c.setAttribute("aria-pressed", CAMOPT[x[0]]); c.onclick = function () { CAMOPT[x[0]] = !CAMOPT[x[0]]; c.setAttribute("aria-pressed", CAMOPT[x[0]]); }; chips.appendChild(c); });
 var vst = h("span", "chip static", "Connexion…"); chips.appendChild(vst);
-$("#jbtn").onclick = openJournal;
+$("#jbtn").onclick = function () { toggleSlide("journal", openJournal); };
+$("#kbtn").onclick = function () { toggleSlide("keys", openKeys); };
 document.addEventListener("keydown", function (e) {
-  if (e.ctrlKey || e.metaKey || e.altKey || document.querySelector("dialog[open]")) return; if (e.target.closest && e.target.closest("input,textarea")) return;
-  var k = e.key.toLowerCase(); if (k >= "1" && k <= "4") setMode(MODES[+k - 1][0]); else if (k === "s") toggleSrc(!document.body.classList.contains("srcs")); else if (k === "j") openJournal();
+  if (e.ctrlKey || e.metaKey || e.altKey || document.querySelector("dialog[open]:not(.slide)")) return; if (e.target.closest && e.target.closest("input,textarea")) return;
+  var k = e.key.toLowerCase(); if (k >= "1" && k <= "4") setMode(MODES[+k - 1][0]); else if (k === "s") toggleSrc(!document.body.classList.contains("srcs")); else if (k === "j") toggleSlide("journal", openJournal); else if (k === "h") toggleSlide("keys", openKeys);
 });
 
 /* pastilles de santé du pied de page : uniquement ce qui n'est pas vert, comme la carte santé du HUD */
 var pillSig = "", pillEls = {};
-function pillsUpdate() {
-  var items = [], add = function (k, lv, txt, title) { if (lv) items.push([k, lv, txt, title || txt]); };
+/* ---------- pied de page : resume LISIBLE de la sante (2026-11-09) ----------
+   Avant : jusqu'a 7 pastilles de 220 a 320 px (1 800 px) dans un pied de ~1 600 px : elles debordaient et se rognaient
+   (« PERIPI », « MODES · ACTIO »). Maintenant : 2 compteurs (critiques / avertissements) + le PROBLEME LE PLUS GRAVE en clair,
+   tronque proprement ; le detail complet est dans le panneau « Santé » (clic ou touche D). */
+function healthItems() {
+  var items = [], add = function (k, lv, txt, title) { if (lv) items.push({ k: k, lv: lv, txt: txt, title: title || txt }); };
   if (!S.rb) add("rb", 2, "Rosbridge hors ligne");
   if (S.vid === "lost") add("vid", 1, "Vidéo hors ligne");
   if (isFinite(V.soc)) add("bat", lvOf(V.soc, 30, 15, "down"), "Batterie " + Math.round(V.soc) + " %");
-  Object.keys(DT).forEach(function (k) { var t = DT[k]; if (t.level) { var n = t.name.split(": "), s = (n[1] || n[0]) + (t.msg && t.msg !== "OK" ? " · " + t.msg : ""); add(k, t.level, s.length > 54 ? s.slice(0, 53) + "…" : s, k + " — " + t.msg); } });
-  items.sort(function (a, b) { return b[1] - a[1]; }); var shown = items.slice(0, 7), more = items.length - shown.length;
-  var sig = shown.map(function (i) { return i[0] + i[1]; }).join("|") + more;
-  if (sig !== pillSig) { pillSig = sig; pillEls = {}; var box = $("#pills"); box.replaceChildren();
-    var mk = function (k, lv, txt, title) { var p = h("span", "pill rv"); p.dataset.lv = lv; p.title = title || txt; p.innerHTML = "<i></i><span></span>"; p.lastChild.textContent = txt; pillEls[k] = p.lastChild; box.appendChild(p); };
-    if (!shown.length) mk("ok", 0, S.rb && Object.keys(DT).length ? "Tous systèmes nominaux" : "En attente des données…"); shown.forEach(function (i) { mk(i[0], i[1], i[2], i[3]); }); if (more > 0) mk("more", 0, "+" + more); }
-  shown.forEach(function (i) { if (pillEls[i[0]] && pillEls[i[0]].textContent !== i[2]) pillEls[i[0]].textContent = i[2]; });
+  Object.keys(DT).forEach(function (k) {
+    var t = DT[k]; if (!t.level) return;
+    var n = t.name.split(": "), who = n[0], what = (n[1] || ""), msg = t.msg && t.msg !== "OK" ? t.msg : "";
+    add(k, t.level, (who + (what ? " · " + what : "") + (msg ? " — " + msg : "")), k + " — " + (t.msg || ""));
+  });
+  items.sort(function (x, y) { return y.lv - x.lv; });
+  return items;
+}
+function pillsUpdate() {
+  var items = healthItems(), crit = items.filter(function (i) { return i.lv >= 2; }).length, warn = items.filter(function (i) { return i.lv === 1; }).length;
+  var sig = crit + "|" + warn + "|" + (items[0] ? items[0].k + items[0].txt : "") + "|" + S.rb;
+  if (sig === pillSig) return; pillSig = sig;
+  var box = $("#pills"); box.replaceChildren();
+  var mk = function (cls, lv, txt, title, fn) { var p = h("button", "pill " + cls); p.type = "button"; p.dataset.lv = lv; p.title = title || txt; p.innerHTML = "<i></i><span></span>"; p.lastChild.textContent = txt; if (fn) p.onclick = fn; box.appendChild(p); return p; };
+  if (!S.rb) { mk("sum", 2, "Rosbridge hors ligne", "Plus de données du robot", null); return; }
+  if (!items.length) { mk("sum", 0, Object.keys(DT).length ? "Tous systèmes nominaux" : "En attente des données…", "", null); return; }
+  if (crit) mk("cnt", 2, crit + " critique" + (crit > 1 ? "s" : ""), "Ouvrir le détail de la santé", function () { setMode("vitals"); });
+  if (warn) mk("cnt", 1, warn + " avert.", "Ouvrir le détail de la santé", function () { setMode("vitals"); });
+  var top = items[0]; mk("top", top.lv, top.txt, top.title, function () { setMode("vitals"); });
 }
 function sigq(r) { return r < 25 ? 4 : r < 60 ? 3 : r < 150 ? 2 : 1; }
 function hdrUpdate() {
@@ -524,6 +826,7 @@ function hdrUpdate() {
   it.dataset.lv = !tr ? 1 : tr.latched ? 2 : tr.armed ? 1 : 0;
   $("#iTracT").textContent = !tr ? "—" : tr.latched ? "ARMÉE VERROUILLÉE" : tr.armed ? "ARMÉE" : "DÉSARMÉE";
   $("#tracPulse").classList.toggle("off", !tr || !tr.armed);
+  if (ARM.raf) { $("#iTracT").textContent = (ARM.kind === "lock" ? "ARMEMENT VERROUILLÉ " : "ARMEMENT ") + Math.round(ARM.p * 100) + " %"; $("#iTrac").dataset.lv = 1; }
   var ip = $("#iPad"); ip.dataset.lv = S.pad === false ? 1 : 0; $("#iPadT").textContent = S.pad == null ? "—" : S.pad ? "Connectée" : "Absente";
   var vs = vst; vs.textContent = S.vid === "live" ? "● Direct" : S.vid === "connecting" ? "Connexion…" : S.vid === "lost" ? "Hors ligne" : "Arrêtée"; vs.className = "chip static" + (S.vid === "live" ? " live" : "");
   var st = $("#stage"), lossy = isFinite(V.vloss) && V.vloss > 10; st.classList.toggle("degr", S.vid === "lost" || lossy); $("#glitchT").textContent = S.vid === "lost" ? "VIDÉO HORS LIGNE" : "SIGNAL DÉGRADÉ";
@@ -540,8 +843,8 @@ function frame(ts) {
 if (HASH.src) toggleSrc(true);
 setMode(HASH.mode && BUILD[HASH.mode] ? HASH.mode : "vitals", true);
 log(0, "Session ouverte"); typeAI(); rbConnect(); vidStart();
-if (HASH.open === "journal") openJournal();
-window.CC = { V: V, S: S, inject: function (topic, msg) { var d = HANDLERS[topic]; if (d) d[3](msg); }, state: function () { return { rb: S.rb, vid: S.vid, tasks: Object.keys(DT).length, mods: DMODS.length, V: V, pad: S.pad, mode: S.robotMode, charging: S.charging, T: T }; } };
+if (HASH.open === "journal") toggleSlide("journal", openJournal); else if (HASH.open === "keys") toggleSlide("keys", openKeys);
+window.CC = { test: { hide: function (h) { Object.defineProperty(document, "hidden", { configurable: true, get: function () { return h; } }); document.dispatchEvent(new Event("visibilitychange")); }, subs: function () { return Object.keys(SUBS).sort(); }, linkOk: function () { return ccLinkOk(); }, calls: CALLS_OUT, arm: ARM }, V: V, S: S, inject: function (topic, msg) { var d = HANDLERS[topic]; if (d) d[3](msg); }, state: function () { return { rb: S.rb, vid: S.vid, tasks: Object.keys(DT).length, mods: DMODS.length, V: V, pad: S.pad, mode: S.robotMode, charging: S.charging, T: T }; } };
 requestAnimationFrame(frame);
 })();
 </script>

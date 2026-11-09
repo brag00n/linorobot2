@@ -259,6 +259,7 @@
   .big{font:300 34px/1 var(--display);letter-spacing:.14em;text-transform:uppercase}
   .badge{display:inline-block;padding:3px 7px;border:1px solid var(--line-hi);font:500 10px/1 var(--display);letter-spacing:.16em;text-transform:uppercase;color:var(--ink2)}
   .badge.ok{border-color:var(--cream);color:var(--cream)}
+  .li.sel{border-color:var(--cream);background:rgb(241 232 180/.08)}
   .svcs{display:grid;grid-template-columns:1fr 1fr;gap:6px}.svcs .li{grid-template-columns:auto 1fr;padding:6px 8px}.svcs .li b{font-size:10px;letter-spacing:.06em}
   .sigs{display:inline-flex;align-items:flex-end;gap:2px;height:12px}.sigs i{width:3px;background:var(--seg)}
 
@@ -326,6 +327,28 @@
   .callout.warn{border-left-color:var(--alert);background:rgb(229 96 74/.08)}
   .callout p{margin:0;color:var(--ink)}
   dialog.wide{width:min(780px,calc(100vw - 24px))}
+  /* Journal : panneau coulissant NON MODAL sur la moitie DROITE de l'ecran. La page reste vivante et pilotable a gauche
+     (touches d'armement, futur pilotage clavier). Fermeture : « Fermer », bouton Journal ou touche J ; Echap desarme.
+     --jt / --jb (poses par la page) laissent voir l'en-tete en haut et le pied de page en bas. */
+  dialog.slide{position:fixed;z-index:60;margin:0;left:auto;right:0;top:var(--jt,0px);bottom:var(--jb,0px);width:calc(50vw / var(--z));max-width:none;height:auto;max-height:none;border-radius:0;border-width:1px 0 1px 1px;
+    display:flex;flex-direction:column;transform:translateX(100%);transition:transform .32s cubic-bezier(.2,.8,.2,1)}
+  dialog.slide[open]{transform:none}
+  dialog.slide.leaving{transform:translateX(100%)}
+  @starting-style{dialog.slide[open]{transform:translateX(100%)}}
+  dialog.slide::backdrop{background:transparent}
+  dialog.slide::before,dialog.slide::after{display:none}
+  dialog.slide .mh{flex:none} dialog.slide .mb{flex:1;min-height:0;grid-template-rows:auto auto minmax(0,1fr) auto auto;align-content:start;overflow:hidden}
+  dialog.slide .mf{flex:none;padding-top:12px}
+  dialog.slide .jl{max-height:none;height:100%}
+  /* liste des touches */
+  .kbd{display:grid;gap:6px;align-content:start;overflow:auto;min-height:0;scrollbar-width:thin;scrollbar-color:var(--line-hi) transparent}
+  .kg{margin-top:12px;font:500 10px/1.2 var(--display);letter-spacing:.22em;text-transform:uppercase;color:var(--cream);padding-bottom:4px;border-bottom:1px solid var(--line)}
+  .kr{display:grid;grid-template-columns:minmax(150px,230px) 1fr;gap:14px;align-items:center;padding:6px 8px;background:rgb(159 198 210/.04);border-left:3px solid var(--line-hi)}
+  .kk{display:flex;gap:6px;flex-wrap:wrap}
+  kbd{display:inline-block;min-width:26px;padding:3px 8px;border:1px solid var(--cream);border-bottom-width:3px;border-radius:3px;font:600 12px/1.3 var(--mono);letter-spacing:.08em;color:var(--cream);text-align:center;background:rgb(241 232 180/.06)}
+  .kd{font:12px/1.45 var(--mono);color:var(--ink)}
+  @media (max-width:900px){dialog.slide{width:calc(100vw / var(--z))}}
+  @media (prefers-reduced-motion:reduce){dialog.slide{transition:none}}
   .mtiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:8px}
   .mtiles .tile,.mtiles .tile:nth-child(n+4){grid-column:auto}
   .mdesc{margin:0;color:var(--ink2);font-size:14px;min-height:44px}
@@ -410,3 +433,24 @@
   .spec .srcnote{display:block}
   .catf{color:var(--mute);font-size:13px;border-top:1px solid var(--line);padding-top:12px}
   .nb{display:none}
+
+  /* pied de page : resume de sante lisible */
+  .pills{gap:8px;min-width:0;flex:1;overflow:hidden}
+  .pill{font:500 10.5px/1 var(--display);cursor:pointer;background:transparent;flex:none}
+  .pill.top{flex:0 1 auto;min-width:0}
+  /* MEME HAUTEUR pour toutes les pastilles du pied de page (compteurs et probleme principal). Le texte tronque a line-height:1 +
+     overflow:hidden rognait le haut des majuscules : on garde line-height:1 sur la pastille et on donne au texte une hauteur de ligne
+     egale a la pastille, sans marge verticale. */
+  .foot .pill{box-sizing:border-box;height:22px;padding:0 10px;line-height:1}
+  .pill.top span{overflow:hidden;text-overflow:ellipsis;max-width:min(60vw,720px);line-height:20px;display:block}
+  .pill.sum{cursor:default}
+  .foot .pill[data-lv="2"]{animation:none}                    /* le clignotement brouillait le texte : la couleur suffit */
+  .foot .pill[data-lv="2"] i{animation:blink 1s steps(2) infinite}
+  .pill:focus-visible{outline:2px solid var(--cream);outline-offset:2px}
+
+  /* modules arretes volontairement : neutre, ni alerte ni « tout va bien » */
+  .li.stopped{opacity:.6} .li.stopped b{font-style:italic}
+  .dotc.o{background:transparent;border:1px solid var(--mute)}
+  .anom .stp{display:flex;gap:10px;align-items:baseline;padding:6px 8px;border-left:3px solid var(--line-hi);background:rgb(159 198 210/.04);font:11px/1.45 var(--mono);color:var(--mute)}
+  .anom .stp b{font:600 10px/1.7 var(--display);letter-spacing:.16em;color:var(--seg)}
+
