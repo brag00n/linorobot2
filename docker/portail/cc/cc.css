@@ -454,3 +454,7 @@
   .anom .stp{display:flex;gap:10px;align-items:baseline;padding:6px 8px;border-left:3px solid var(--line-hi);background:rgb(159 198 210/.04);font:11px/1.45 var(--mono);color:var(--mute)}
   .anom .stp b{font:600 10px/1.7 var(--display);letter-spacing:.16em;color:var(--seg)}
 
+  /* journal : lignes de bruit rosbridge (quand affichees) en retrait, et pastille « nouvelles lignes » */
+  .jr.noise{opacity:.55}
+  .jnew{align-self:end;justify-self:end;margin-top:-34px;position:relative;z-index:2;box-shadow:0 0 0 1px var(--bg)}
+

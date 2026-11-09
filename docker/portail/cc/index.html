@@ -104,14 +104,29 @@ var SC = { buf: window.CCSTATE.SC };
 var CAMOPT = { det: true, ret: true };
 
 /* ---------- journal ---------- */
-var JLOG = [], JL = null, JFILTER = 0;
-function jpass(e) { return e.l >= JFILTER; }
-function jrow(e, fresh) { var r = h("div", "jr l" + e.l + (fresh ? " new" : "")), t = h("span", "jt"), b = h("b"), m = h("span"); t.textContent = e.t; b.textContent = ["INFO", "WARN", "CRIT"][e.l]; m.textContent = e.txt; r.append(t, b, m); return r; }
+/* ---------- journal : FENETRE GLISSANTE (2026-11-09) ----------
+   Avant : 300 lignes gardees, dont ~un quart de bruit « Subscribed to / Unsubscribed from » de rosbridge (multiplie par les
+   abonnements par mode), et un badge « 99+ » qui comptait tout. Maintenant :
+   - memoire bornee a JMAX lignes (les plus anciennes sortent), affichage des JSHOW dernieres ;
+   - le BRUIT rosbridge (abonnements, deconnexions de clients) est range a part, masque par defaut (bouton « Bruit ») ;
+   - le badge ne compte que les AVERTISSEMENTS et CRITIQUES non lus ;
+   - le defilement automatique SE FIGE quand on remonte dans la liste, et un pastille « n nouvelles » permet de revenir en bas. */
+var JMAX = 150, JSHOW = 100, JLOG = [], JL = null, JFILTER = 0, JNOISE = false, JUNSEEN = 0;
+var NOISE_RE = /\] ?\[?Client [0-9a-f-]{8,}|Subscribed to|Unsubscribed from|Client (connected|disconnected)\. \d+ clients? total|Calling services in existing thread|WebSocketClosedError/;
+function isNoise(txt) { return NOISE_RE.test(txt); }
+function jpass(e) { return e.l >= JFILTER && (JNOISE || !e.noise); }
+function jrow(e, fresh) { var r = h("div", "jr l" + e.l + (fresh ? " new" : "") + (e.noise ? " noise" : "")), t = h("span", "jt"), b = h("b"), m = h("span"); t.textContent = e.t; b.textContent = ["INFO", "WARN", "CRIT"][e.l]; m.textContent = e.txt; r.append(t, b, m); return r; }
 function jbadge() { var b = $("#jcount"); b.style.display = S.unread ? "" : "none"; b.textContent = S.unread > 99 ? "99+" : S.unread; b.dataset.lv = S.unreadLv; }
+function jAtBottom() { return !JL || JL.scrollHeight - JL.scrollTop - JL.clientHeight < 24; }
 function log(l, txt) {
-  var e = { t: hms((performance.now() - S.t0) / 1000), l: l, txt: txt }; JLOG.push(e); if (JLOG.length > 300) JLOG.shift();
-  if (JL) { if (!S.jPause && jpass(e)) { JL.appendChild(jrow(e, true)); while (JL.children.length > 160) JL.firstChild.remove(); JL.scrollTop = JL.scrollHeight; } }
-  else { S.unread++; S.unreadLv = Math.max(S.unreadLv, l); jbadge(); }
+  var e = { t: hms((performance.now() - S.t0) / 1000), l: l, txt: txt, noise: isNoise(txt) }; JLOG.push(e); if (JLOG.length > JMAX) JLOG.shift();
+  if (JL) {
+    if (!S.jPause && jpass(e)) {
+      var follow = jAtBottom();
+      JL.appendChild(jrow(e, true)); while (JL.children.length > JSHOW + 20) JL.firstChild.remove();
+      if (follow) JL.scrollTop = JL.scrollHeight; else { JUNSEEN++; if (JL.onUnseen) JL.onUnseen(); }
+    }
+  } else if (l >= 1 && !e.noise) { S.unread++; S.unreadLv = Math.max(S.unreadLv, l); jbadge(); }        // INFO et bruit ne comptent plus
 }
 
 /* ---------- rosbridge : client minimal (protocole JSON, aucune bibliothèque) ---------- */
@@ -746,10 +761,18 @@ function openKeys() {
 function openJournal() {
   SLIDE = "journal";
   var list = h("div", "jl"), seg = h("div", "seg"), cnt = h("span", "micro"), pause = dbtn("Pause", "", function () { S.jPause = !S.jPause; pause.textContent = S.jPause ? "Reprendre" : "Pause"; if (!S.jPause) fill(); });
-  var fill = function () { list.replaceChildren(); JLOG.filter(jpass).slice(-120).forEach(function (e) { list.appendChild(jrow(e, false)); }); list.scrollTop = list.scrollHeight; cnt.textContent = JLOG.length + " lignes en mémoire"; };
+  var noiseB = dbtn("Bruit rosbridge : masqué", "", function () { JNOISE = !JNOISE; noiseB.textContent = "Bruit rosbridge : " + (JNOISE ? "affiché" : "masqué"); fill(); });
+  var newB = dbtn("↓ nouvelles lignes", "pri", function () { list.scrollTop = list.scrollHeight; JUNSEEN = 0; newB.style.display = "none"; }); newB.style.display = "none"; newB.className += " jnew";
+  list.onUnseen = function () { newB.textContent = "↓ " + JUNSEEN + " nouvelle" + (JUNSEEN > 1 ? "s" : ""); newB.style.display = ""; };
+  list.addEventListener("scroll", function () { if (jAtBottom()) { JUNSEEN = 0; newB.style.display = "none"; } });
+  var fill = function () {
+    list.replaceChildren(); var shown = JLOG.filter(jpass), hidden = JLOG.length - shown.length;
+    shown.slice(-JSHOW).forEach(function (e) { list.appendChild(jrow(e, false)); }); list.scrollTop = list.scrollHeight; JUNSEEN = 0; newB.style.display = "none";
+    cnt.textContent = shown.length + " affichées sur " + JLOG.length + " en mémoire (max " + JMAX + ")" + (hidden > 0 ? " · " + hidden + " masquées par les filtres" : "");
+  };
   ["Tout", "Avertissements", "Critiques"].forEach(function (n, k) { var b = h("button", "sb", n); b.type = "button"; b.setAttribute("aria-pressed", k === JFILTER); b.onclick = function () { JFILTER = k; [].forEach.call(seg.children, function (x, i) { x.setAttribute("aria-pressed", i === k); }); fill(); }; seg.appendChild(b); });
-  var tools = h("div", "jtools"); tools.append(seg, pause); S.jPause = false; JL = list; S.unread = 0; S.unreadLv = 0; jbadge(); fill();
-  dlgShow({ tag: "Journal // temps réel", title: "Journal du robot", slide: true, body: [tools, list, cnt, h("div", "srcnote", "/rosout (INFO et au-dessus) · changements d'état de /diagnostics_agg · événements de cette page")], foot: [dbtn("Fermer", "pri", dlgClose)] });
+  var tools = h("div", "jtools"); tools.append(seg, noiseB, pause); S.jPause = false; JL = list; S.unread = 0; S.unreadLv = 0; jbadge(); fill();
+  dlgShow({ tag: "Journal // temps réel", title: "Journal du robot", slide: true, body: [tools, list, newB, cnt, h("div", "srcnote", "/rosout (INFO et au-dessus) · changements d'état de /diagnostics_agg · événements de cette page")], foot: [dbtn("Fermer", "pri", dlgClose)] });
 }
 $("#dlg").addEventListener("close", function () { if (!this.open) { JL = null; SLIDE = null; } });
 
