@@ -456,7 +456,7 @@ od_changed=0
 # conteneur `portail` depose une demande dans /run/bamboo-pad, l'hote l'execute (docker/pad/).
 # bamboo-camwatch.* (surveillance de la camera) : un MINUTEUR, pas une demande. Il relance bamboo_video
 # quand plus aucune image n'arrive (blocage UVC du 2026-11-08). Hote seulement (docker/watchdog/).
-for u in bamboo-ondemand.path bamboo-ondemand.service bamboo-pad.path bamboo-pad.service bamboo-camwatch.service bamboo-camwatch.timer; do
+for u in bamboo-ondemand.path bamboo-ondemand.service bamboo-pad.path bamboo-pad.service bamboo-camwatch.service bamboo-camwatch.timer bamboo-rbwatch.service bamboo-rbwatch.timer; do
     SRC_OD="$HERE/systemd/$u"
     DST_OD="/etc/systemd/system/$u"
     if [ ! -r "$SRC_OD" ]; then
@@ -500,6 +500,16 @@ elif [ "$(systemctl is-active bamboo-camwatch.timer 2>/dev/null)" = "active" ]; 
     ok "bamboo-camwatch.timer actif ($(sed -E 's/.*"status":"([^"]*)".*/\1/' /run/bamboo-camwatch/state.json 2>/dev/null))"
 else
     warn "bamboo-camwatch.timer inactif : une camera figee ne sera pas relancee"
+fi
+# bamboo-rbwatch.* (surveillance de rosbridge) : meme schema que camwatch. Un rosbridge « malade » (memoire qui derive, plus de reponse)
+# reste « Up » pour Docker : restart: unless-stopped ne le voit pas. Voir docker/watchdog/bamboo-rbwatch.sh et docs §6.12.
+if [ "$APPLY" = "1" ]; then
+    systemctl daemon-reload
+    systemctl enable --now bamboo-rbwatch.timer >/dev/null 2>&1         && act "bamboo-rbwatch.timer actif (surveillance de rosbridge toutes les 30 s)"         || warn "bamboo-rbwatch.timer : activation en echec (journalctl -u bamboo-rbwatch)"
+elif [ "$(systemctl is-active bamboo-rbwatch.timer 2>/dev/null)" = "active" ]; then
+    ok "bamboo-rbwatch.timer actif ($(sed -E 's/.*"status":"([^"]*)".*//' /run/bamboo-rbwatch/state.json 2>/dev/null))"
+else
+    warn "bamboo-rbwatch.timer inactif : un rosbridge qui derive ne sera pas relance"
 fi
 # Le dossier doit exister AVANT le conteneur `portail` : sinon Docker le cree en root et le
 # bind-mount pointe sur un dossier que bamboo-pad.path (MakeDirectory) ne recreera pas.

@@ -1,0 +1,10 @@
+[Unit]
+Description=Bamboo4WD : surveillance de rosbridge (relance s'il ne repond plus ou si sa memoire derive)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=__COMPOSE_DIR__
+ExecStart=/bin/bash __COMPOSE_DIR__/watchdog/bamboo-rbwatch.sh
+TimeoutStartSec=90

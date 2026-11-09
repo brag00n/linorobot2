@@ -1,0 +1,11 @@
+[Unit]
+Description=Bamboo4WD : minuteur de surveillance de rosbridge
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=bamboo-rbwatch.service
+
+[Install]
+WantedBy=timers.target
