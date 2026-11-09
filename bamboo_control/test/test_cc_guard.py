@@ -115,3 +115,45 @@ def test_garbage_does_not_crash():
     g = GuardCore()
     assert g.heartbeat(None, None, 0.0)               # id absent, video absente : accepte sans lever
     assert g.cc_state(0.1) == "ok" and not g.link_ok(0.1)
+
+
+def test_silence_cause_says_the_tab_was_hidden():
+    g = GuardCore()
+    g.heartbeat("A", True, 0.0, hidden=False, dt_ms=500, seq=1)
+    g.heartbeat("A", True, 1.0, hidden=True, dt_ms=1000, seq=2)      # l'onglet passe en arriere-plan
+    cause = g.evaluate(3.0, moving=True)
+    assert cause and "MASQUE" in cause and "CC silencieux" in cause
+
+
+def test_silence_cause_says_messages_were_lost():
+    g = GuardCore()
+    g.heartbeat("A", True, 0.0, hidden=False, dt_ms=500, seq=1)
+    g.heartbeat("A", True, 0.5, hidden=False, dt_ms=500, seq=5)      # 3 numeros manquants : perdus en route
+    cause = g.evaluate(2.5, moving=True)
+    assert cause and "3 battement(s) PERDU(S)" in cause and "visible" in cause
+
+
+def test_silence_cause_says_the_page_was_slow_not_lossy():
+    g = GuardCore()
+    g.heartbeat("A", True, 0.0, hidden=False, dt_ms=500, seq=1)
+    g.heartbeat("A", True, 0.6, hidden=False, dt_ms=1900, seq=2)     # envois espaces, aucun numero saute
+    cause = g.evaluate(2.4, moving=True)
+    assert cause and "page ralentie" in cause and "1900" in cause and "PERDU" not in cause
+
+
+def test_diagnostic_counters_restart_after_a_trip():
+    g = GuardCore()
+    g.heartbeat("A", True, 0.0, hidden=False, dt_ms=500, seq=1)
+    g.heartbeat("A", True, 0.5, hidden=False, dt_ms=500, seq=4)
+    assert "PERDU" in g.evaluate(2.5, moving=True)
+    g.heartbeat("A", True, 3.0, hidden=False, dt_ms=500, seq=5)
+    g.evaluate(3.0, moving=True)
+    cause = g.evaluate(5.0, moving=True)
+    assert cause and "PERDU" not in cause                           # la perte precedente n'est pas re-imputee
+
+
+def test_old_heartbeats_without_diagnostic_fields_still_work():
+    g = GuardCore()
+    assert g.heartbeat("A", True, 0.0)                              # ancienne page : ni hidden, ni dt, ni seq
+    cause = g.evaluate(2.0, moving=True)
+    assert cause and "CC silencieux" in cause

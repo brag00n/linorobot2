@@ -46,10 +46,19 @@ class GuardCore:
         self.others = {}             # id -> instant : autres onglets vus
         self.tripped = False         # un arret a deja ete declenche pour cette perte
         self.last_reason = ""
+        self.hidden = False          # derniere etat annonce par la page : onglet masque ?
+        self.hidden_since = None
+        self.dt_max_ms = 0.0         # plus long intervalle ENTRE ENVOIS vu par la page depuis le dernier arret
+        self.last_seq = None
+        self.lost_msgs = 0           # battements manquants (saut de numero) depuis le dernier arret
 
     # ------------------------------------------------------------------ entrees
-    def heartbeat(self, tab_id, video, now):
-        """Un battement arrive. Renvoie True s'il vient du pilote."""
+    def heartbeat(self, tab_id, video, now, hidden=False, dt_ms=None, seq=None):
+        """Un battement arrive. Renvoie True s'il vient du pilote.
+
+        Trois indices pour DIAGNOSTIQUER un silence (2026-11-09) : `hidden` (onglet masque : le navigateur ralentit ses
+        minuteries a ~1 s), `dt_ms` (temps que la PAGE a reellement attendu depuis son envoi precedent : grand = page
+        ralentie, petit = envoi regulier mais message perdu en route) et `seq` (un numero saute = message PERDU)."""
         tab_id = str(tab_id or "?")
         if self.pilot is not None and tab_id != self.pilot:
             # Le pilote est silencieux depuis plus longtemps que le delai : il cede sa place,
@@ -64,7 +73,44 @@ class GuardCore:
         self.last_hb = now
         self.others.pop(tab_id, None)
         self._setVideo(bool(video), now)
+        self._diag(hidden, dt_ms, seq, now)
         return True
+
+    def _diag(self, hidden, dt_ms, seq, now):
+        hidden = bool(hidden)
+        if hidden and not self.hidden:
+            self.hidden_since = now
+        if not hidden:
+            self.hidden_since = None
+        self.hidden = hidden
+        try:
+            dt = float(dt_ms)
+            self.dt_max_ms = max(self.dt_max_ms, dt)
+        except (TypeError, ValueError):
+            pass
+        try:
+            s = int(seq)
+            if self.last_seq is not None and s > self.last_seq + 1:
+                self.lost_msgs += s - self.last_seq - 1
+            self.last_seq = s
+        except (TypeError, ValueError):
+            pass
+
+    def why_silent(self, now):
+        """Phrase de diagnostic ajoutee a la cause d'un arret par silence du battement."""
+        bits = []
+        if self.hidden:
+            bits.append("onglet MASQUE depuis %.0f s (le navigateur ralentit ses minuteries)"
+                        % (now - (self.hidden_since if self.hidden_since is not None else now)))
+        else:
+            bits.append("onglet visible")
+        if self.lost_msgs:
+            bits.append("%d battement(s) PERDU(S) en route (numero de sequence saute)" % self.lost_msgs)
+        elif self.dt_max_ms >= 900:
+            bits.append("page ralentie : jusqu'a %.0f ms entre deux envois, aucun message perdu" % self.dt_max_ms)
+        else:
+            bits.append("page reguliere (max %.0f ms entre envois)" % self.dt_max_ms)
+        return " ; ".join(bits)
 
     def _forget(self):
         self.pilot = None
@@ -121,7 +167,8 @@ class GuardCore:
             return None
         cause = None
         if self.cc_state(now) == "lost":
-            cause = "CC silencieux depuis %.1f s (limite %.1f s)" % (now - self.last_hb, self.hb_timeout)
+            cause = "CC silencieux depuis %.1f s (limite %.1f s) -- %s" % (
+                now - self.last_hb, self.hb_timeout, self.why_silent(now))
         elif self.cc_state(now) == "none":
             # Arme sans CC jamais vu : on NE declenche PAS. C'est le cas normal d'un robot conduit a la
             # manette, CC ferme. Le garde-fou ne concerne que les robots que le CC a pris en charge.
@@ -136,6 +183,7 @@ class GuardCore:
             return None                      # deja arrete pour cette perte : pas de rafale d'ordres
         self.tripped = True
         self.last_reason = cause
+        self.dt_max_ms, self.lost_msgs = 0.0, 0     # le prochain arret repart d'une mesure propre
         return cause
 
     def snapshot(self, now, moving, armed):
@@ -191,7 +239,8 @@ def main(argv=None):
                 return
             first = self.core.pilot is None
             lost_before = self.core.cc_state(time.monotonic()) != "ok"
-            mine = self.core.heartbeat(d.get("id"), bool(d.get("video")), time.monotonic())
+            mine = self.core.heartbeat(d.get("id"), bool(d.get("video")), time.monotonic(),
+                                      hidden=d.get("hidden"), dt_ms=d.get("dt"), seq=d.get("seq"))
             if mine and (first or lost_before):
                 self.get_logger().info("CC connecte (onglet %s)" % self.core.pilot)
 
