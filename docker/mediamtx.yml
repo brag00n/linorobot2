@@ -104,9 +104,9 @@ paths:
   # flux brut n'est pas retourne -- le Command Center inverse donc x des cadres avant de les tracer.
   raw:
     runOnDemand: >
-      ffmpeg -hide_banner -loglevel warning -fflags nobuffer -f mjpeg -r 15
+      ffmpeg -hide_banner -loglevel warning -fflags nobuffer -f mjpeg
       -i http://localhost:8080/stream?topic=/video/raw&type=ros_compressed
-      -c:v h264_v4l2m2m -b:v 1200k -g 30 -pix_fmt yuv420p
+      -vf fps=15 -c:v h264_v4l2m2m -b:v 1200k -g 30 -pix_fmt yuv420p
       -f rtsp rtsp://localhost:8554/$MTX_PATH
     runOnDemandRestart: yes
     runOnDemandCloseAfter: 15s
