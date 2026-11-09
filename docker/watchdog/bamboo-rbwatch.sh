@@ -110,4 +110,7 @@ fi
 last_action="redemarrage de $SERVICE"; last_action_ts="$now"; actions="$actions $now"; fails=0
 if [ "$DRY" = 1 ]; then log "[DRY] redemarrerait $SERVICE : $bad"; save "dry: redemarrage evite" "$mem_mb" "$reply_ms"; exit 0; fi
 log "REDEMARRAGE de $SERVICE : $bad"
-(cd "$COMPOSE_DIR" && docker compose restart "$SERVICE") && save "redemarre" "$mem_mb" "$reply_ms" || save "echec du redemarrage" "$mem_mb" "$reply_ms"
+# `docker restart <conteneur>` et NON `docker compose restart <service>` : le service est dans un profil (`boot`), que compose ne
+# connait pas sans l'option --profile -> « no such service » (constate le 2026-11-09, la surveillance decidait de redemarrer mais ne faisait rien).
+# Le redemarrage direct du conteneur n'a besoin d'aucun profil et garde la meme creation (volumes, ports, variables de .env).
+docker restart "$CONTAINER" >/dev/null && save "redemarre" "$mem_mb" "$reply_ms" || save "echec du redemarrage" "$mem_mb" "$reply_ms"
