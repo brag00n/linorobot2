@@ -507,7 +507,7 @@ if [ "$APPLY" = "1" ]; then
     systemctl daemon-reload
     systemctl enable --now bamboo-rbwatch.timer >/dev/null 2>&1         && act "bamboo-rbwatch.timer actif (surveillance de rosbridge toutes les 30 s)"         || warn "bamboo-rbwatch.timer : activation en echec (journalctl -u bamboo-rbwatch)"
 elif [ "$(systemctl is-active bamboo-rbwatch.timer 2>/dev/null)" = "active" ]; then
-    ok "bamboo-rbwatch.timer actif ($(sed -E 's/.*"status":"([^"]*)".*//' /run/bamboo-rbwatch/state.json 2>/dev/null))"
+    ok "bamboo-rbwatch.timer actif ($(sed -E 's/.*"status":"([^"]*)".*/\1/' /run/bamboo-rbwatch/state.json 2>/dev/null))"
 else
     warn "bamboo-rbwatch.timer inactif : un rosbridge qui derive ne sera pas relance"
 fi
@@ -524,6 +524,17 @@ for p in 9090 8765 8554 8889; do
     if ss -ltn 2>/dev/null | grep -q ":$p "; then ok "port $p en ecoute"
     else warn "port $p muet (rosbridge / foxglove / RTSP / WebRTC selon le cas)"; fi
 done
+# Version de rosbridge DANS L'IMAGE (2026-11-09). Le Dockerfile l'epingle (ARG ROSBRIDGE_VERSION), mais une image construite avant ce
+# changement reste en cache : la 1.3.2 de janvier 2024 laissait des abonnements perimes s'emballer apres des rechargements de page.
+# On lit donc la version REELLE et on avertit si elle est inferieure a la version voulue (reconstruire : docker compose build --no-cache rosbridge).
+RB_WANT="$(sed -nE 's/^ARG ROSBRIDGE_VERSION=([0-9.]+).*/\1/p' "$HERE/Dockerfile" | head -1)"
+RB_HAVE="$(docker run --rm --entrypoint '' linorobot2-rosbridge:humble sh -c "dpkg-query -W -f='\${Version}' ros-humble-rosbridge-server" 2>/dev/null | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
+if [ -z "$RB_HAVE" ]; then warn "image linorobot2-rosbridge:humble absente ou illisible : version de rosbridge inconnue"
+elif [ -n "$RB_WANT" ] && [ "$(printf '%s
+%s
+' "$RB_WANT" "$RB_HAVE" | sort -V | head -1)" != "$RB_WANT" ]; then
+    warn "rosbridge $RB_HAVE dans l'image, $RB_WANT voulu : la derive memoire apres rechargements en rafale est possible (docker compose build --no-cache rosbridge)"
+else ok "rosbridge $RB_HAVE dans l'image (voulu >= ${RB_WANT:-?})"; fi
 # HTTPS (2026-11-08) : proxy Caddy :8443 et mode de rosbridge. Mode https = liste blanche + :9090 lie a
 # la boucle locale ; mode http (defaut) = comportement historique. Bascule : docker/secure.sh.
 if ss -ltn 2>/dev/null | grep -q ":8443 "; then ok "proxy HTTPS en ecoute : https://<rpi>:8443/cc/"

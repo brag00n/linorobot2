@@ -656,7 +656,29 @@ masqué peut suspendre WebRTC : le robot le traite comme une vidéo perdue (arr�
 
 **Coût CPU mesuré (RPi4, 4 cœurs).** Une page CC ouverte ajoute ~45 points à rosbridge (14 % sans client, ~58 % avec) : le coût suit la cadence *source* des topics, pas le débit demandé (rosbridge convertit chaque message avant de le limiter). Les abonnements suivent donc le mode affiché, et l'onglet masqué ne garde que le garde-fou. Le flux vidéo `raw` est à 15 img/s (`-vf fps=15` ; `-r 15` placé avant `-i` n'avait aucun effet). Réduire la résolution ne change rien : le coût est le décodage JPEG d'entrée. La caméra expose du H.264 natif mais `gscam` tient le périphérique en MJPEG (un seul lecteur) ; la refonte « propriétaire unique » reste ouverte. Pile NAV lancée avec le suivi vidéo actif : load 13 à 22, hors zone saine ; sans le suivi : 6 à 8.
 
-**Panne rosbridge.** Il peut dériver (1,16 Go et 75-88 % d'un cœur après quelques heures, sans répondre) ou boucler sur `WebSocketClosedError` ; le redémarrer règle les deux. Cause non établie (soupçon : abonnements accumulés par des clients disparus). Une surveillance automatique, sur le modèle de `camwatch`, reste à écrire.
+**Panne rosbridge (résolue par la mise à jour, 2026-11-09).** Le robot a longtemps tourné avec **rosbridge 1.3.2** (janvier 2024) : `apt-get install`
+sans numéro de version, figé par le cache Docker. Après une rafale de rechargements de la page, il perdait le compte de ses clients (`0 client`
+alors que la socket restait ouverte), écrivait sans fin sur des sockets fermées (`WebSocketClosedError`) puis allouait ~2 Mo/s : 800 Mo en six minutes,
+CC « hors ligne », et jusqu'à saturer tout le RPi (SSH muet). Reproduit en mode HTTP direct comme en HTTPS : ni le proxy ni la liste blanche n'y sont pour
+rien. Le défaut est connu en amont : issue #947 (abonnement périmé qui survit à son client, corrigé par la PR #948 en août 2024), PR #1004 (course
+critique à la fermeture), PR #1295 (file d'écriture contre la famine, rétroportée dans `humble`). Branche `humble` du projet : 2.0.8 ; la branche `ros2`
+(4.x) est destinée à Jazzy et au-delà, **à ne pas mélanger avec Humble**.
+
+*Mesure, même rafale de rechargements :* 1.3.2 → 3 à 11 erreurs par fenêtre, 119 → 560-800 Mo, effondrement ; **2.0.8 → 0 erreur sur plus de 5 minutes, 143 → 150 Mo,
+aucune dérive**, CPU au repos de 5 à 9 % au lieu de 20 à 55 %. **Limites :** cinq minutes de rafale ne disent rien des fuites lentes sur 24 h (issue #989, ouverte
+en 2.0.x) ; l'avis de sécurité du 14 septembre 2026 (complexité cubique du repli JSON de `Protocol.incoming()` sur un message tronqué) n'a pas de correctif publié.
+
+*Version épinglée* dans `docker/Dockerfile` (`ARG ROSBRIDGE_VERSION=2.0.8`, installe `rosbridge-server`, `rosbridge-library` et `rosapi` à ce numéro). L'installateur lit la
+version **réelle** de l'image et alerte si elle est plus ancienne (une image du cache survit des mois). Pour changer de version : modifier cet ARG, relire cette section (la
+2.0.6 avait une régression de réactivité, #1243), `docker compose build --no-cache rosbridge`. L'ancienne image est gardée sous `humble-1.3.2-backup`.
+
+*Authentification :* **il n'en existe pas** dans rosbridge ROS 2 (le mécanisme `auth` et `rosauth` ont été retirés en 2021, PR #586 ; la réintroduction proposée n'a pas été
+fusionnée, #676). Le projet considère l'authentification hors périmètre. Seule voie : la placer **devant** le pont (jeton dans Caddy, écarté pour l'instant).
+*HTTPS :* rosbridge sait servir `wss` lui-même (`ssl`, `certfile`, `keyfile`) mais, avec un certificat auto-signé, le navigateur exige d'avoir accepté l'exception sur l'adresse
+de rosbridge elle-même (#232, #538) : le proxy Caddy, dont le certificat est celui de la page, évite ce détour. Filet : `bamboo-rbwatch` (`docker/watchdog/`, minuteur systemd de
+30 s) appelle `/rosapi/get_time` par un vrai websocket et lit la mémoire du conteneur ; trois passages mauvais de suite (pas de réponse, ou >= 500 Mo contre ~150 Mo sain) →
+`docker restart` (et non `docker compose restart`, le service étant dans le profil `boot`). Plafond de 3 redémarrages par heure, fichier `/run/bamboo-rbwatch/pause` pour la
+maintenance, état dans `/run/bamboo-rbwatch/state.json`.
 
 **Santé.** Un module dont *tous* les nœuds sont muets est présenté « arrêté » (neutre) et non comme plusieurs pannes critiques ; le pied de page résume en deux compteurs et le problème le plus grave.
 

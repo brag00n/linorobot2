@@ -261,7 +261,14 @@ ENTRYPOINT ["/entrypoint.sh"]
 FROM --platform=$BUILDPLATFORM ros:${ROS_DISTRO}-ros-base as rosbridge
 
 # Install Rosbridge
-RUN apt-get update && apt-get install -y ros-${ROS_DISTRO}-rosbridge-server
+# VERSION EPINGLEE (2026-11-09). Sans numero, apt installait ce que le depot proposait AU MOMENT de la construction, et le cache
+# Docker gardait cette image des mois : le robot est reste en 1.3.2 (janvier 2024) alors que la 2.0.8 existait. Or la 1.3.2 laissait
+# des abonnements perimes ecrire sur des sockets fermees (issue #947), puis s'emballait apres une rafale de rechargements de page
+# (2 Mo/s, 800 Mo en quelques minutes, RPi sature). Mesure : meme rafale, 0 erreur et +6 Mo en 2.0.8. Correctifs : #948, #1004, #1295.
+# Le numero est un PREFIXE (`=2.0.8*`) : la revision du paquet Ubuntu peut changer, la version amont non. Pour monter de version,
+# changer ce nombre ET relire docs §6.12 (la 2.0.6 avait une regression, #1243 ; l'avis d'octobre 2026 sur le JSON tronque n'est pas corrige).
+ARG ROSBRIDGE_VERSION=2.0.8
+RUN apt-get update && apt-get install -y ros-${ROS_DISTRO}-rosbridge-server=${ROSBRIDGE_VERSION}* ros-${ROS_DISTRO}-rosbridge-library=${ROSBRIDGE_VERSION}* ros-${ROS_DISTRO}-rosapi=${ROSBRIDGE_VERSION}*
 
 # Set up the entrypoint
 COPY ./docker/entrypoint.sh /entrypoint.sh
