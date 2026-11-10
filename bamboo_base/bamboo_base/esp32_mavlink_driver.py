@@ -198,6 +198,8 @@ class Esp32MavlinkDriver(Node):
         # JAUGE (2026-10-17) : resistance interne supposee tant qu'elle n'est pas mesuree (ohm),
         # et pente maximale du pourcentage affiche (points de % par minute).
         self.declare_parameter("batt_r_ohm", 0.20)
+        # Cadence de publication de /battery (Hz) ; 0 = a chaque tick du driver.
+        self.declare_parameter("battery_publish_hz", 5.0)
         self.declare_parameter("batt_soc_slew_pct_min", 1.0)
         # Profil MESURE (calibration batterie_decharge) ; [0.0] = aucun, courbe generique.
         self.declare_parameter("batt_profile_v", [0.0])
@@ -222,6 +224,8 @@ class Esp32MavlinkDriver(Node):
         self.batt_sag_warn_v = float(g("batt_sag_warn_v"))
         self.batt_deficit_warn = float(g("batt_deficit_warn"))
         self.batt_r_ohm = float(g("batt_r_ohm"))
+        _bhz = float(g("battery_publish_hz"))
+        self.battery_period_s = 0.0 if _bhz <= 0.0 else 1.0 / _bhz
         self.batt_soc_slew_pct_min = float(g("batt_soc_slew_pct_min"))
         self.batt_profile_v = [float(x) for x in g("batt_profile_v")]
         self.batt_profile_soc = [float(x) for x in g("batt_profile_soc")]
@@ -756,8 +760,13 @@ class Esp32MavlinkDriver(Node):
             self._motion.fill_imu(imu, snap)
             self.pub_imu.publish(imu)
 
-        # batterie.
-        if snap.get("battery") is not None:
+        # batterie. Publiee a `battery_publish_hz` (5 Hz) et non a la cadence du tick (30 Hz) : la tension varie lentement, et
+        # chaque message est recu par six noeuds dont rosbridge, qui le convertit en JSON AVANT tout filtrage (mesure du
+        # 2026-11-10 : rosbridge saturait, battement du CC en retard). Le detecteur de chargeur et la jauge, eux, sont
+        # alimentes par _diag a chaque tick : seule la PUBLICATION est espacee.
+        _now = time.monotonic()
+        if snap.get("battery") is not None and _now - getattr(self, "_battPubT", 0.0) >= self.battery_period_s:
+            self._battPubT = _now
             b = BatteryState()
             b.header.stamp = stamp
             b.voltage = float(snap["battery"])
