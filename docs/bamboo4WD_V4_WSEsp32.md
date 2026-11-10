@@ -631,13 +631,14 @@ restent en place.
 Caddy qui est en cause : `docker compose stop proxy`. Une seule instance rosbridge sert CC, HUD et outils MCP.
 
 **Liste blanche** (`docker/rosbridge/start.sh`) : topics lus (dont `/teleop/state`, `/cc/guard/state`) ; services
-`/rosapi/*`, `/bamboo/*`, arm, `/nav_supervisor/command`, `*/get_parameters|set_parameters|…`. Limite
-assumée : rosbridge ne distingue pas lecture et écriture dans `topics_glob`, donc **aucun** topic de commande n'y
-figure (`/cmd_vel*`, `/cc/guard/{enable,link,stop}`, `/navigation/enable`, `/servo/cmd`, `/videotracking/mode_cmd`) :
+`/rosapi/*`, `/bamboo/*`, arm, `/nav_supervisor/command`, `*/get_parameters|set_parameters|…`. **Lecture et écriture
+sont séparées** (2026-11-10, `topics_sub_glob` / `topics_pub_glob`, disponibles depuis rosbridge 2.0) : les clients
+lisent la liste complète mais **ne peuvent publier que `/cc/heartbeat`**. Aucun topic de commande n'est publiable
+(`/cmd_vel*`, `/cc/guard/{enable,link,stop}`, `/navigation/enable`, `/servo/cmd`, `/videotracking/mode_cmd`) :
 une consigne ou un faux `link` ne peut pas être publié depuis le réseau. Les écritures utiles passent par des
-services. Vérifié sur une instance d'essai : `/cmd_vel_cc` et `/cc/guard/link` refusés (aucun éditeur créé),
-`/cc/heartbeat` accepté. Une liste trop étroite se voit tout de suite : un widget orange ou un service refusé ; ajouter
-le motif dans `start.sh` puis `./secure.sh https`.
+services. Vérifié (2026-11-10) : `/cmd_vel_test` refusé (« No match found for topic, cancelling publish »),
+`/cc/heartbeat` accepté, lecture de `/teleop/state` intacte. Une liste trop étroite se voit tout de suite : un widget
+orange ou un service refusé ; ajouter le motif dans `start.sh` puis `./secure.sh https`.
 
 **Outils MCP.** `ROS2_BRIDGE_URL=wss://<hôte>:8443/rosbridge` (le certificat auto-signé est accepté ;
 `ROS2_BRIDGE_CA=<racine.crt>` pour le vérifier). Le chemin direct `ws://<hôte>:9090` ne marche plus en mode `https`.
@@ -680,6 +681,30 @@ de rosbridge elle-même (#232, #538) : le proxy Caddy, dont le certificat est ce
 `docker restart` (et non `docker compose restart`, le service étant dans le profil `boot`). Plafond de 3 redémarrages par heure, fichier `/run/bamboo-rbwatch/pause` pour la
 maintenance, état dans `/run/bamboo-rbwatch/state.json`.
 
+**Battement par rafales : HTTP/3 (2026-11-10).** Symptôme : « Liaison CC » oscillait entre Connecté et Déconnecté. Le robot
+recevait les battements (envoyés toutes les 500 ms) **par paquets de 4 toutes les 3,03 s** ; au-delà de 1,5 s le garde-fou
+voyait un CC perdu, et **aurait coupé une traction armée : un faux positif**. Diagnostic par élimination : réseau sain (ping 1 à
+5 ms, 0 perte) ; file d'envoi du navigateur vide (`bufferedAmount` = 0, champ `buf` du battement) ; onglet visible ou masqué sans
+effet ; rosbridge testé seul avec tous les abonnements du CC : 103 ms en médiane ; **le même battement, sans Caddy (tunnel SSH
+vers `127.0.0.1:9090`), arrive régulier à 500 ms**. `flush_interval -1` seul n'a rien changé. **Cause retenue : HTTP/3 (QUIC,
+UDP `:8443`) de Caddy** ; `protocols h1 h2` dans le Caddyfile le désactive, et le rythme revient à 500 ms (60 battements en 30 s,
+écart maximal 512 ms ; sonde Node depuis le PC : 75 ms en médiane, 155 ms au pire). Deux réglages ont changé entre les deux
+essais, mais seul le second a coïncidé avec la correction. **Si l'oscillation revient, retester HTTP/3 en premier.**
+Le Caddyfile n'est relu qu'au **redémarrage** du conteneur (`admin off` interdit `caddy reload`) : `docker restart bamboov4_humble-proxy-1`.
+L'installateur (étape 9) vérifie `protocols h1 h2` et `flush_interval -1` dans le fichier, signale un proxy qui écoute encore en UDP
+`:8443`, et le redémarre avec `--apply`.
+
+**Cadence du battement : un Web Worker (2026-11-10).** Un onglet masqué ou recouvert ramène les minuteries de la page à ~1 s
+(battements à 1000 ms au lieu de 500). La page cadence donc son battement avec un worker, dont les minuteries ne sont pas ralenties
+de cette façon ; repli sur `setInterval` si le worker est indisponible. Le battement porte aussi `buf` (octets en attente dans le
+navigateur) et `rtt` (dernier aller-retour mesuré par la page), pour diagnostiquer un retard. `rtt` reste absent onglet masqué (son
+minuteur est gelé). Le délai du garde-fou (1,5 s) n'a **pas** été relâché : le chemin direct prouve qu'il est tenable.
+
+**Charge de rosbridge (2026-11-10).** Chaque message est converti en JSON avant tout filtrage : le coût suit la cadence *source*.
+`/battery` n'est plus publié qu'à **5 Hz** (paramètre `battery_publish_hz` du driver ESP32, 0 = à chaque tick) au lieu de ~20 Hz ; la
+jauge et le détecteur de chargeur restent alimentés à chaque tick. Une instance d'essai sans abonné répond en ~90 ms ; l'instance
+réelle avec le CC branché en médiane ~100 ms.
+
 **Santé.** Un module dont *tous* les nœuds sont muets est présenté « arrêté » (neutre) et non comme plusieurs pannes critiques ; le pied de page résume en deux compteurs et le problème le plus grave.
 
 ## 7. État d'avancement
@@ -704,6 +729,10 @@ maintenance, état dans `/run/bamboo-rbwatch/state.json`.
   interrupteur `secure.sh`, liste blanche rosbridge, MCP en `wss` (§6.12) : **faits et éprouvés roues
   levées** (onglet fermé, vidéo coupée, armement verrouillé sans manette, HUD seul). **Restent** : boutons
   d'armement dans la page (appui maintenu), réglages/mode robot, missions, pilotage clavier/manette BT du PC.
+- **Command Center, jalon 2** (2026-11-10) : liste blanche rosbridge en lecture/écriture séparées (seul `/cc/heartbeat` publiable),
+  `rbwatch` à 300 Mo, **battement du CC par Web Worker** et **HTTP/3 désactivé sur le proxy** (cause des rafales de 3 s, §6.12),
+  panneau Énergie avec barre d'autonomie. **Nœud `battery_energy`** (collecte seule, journaux bornés, §9.8). Reste : mesurer le roulage
+  au sol (goto), réglages/mode robot, carte, calibrations, services Docker.
 - **Suite** — URDF/TF, EKF (vx roues + vyaw IMU), SLAM, navigation : **à faire**.
 
 ---
@@ -920,6 +949,56 @@ référence, qualité, raison d'arrêt, hypothèses), à recopier après validat
 12,03 → 8,15 V en 56 min, **0,59 Ah** au total, coupure du module vers 8,1 V. Qualité : environ
 22 % du pack idéal. Hors calibration, `docker/monitor/historique_batterie.py` enregistre la
 décharge en continu (tension, courant, Wi-Fi, température) dans un CSV.
+
+### 9.8 Statistiques d'énergie et autonomie (`battery_energy`, 2026-11-10)
+
+**But.** Calculer l'autonomie du robot en temps réel pour, à terme, lui faire regagner sa base avec de la réserve. **Cette étape
+est une collecte** : le nœud ne décide rien, le retour à la base reste sur le seuil fixe de 15 % (`auto_battery_min_pct`).
+
+**Pourquoi mesurer.** La calibration du 2026-10-22 s'est faite roues levées : courant moyen 0,66 A, maximum 0,89 A, identique à
+l'arrêt et « sous charge » (rotation douce de 1,5 W). Le roulage au sol n'a jamais été mesuré, et le pack est fatigué (**0,88 Ah**
+pour 2,6 Ah neufs, qualité 36 %) : sa tension s'effondre sous charge et sa capacité dépend du courant.
+
+**Le nœud** (`bamboo_base/battery_energy_node.py`, service compose `battery_energy`, profils `boot` et `esp32`, même image que le
+driver, lancé par `python3 -m`). Entrées : `/battery`, `/odom/unfiltered` (vitesses mesurées aux roues), `/navigation/state`. Sortie :
+**`/bamboo/energy`** (`std_msgs/String`, JSON, 1 Hz ; un message dédié sera figé le jour où une décision en dépendra).
+
+| Champ | Sens |
+|---|---|
+| `activites` | par activité (`arret`, `rotation`, `ligne`, `arc`) : temps, courant, puissance, distance |
+| `segment` | période sur batterie, du débranchement du chargeur au rebranchement : durée, Ah, Wh, mètres |
+| `autonomie_min` | `reste_ah` ÷ courant moyen lissé (60 s) ; `autonomie_fond_min` (à l'arrêt) et `autonomie_roulage_min` |
+| `capacite_obs_ah` | Ah consommés ÷ part de charge perdue, dès que la jauge a baissé de **10 points** |
+| `r_ohm` | résistance interne en roulage, régression V = V0 − R·I sur 120 s, **seulement si le courant a varié** d'au moins 0,3 A |
+| `fiable` | faux tant que le segment n'a pas duré 5 min **et** qu'une capacité observée n'existe pas : le CC préfixe alors « ~ » |
+
+Le chargeur branché n'est pas compté. Un trou de plus de 2 s entre échantillons n'est pas intégré. Odométrie muette depuis plus de
+2 s : le robot est supposé à l'arrêt.
+
+**Journaux à taille bornée** (`data/energy/`, non versionné) : `energie_<date>.csv` à 1 Hz (tension, courant, vitesse, activité, but de
+navigation, distance restante, localisation, charge CPU), rotation tous les **2 Mo** avec compression gzip, plafond de **30 Mo** pour
+l'ensemble (les plus anciens sont purgés), écritures **suspendues sous 1 Go libre**, fsync toutes les 5 s ; `segments.jsonl` (un résumé
+par segment) ne garde que ses 300 dernières lignes. Paramètres : `log_max_file_mb`, `log_max_total_mb`, `log_min_free_mb`,
+`log_enabled`. 14 tests (`bamboo_base/test/test_energy_stats.py`) couvrent les statistiques et la rotation.
+
+**Command Center.** Le panneau Énergie affiche la jauge « Batterie » et une barre **Autonomie** (0 à 90 min, orange sous 30 min, rouge
+sous 15 min, « ~ » tant que `fiable` est faux) ; le détail (à l'arrêt, en roulage, courant moyen, résistance) est dans l'infobulle. Le
+bandeau affiche « 55 % · ~41 MIN ». Sur chargeur le pourcentage est volontairement absent : la pastille de la jauge reste verte tant
+que la tension arrive.
+
+**Mesures du 2026-11-10.** Sur batterie, à l'arrêt : 0,69 A, 7,7 W, autonomie estimée 76 à 79 min (cohérent avec les 80 min de la
+calibration). Le pack débranché lit 11,15 à 11,25 V, soit 100 % sur le profil du 22/10 (100 % = 11,351 V au repos). **Coût CPU : ~10
+à 14 % d'un cœur**, dominé par la réception des messages de rclpy plutôt que par le calcul ; la baisse de `/battery` à 5 Hz le réduit.
+**Pas de mesure de roulage à ce jour** : les champs `ligne`, `arc`, `r_ohm` et `autonomie_roulage_min` restent vides jusqu'au premier
+déplacement au sol.
+
+**Descente observée.** Sur ce pack, 100 % → 5 % (9,62 V) en environ 35 minutes d'un jour de test, au fond de 0,7 A : plus vite que le
+profil ne le prévoit. Recharger vers 20 % (10,5 V) ; la coupure matérielle du module UPS est vers 8,1 V, **sous le 0 % de la jauge**
+(9,45 V). Le Wi-Fi décroche avant (batterie basse, vers 10,1 V).
+
+**Reste à faire.** Mesurer le roulage (goto), estimer la résistance interne, confirmer la capacité par une décharge d'au moins 10
+points ; puis l'autonomie *restante moins la réserve de retour* (distance du plan Nav2 vers la base × Wh/m + fond + marge) comme
+critère de retour à la base, à la place du 15 % fixe.
 
 ## 10. Navigation autonome (lot NAV)
 
