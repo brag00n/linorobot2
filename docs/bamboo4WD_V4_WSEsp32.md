@@ -676,7 +676,7 @@ version **réelle** de l'image et alerte si elle est plus ancienne (une image du
 fusionnée, #676). Le projet considère l'authentification hors périmètre. Seule voie : la placer **devant** le pont (jeton dans Caddy, écarté pour l'instant).
 *HTTPS :* rosbridge sait servir `wss` lui-même (`ssl`, `certfile`, `keyfile`) mais, avec un certificat auto-signé, le navigateur exige d'avoir accepté l'exception sur l'adresse
 de rosbridge elle-même (#232, #538) : le proxy Caddy, dont le certificat est celui de la page, évite ce détour. Filet : `bamboo-rbwatch` (`docker/watchdog/`, minuteur systemd de
-30 s) appelle `/rosapi/get_time` par un vrai websocket et lit la mémoire du conteneur ; trois passages mauvais de suite (pas de réponse, ou >= 500 Mo contre ~150 Mo sain) →
+30 s) appelle `/rosapi/get_time` par un vrai websocket et lit la mémoire du conteneur ; trois passages mauvais de suite (pas de réponse, ou >= 300 Mo contre ~150 Mo sain) →
 `docker restart` (et non `docker compose restart`, le service étant dans le profil `boot`). Plafond de 3 redémarrages par heure, fichier `/run/bamboo-rbwatch/pause` pour la
 maintenance, état dans `/run/bamboo-rbwatch/state.json`.
 

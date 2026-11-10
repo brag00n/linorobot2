@@ -9,7 +9,7 @@
 #
 # CE QU'ON MESURE. Deux signes independants, pour ne pas redemarrer un rosbridge sain :
 #   1. REPONSE : un appel de service leger (/rosapi/get_time) par un vrai websocket, avec delai. C'est ce que fait le CC.
-#   2. MEMOIRE : au-dessus de MEM_MB (500 par defaut ; un rosbridge sain est a 110-160 Mo), c'est la derive.
+#   2. MEMOIRE : au-dessus de MEM_MB (300 par defaut ; un rosbridge sain est a 110-160 Mo), c'est la derive.
 # Redemarre apres FAILS passages mauvais de suite (reponse absente OU memoire excessive). Le pic de charge du demarrage du RPi
 # (quand tout se lance en meme temps) ne declenche rien : MIN_UPTIME et MIN_AGE.
 #
@@ -25,7 +25,7 @@ COMPOSE_DIR="$(dirname "$HERE")"
 DIR="${BAMBOO_RBWATCH_DIR:-/run/bamboo-rbwatch}"
 SERVICE="${BAMBOO_RBWATCH_SERVICE:-rosbridge}"
 FAILS="${BAMBOO_RBWATCH_FAILS:-3}"
-MEM_MB="${BAMBOO_RBWATCH_MEM_MB:-500}"
+MEM_MB="${BAMBOO_RBWATCH_MEM_MB:-300}"
 MAX_PER_H="${BAMBOO_RBWATCH_MAX_PER_H:-3}"
 MIN_UPTIME="${BAMBOO_RBWATCH_MIN_UPTIME:-240}"
 MIN_AGE="${BAMBOO_RBWATCH_MIN_AGE:-90}"
