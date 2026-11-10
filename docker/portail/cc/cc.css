@@ -182,6 +182,9 @@
   .bar .bv{font:500 15px/1 var(--display);font-variant-numeric:tabular-nums}
   .bar .bv small{color:var(--mute);margin-left:4px;font-size:10px;letter-spacing:.12em}
   .bar[data-lv="1"] .bv,.bar[data-lv="2"] .bv{color:var(--c)}
+  .bar .bh{padding-right:13px} /* la pastille d'état (coin haut droit) ne doit pas recouvrir la valeur */
+  #iCCT{display:inline-block;min-width:16ch} /* largeur du plus long libellé : un changement d'état ne décale pas les autres indicateurs */
+  #iCC .dotl{flex:none;background:var(--c)} #iCC[data-lv="0"] .dotl{background:#58c98a;box-shadow:0 0 7px rgb(88 201 138/.6)}
   .segs{display:flex;gap:2px;height:10px}
   .segs i{flex:1;background:var(--line);transition:background .22s}
   .segs i.on{background:var(--c)}

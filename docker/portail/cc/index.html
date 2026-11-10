@@ -32,7 +32,7 @@
       <div class="ind" id="iPad" data-lv="0"><span class="micro">Manette</span><span class="iv"><svg class="pico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 8h11a4.5 4.5 0 0 1 4.4 3.6l.6 3.4a2.4 2.4 0 0 1-4.1 2.1L16 15.5H8L5.6 17.1a2.4 2.4 0 0 1-4.1-2.1l.6-3.4A4.5 4.5 0 0 1 6.5 8z"/><path d="M8 10.5v3M6.5 12h3"/></svg><span class="sigb" id="sigp"><i style="height:4px"></i><i style="height:7px"></i><i style="height:10px"></i><i style="height:14px"></i></span><span id="iPadT">Connectée</span></span><em class="src todo">✗ RSSI Bluetooth : à exposer par l'hôte</em></div>
       <div class="ind" id="iLink" data-lv="0"><span class="micro">Liaison Wi-Fi</span><span class="iv"><span class="sigb" id="sigb"><i style="height:4px"></i><i style="height:7px"></i><i style="height:10px"></i><i style="height:14px"></i></span><span id="iLinkT">−45 dBm · 5G</span></span><em class="src todo">✗ wpa_cli signal_poll : à exposer</em></div>
       <div class="ind" id="iBat" data-lv="0"><span class="micro">Batterie</span><span class="iv"><span class="mbat" id="mbat"></span><span id="iBatT">78 %</span></span><em class="src">/battery · BatteryCalibState · soc_pct</em></div>
-      <div class="ind" id="iCC" data-lv="0"><span class="micro">Liaison CC</span><span class="iv"><span class="pulse off" id="ccPulse"></span><span id="iCCT">—</span></span><em class="src">/cc/heartbeat (page → robot) · /cc/guard/state (robot → page)</em></div>
+      <div class="ind" id="iCC" data-lv="0"><span class="micro">Liaison CC</span><span class="iv"><i class="dotl" id="ccPulse"></i><span id="iCCT">—</span></span><em class="src">/cc/heartbeat (page → robot) · /cc/guard/state (robot → page)</em></div>
     </div>
     <div class="hb"></div>
   </header>
@@ -100,6 +100,13 @@ var S = { mode: "vitals", t0: performance.now(), pad: null, rb: false, vid: "off
 var V = { bat_v: NaN, soc: NaN, cur: NaN, speed: NaN, cpu: NaN, temp: NaN, mem: NaN, disk: NaN, fpsC: NaN, fpsD: NaN, fpsO: NaN, lat: NaN, latMax: NaN,
   rpmL: NaN, rpmR: NaN, roll: 0, pitch: 0, yaw: NaN, wzIn: NaN, gz: NaN, ww: NaN, vw: NaN, slip: NaN, pi: NaN, rtt: NaN, vfps: NaN, vloss: NaN, jit: NaN, kbps: NaN };
 var T = null, TT = 0, NAV = null, NAVT = 0, MC = null, BC = null, E32 = null, DT = {}, DMODS = [], HL = null;
+/* Énergie (nœud battery_energy, /bamboo/energy, JSON 1 Hz) : autonomie restante PROVISOIRE tant que `fiable` est faux. */
+var EN = null, ENT = 0;
+function enFresh() { return EN && performance.now() - ENT < 5000; }
+function enDur(min) { return min == null || !isFinite(min) ? "—" : min >= 90 ? Math.floor(min / 60) + " h " + ("0" + Math.round(min % 60)).slice(-2) : Math.round(min) + " min"; }
+function enAuto() { /* texte d'autonomie, "" si inconnue ; « ~ » = estimation non encore confirmée par une décharge réelle */
+  if (!enFresh() || EN.charge || EN.autonomie_min == null) return "";
+  return (EN.fiable ? "" : "~") + enDur(EN.autonomie_min); }
 var SC = { buf: window.CCSTATE.SC };
 var CAMOPT = { det: true, ret: true };
 
@@ -144,6 +151,7 @@ var HANDLERS = {
   "/gamepad/connected": ["std_msgs/msg/Bool", 500, 1, function (m) { var p = !!m.data; if (S.pad !== null && p !== S.pad) log(p ? 0 : 1, p ? "Manette connectée" : "Manette déconnectée"); S.pad = p; }],
   "/navigation/state": ["bamboo_interfaces/msg/NavState", 500, 1, function (m) { NAV = m; NAVT = performance.now(); }],
   "/bamboo_calibration/battery": ["bamboo_interfaces/msg/BatteryCalibState", 1000, 1, function (m) { BC = m; }],
+  "/bamboo/energy": ["std_msgs/msg/String", 1000, 1, function (m) { try { EN = JSON.parse(m.data); ENT = performance.now(); } catch (e) { } }],
   "/diagnostics_agg": ["diagnostic_msgs/msg/DiagnosticArray", 1000, 1, onDiag],
   "/rosout": ["rcl_interfaces/msg/Log", 0, 40, function (m) {
     if (m.level < 20) return; var l = m.level >= 40 ? 2 : m.level >= 30 ? 1 : 0, t = "[" + m.name + "] " + String(m.msg).replace(/\s+/g, " ");
@@ -160,7 +168,7 @@ function hbSend() {
   /* `hidden` et `dt` servent UNIQUEMENT au diagnostic d'un arret par silence (cc_guard les cite dans son message) : `dt` =
      temps reellement ecoule depuis l'envoi precedent (grand = navigateur qui ralentit la page), `seq` saute = message perdu. */
   var now = performance.now(), dt = hbLast ? Math.round(now - hbLast) : 0; hbLast = now;
-  rbSend({ op: "publish", topic: "/cc/heartbeat", msg: { data: JSON.stringify({ id: TABID, seq: ++hbSeq, video: S.vid === "live" && V.vfps > 0, hidden: !!document.hidden, dt: dt }) } });
+  rbSend({ op: "publish", topic: "/cc/heartbeat", msg: { data: JSON.stringify({ id: TABID, seq: ++hbSeq, video: S.vid === "live" && V.vfps > 0, hidden: !!document.hidden, dt: dt, buf: ws.bufferedAmount, rtt: isFinite(V.rtt) ? Math.round(V.rtt) : null }) } });
 }
 /* ---------- abonnements PAR MODE : un topic rapide qu'aucun widget visible n'utilise ne doit pas etre abonne ----------
    Mesure (2026-11-08) : rosbridge convertit CHAQUE message en JSON avant de l'envoyer, meme si throttle_rate le jette ensuite ;
@@ -381,14 +389,20 @@ function panelVitals(pb) {
     return [c ? c + " critique" + (c > 1 ? "s" : "") + (w ? " · " + w + " avert." : "") : w ? w + " avertissement" + (w > 1 ? "s" : "") : "nominale · " + n + " tâches", c ? 2 : w ? 1 : 0]; }, sant, true);
   /* 2. ÉNERGIE */
   var en = h("div", "prm"), r = h("div", "row2");
-  var g = Gauge({ label: "Charge", unit: "%", min: 0, max: 100, warn: 30, crit: 15, dir: "down", src: "/battery · percentage (absent sur chargeur)" }); r.appendChild(attach(g, function () { return V.soc; }, 0).root);
+  /* `alive` : sur chargeur le pourcentage est volontairement absent, mais /battery arrive -> la pastille reste verte. */
+  var g = Gauge({ label: "Batterie", unit: "%", min: 0, max: 100, warn: 30, crit: 15, dir: "down", alive: function () { return isFinite(V.bat_v); }, src: "/battery · percentage (absent sur chargeur)" }); r.appendChild(attach(g, function () { return V.soc; }, 0).root);
   REG.push(function () { g.setUnit(isFinite(V.soc) ? "%" : S.charging ? "EN CHARGE" : "—"); });
   var col = h("div", "prm"); col.style.alignContent = "center";
   col.appendChild(attach(Bar({ label: "Tension", unit: "V", min: 9, max: 12.6, dec: 2, warn: 11.2, crit: 10.6, dir: "down", src: "/battery · voltage" }), function () { return V.bat_v; }, 1).root);
   col.appendChild(attach(Bar({ label: "Courant", unit: "A", min: 0, max: 5, dec: 2, warn: 3, crit: 4, src: "/battery · current (valeur absolue)" }), function () { return V.cur; }, 2).root);
-  var st = h("div", "micro"); REG.push(function () { var t = (S.charging ? "Chargeur branché" : "Sur batterie") + (S.gauge ? " · jauge : " + S.gauge : ""); if (st.textContent !== t) st.textContent = t; }); col.appendChild(st);
+  /* Autonomie restante, au courant moyen récent : barre à seuils (orange sous 30 min, rouge sous 15 min). « ~ » = estimation
+     provisoire. Le détail (arrêt, roulage, résistance) reste dans la bulle de la barre. */
+  var abar = Bar({ label: "Autonomie", unit: "", min: 0, max: 90, warn: 30, crit: 15, dir: "down", alive: enFresh, fn: function (v) { return (EN && !EN.fiable ? "~" : "") + enDur(v); }, src: "/bamboo/energy · autonomie_min" });
+  col.appendChild(attach(abar, function () { return enFresh() && !EN.charge && EN.autonomie_min != null ? EN.autonomie_min : NaN; }, 3).root);
+  REG.push(function () { if (!enFresh()) { abar.root.title = "/bamboo/energy absent"; return; }
+    abar.root.title = EN.charge ? "chargeur branché" : "à l'arrêt " + enDur(EN.autonomie_fond_min) + " · en roulage " + enDur(EN.autonomie_roulage_min) + " · courant moyen " + (EN.i_ema != null ? EN.i_ema.toFixed(2) + " A" : "—") + (EN.r_ohm != null ? " · R " + EN.r_ohm.toFixed(2) + " Ω" : "") + (EN.fiable ? "" : " · provisoire"); });
   r.appendChild(col); en.appendChild(r);
-  Acc("Énergie", function () { var l = lvOf(V.soc, 30, 15, "down"); if (isFinite(V.soc)) return [Math.round(V.soc) + " %" + (isFinite(V.bat_v) ? " · " + V.bat_v.toFixed(1) + " V" : ""), l]; return [isFinite(V.bat_v) ? (S.charging ? "en charge · " : "") + V.bat_v.toFixed(1) + " V" : "—", isFinite(V.bat_v) ? 0 : -1]; }, en);
+  Acc("Énergie", function () { var a = enAuto(), l = lvOf(V.soc, 30, 15, "down"); if (isFinite(V.soc)) return [Math.round(V.soc) + " %" + (a ? " · " + a : isFinite(V.bat_v) ? " · " + V.bat_v.toFixed(1) + " V" : ""), l]; return [isFinite(V.bat_v) ? (S.charging ? "en charge · " : "") + V.bat_v.toFixed(1) + " V" : "—", isFinite(V.bat_v) ? 0 : -1]; }, en);
   /* 3. SYSTÈME RPi */
   var sy = h("div", "prm"), r3 = h("div", "row3");
   [["CPU", "%", 80, 92, "cpu", "diagnostics · système: occupation CPU"], ["Temp.", "°C", 70, 80, "temp", "diagnostics · température CPU"], ["Mémoire", "%", 85, 95, "mem", "diagnostics · mémoire"]].forEach(function (x, k) {
@@ -837,17 +851,17 @@ function hdrUpdate() {
   var r = S.rb ? V.rtt : NaN, il = $("#iLink"); il.dataset.lv = !S.rb ? 2 : lvOf(r, 80, 200); $("#iLinkT").textContent = !S.rb ? "HORS LIGNE" : isFinite(r) ? Math.round(r) + " ms" : "…";
   [].forEach.call($("#sigb").children, function (b, k) { b.classList.toggle("on", S.rb && isFinite(r) && k < sigq(r)); });
   var ib = $("#iBat"), BL = lvOf(V.soc, 30, 15, "down"); ib.dataset.lv = BL;
-  $("#iBatT").textContent = isFinite(V.soc) ? Math.round(V.soc) + " %" : S.charging ? "CHARGE " + f(V.bat_v, 1, " V") : f(V.bat_v, 1, " V");
+  $("#iBatT").textContent = isFinite(V.soc) ? Math.round(V.soc) + " %" + (enAuto() ? " · " + enAuto() : "") : S.charging ? "CHARGE " + f(V.bat_v, 1, " V") : f(V.bat_v, 1, " V");
   var cells = isFinite(V.soc) ? Math.round(V.soc / 12.5) : (S.charging ? 8 : 0); [].forEach.call($("#mbat").children, function (b, k) { b.classList.toggle("on", k < cells); });
   var gs = (GS && performance.now() - GST < 3000) ? GS : null, ic = $("#iCC"), icl = 0, ict = "—";
-  if (!S.rb) { icl = 2; ict = "HORS LIGNE"; }
-  else if (!gs) { icl = 1; ict = "GARDE-FOU ?"; }
-  else if (gs.tripped) { icl = 2; ict = "ROBOT ARRÊTÉ"; }
-  else if (gs.pilot && gs.pilot !== TABID && gs.cc === "ok") { icl = 1; ict = "AUTRE ONGLET"; }
-  else if (gs.cc !== "ok") { icl = 1; ict = "CC ?"; }
-  else if (gs.video === "ok") { ict = "CC OK · VIDÉO OK"; }
-  else { icl = gs.video === "lost" ? 2 : 1; ict = "VIDÉO PERDUE"; }
-  ic.dataset.lv = icl; $("#iCCT").textContent = ict; $("#ccPulse").classList.toggle("off", icl !== 0);
+  /* Ici : l'état de la LIAISON du CC seule (la vidéo a sa propre zone). Connecté = le robot reçoit nos battements. */
+  if (!S.rb) { icl = 2; ict = "Déconnecté"; }
+  else if (!gs) { icl = 1; ict = "Connexion…"; }
+  else if (gs.tripped) { icl = 2; ict = "Robot arrêté"; }
+  else if (gs.pilot && gs.pilot !== TABID && gs.cc === "ok") { icl = 1; ict = "Autre onglet"; }
+  else if (gs.cc !== "ok") { icl = 2; ict = "Déconnecté"; }
+  else { ict = "Connecté"; }
+  ic.dataset.lv = icl; $("#iCCT").textContent = ict;
   ic.title = gs && gs.reason ? gs.reason : "";
   var it = $("#iTrac"), tr = (S.rb && TR) ? TR : null;
   it.dataset.lv = !tr ? 1 : tr.latched ? 2 : tr.armed ? 1 : 0;
@@ -860,7 +874,23 @@ function hdrUpdate() {
   var worstLv = 0; Object.keys(DT).forEach(function (k) { worstLv = Math.max(worstLv, DT[k].level); }); st.classList.toggle("crit", worstLv === 2);
 }
 setInterval(function () { REG.forEach(function (fn) { fn(); }); hdrUpdate(); pillsUpdate(); }, 250);
-setInterval(hbSend, 500); setInterval(rbPing, 2000); setInterval(vidStats, 2000);
+/* CADENCE DU BATTEMENT : un Web Worker, pas setInterval de la page. Mesure (2026-11-10) : onglet masque ou recouvert, le
+   navigateur ramene les minuteries de la PAGE a ~1 s (battements a 1000 ms au lieu de 500) ; au-dela de 1,5 s le garde-fou
+   voit un CC perdu, et si la traction est armee il la coupe : un FAUX POSITIF. Les minuteries d'un worker ne sont pas
+   ralenties de cette facon ; la page n'a plus qu'a envoyer le message a chaque tic (evenement, pas minuterie). Repli sur
+   setInterval si le worker est indisponible. Un onglet vraiment gele ou ferme se tait toujours : l'arret reste voulu. */
+var HB = { worker: false, ticks: 0 };
+(function () {
+  try {
+    var src = "var t=setInterval(function(){postMessage(1)},500);onmessage=function(e){if(e.data==='stop')clearInterval(t)}";
+    var w = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
+    w.onmessage = function () { HB.ticks++; hbSend(); };
+    w.onerror = function () { if (HB.worker) { HB.worker = false; HB.iv = setInterval(hbSend, 500); } };
+    HB.worker = true;
+  } catch (e) { HB.worker = false; }
+  if (!HB.worker) HB.iv = setInterval(hbSend, 500);
+})();
+setInterval(rbPing, 2000); setInterval(vidStats, 2000);
 var wv = wave.children;
 function frame(ts) {
   stage.draw(ts); RAFP.forEach(function (fn) { fn(ts); });
@@ -871,7 +901,7 @@ if (HASH.src) toggleSrc(true);
 setMode(HASH.mode && BUILD[HASH.mode] ? HASH.mode : "vitals", true);
 log(0, "Session ouverte"); typeAI(); rbConnect(); vidStart();
 if (HASH.open === "journal") toggleSlide("journal", openJournal); else if (HASH.open === "keys") toggleSlide("keys", openKeys);
-window.CC = { test: { hide: function (h) { Object.defineProperty(document, "hidden", { configurable: true, get: function () { return h; } }); document.dispatchEvent(new Event("visibilitychange")); }, subs: function () { return Object.keys(SUBS).sort(); }, linkOk: function () { return ccLinkOk(); }, calls: CALLS_OUT, arm: ARM }, V: V, S: S, inject: function (topic, msg) { var d = HANDLERS[topic]; if (d) d[3](msg); }, state: function () { return { rb: S.rb, vid: S.vid, tasks: Object.keys(DT).length, mods: DMODS.length, V: V, pad: S.pad, mode: S.robotMode, charging: S.charging, T: T }; } };
+window.CC = { test: { hide: function (h) { Object.defineProperty(document, "hidden", { configurable: true, get: function () { return h; } }); document.dispatchEvent(new Event("visibilitychange")); }, subs: function () { return Object.keys(SUBS).sort(); }, linkOk: function () { return ccLinkOk(); }, calls: CALLS_OUT, arm: ARM, hb: HB }, V: V, S: S, inject: function (topic, msg) { var d = HANDLERS[topic]; if (d) d[3](msg); }, state: function () { return { rb: S.rb, vid: S.vid, tasks: Object.keys(DT).length, mods: DMODS.length, V: V, pad: S.pad, mode: S.robotMode, charging: S.charging, T: T }; } };
 requestAnimationFrame(frame);
 })();
 </script>

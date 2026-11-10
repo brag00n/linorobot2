@@ -71,7 +71,7 @@ function Gauge(o) {
   root.appendChild(h("div", "gl", o.label)); srcTag(root, o.src); var sd = StatusDot(root, o.src);
   var last = "", lastLv = 0;
   var w = { root: root, cur: "", setUnit: function (t) { if (gu.textContent !== t) gu.textContent = t; }, set: function (v) {
-    var ok = isFinite(v); sd.set(ok); if (!ok) v = min; var p = clamp((v - min) / (max - min), 0, 1); val.style.strokeDashoffset = 100 - p * 100;
+    var ok = isFinite(v); sd.set(ok || !!(o.alive && o.alive())); if (!ok) v = min; var p = clamp((v - min) / (max - min), 0, 1); val.style.strokeDashoffset = 100 - p * 100;
     var on = Math.round(p * N); for (var j = 0; j <= N; j++) tk[j].classList.toggle("on", p > 0 && j <= on);
     var s = ok ? fmt(v, o.dec || 0) : "—";
     if (s !== last) { if (gv._scr) gv._want = s; else gv.textContent = s; if (last !== "") flashEl(gv); last = s; }
@@ -87,7 +87,7 @@ function Bar(o) {
   root.append(bh, segs); srcTag(root, o.src); var sd = StatusDot(root, o.src);
   var last = "", lastLv = 0;
   return { root: root, set: function (v) {
-    var ok = isFinite(v); sd.set(ok); var on = ok ? Math.round(clamp((v - min) / (max - min), 0, 1) * N) : 0; for (var j = 0; j < N; j++) it[j].classList.toggle("on", j < on);
+    var ok = isFinite(v); sd.set(ok || !!(o.alive && o.alive())); var on = ok ? Math.round(clamp((v - min) / (max - min), 0, 1) * N) : 0; for (var j = 0; j < N; j++) it[j].classList.toggle("on", j < on);
     var s2 = !ok ? "—" : o.fn ? o.fn(v) : fmt(v, o.dec || 0); if (s2 !== last) { if (bv._scr) bv._want = s2; else bv.textContent = s2; if (last !== "") flashEl(bv); last = s2; }
     var L = lvOf(v, o.warn, o.crit, o.dir); if (L !== lastLv) { root.dataset.lv = L; lastLv = L; }
   }, intro: function () { scramble(bv, last, 600); } };
