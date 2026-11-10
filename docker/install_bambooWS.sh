@@ -539,6 +539,23 @@ else ok "rosbridge $RB_HAVE dans l'image (voulu >= ${RB_WANT:-?})"; fi
 # la boucle locale ; mode http (defaut) = comportement historique. Bascule : docker/secure.sh.
 if ss -ltn 2>/dev/null | grep -q ":8443 "; then ok "proxy HTTPS en ecoute : https://<rpi>:8443/cc/"
 else warn "proxy HTTPS muet (:8443) : docker compose up -d proxy"; fi
+# Correctif du proxy (2026-11-10) : HTTP/3 (QUIC) desactive. Mesure : avec lui, les battements du CC (500 ms) arrivaient par paquets de 4 toutes les
+# 3 s, le garde-fou voyait un CC « perdu » une fois sur deux et aurait coupe la traction armee (faux positif). Sans lui : 500 ms reguliers.
+# Deux choses a verifier : le FICHIER du depot porte le correctif, et le CONTENEUR en marche l'a pris (un Caddyfile modifie n'est relu qu'au
+# redemarrage -- `admin off` interdit le rechargement a chaud). Un proxy qui ecoute encore en UDP :8443 sert toujours du HTTP/3.
+if ! grep -qE '^[[:space:]]*protocols[[:space:]]+h1[[:space:]]+h2' "$HERE/proxy/Caddyfile" 2>/dev/null; then
+    warn "proxy/Caddyfile sans « protocols h1 h2 » : HTTP/3 actif, battements du CC par rafales (git pull du depot, puis --apply)"
+elif ss -ulnH 2>/dev/null | grep -q ":8443 "; then
+    if [ "$APPLY" = "1" ]; then
+        docker restart "${PROJECT}-proxy-1" >/dev/null 2>&1 \
+            && act "proxy redemarre : HTTP/3 desactive (battements du CC reguliers)" \
+            || warn "redemarrage du proxy en echec (docker restart ${PROJECT}-proxy-1)"
+    else
+        warn "proxy en marche avec l'ancienne configuration (HTTP/3 actif, UDP :8443) : --apply le redemarre"
+    fi
+else ok "proxy sans HTTP/3 : battements du CC reguliers"; fi
+if ! grep -q 'flush_interval -1' "$HERE/proxy/Caddyfile" 2>/dev/null; then
+    warn "proxy/Caddyfile sans « flush_interval -1 » sur /rosbridge (mise en tampon des trames du websocket)"; fi
 if grep -qx "BAMBOO_SECURE=https" "$ROS_REPO/docker/.env" 2>/dev/null; then
     if ss -ltn 2>/dev/null | grep -E ":9090 " | grep -vq "127.0.0.1"; then
         warn "mode https mais rosbridge :9090 ecoute encore sur le reseau (ROSBRIDGE_BIND)"

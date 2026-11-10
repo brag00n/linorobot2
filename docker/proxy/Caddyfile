@@ -11,6 +11,10 @@
 # explicite plutot qu'un joker.
 {
 	admin off
+	# HTTP/1.1 + HTTP/2 seulement : pas de QUIC (UDP) pour les websockets, dont le regroupement par rafales de 3 s a ete mesure.
+	servers {
+		protocols h1 h2
+	}
 	auto_https disable_redirects
 }
 
@@ -19,7 +23,11 @@ https://192.168.1.164:8443, https://10.3.141.1:8443, https://bamboo.local:8443 {
 
 	# rosbridge (WebSocket) : wss://<hote>:8443/rosbridge -> ws://localhost:9090
 	handle_path /rosbridge* {
-		reverse_proxy localhost:9090
+		# flush_interval -1 : aucune mise en tampon des trames (battement du garde-fou a 500 ms ; mesure du 2026-11-10 :
+		# paquets de 4 toutes les 3 s en TLS, reguliers en direct).
+		reverse_proxy localhost:9090 {
+			flush_interval -1
+		}
 	}
 
 	# Video WebRTC brute du CC : signalisation WHEP seulement (https://<hote>:8443/raw/whep).
