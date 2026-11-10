@@ -30,6 +30,9 @@ setup(
             # Calibration du glissement en rotation (arbre py_trees, action Calibrate) :
             #   ros2 launch bamboo_base calibration.launch.py robot:=<robot>
             "calibration_node = bamboo_base.calibration_node:main",
+            # Statistiques d'energie en temps reel (collecte seule) : /bamboo/energy + journaux
+            # a taille bornee. Lance par le service compose `battery_energy`.
+            "battery_energy = bamboo_base.battery_energy_node:main",
             # Resolveur materiel (VID:PID -> /dev/...), utile en verification :
             #   ros2 run bamboo_base hw_resolve
             "hw_resolve = bamboo_base.hw_resolve:main",

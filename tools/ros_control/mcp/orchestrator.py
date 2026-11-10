@@ -100,6 +100,8 @@ SERVICES = {
     "bamboo_control": "groupe manette : joy_linux_node + bamboo_teleop -- modes du tracking, pas relatifs des axes servo (robot a nacelle), traction derriere DEUX verrous (motion_enabled, enable_cmd_vel)",
     "bamboo_diagnostics": "groupe diagnostic : diagnostic_aggregator + bamboo_health -- arbre /diagnostics_agg du robot de ROBOT=",
     "bamboo_calibration": "calibration du glissement en rotation (action /bamboo_calibration/calibrate, arbre py_trees) -- LE ROBOT TOURNE pendant une mesure ; BambooWS seulement",
+    "battery_energy": "statistiques d'energie (bamboo_base/battery_energy) : /bamboo/energy + journaux a taille "
+                      "bornee dans data/energy/ -- COLLECTE seule, ne pilote rien ; BambooWS",
     "bringup.stm32": "bringup COMPLET de bambooSTM32YB en un conteneur (banc) : EXCLUSIF avec bamboo_video/bamboo_videotracking/driver.stm32",
     "bringup.esp32": "bringup COMPLET de BambooWS en un conteneur (banc) : EXCLUSIF avec bamboo_video/bamboo_videotracking/driver.esp32",
     "robotdesc": "robot_state_publisher (description URDF)",

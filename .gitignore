@@ -21,3 +21,6 @@ docker/ap/secret/*
 # sources TIERCES recuperees par docker/fetch_sources.sh (commit fige dans le script) :
 # compilees dans l'espace de travail, jamais versionnees ici.
 third_party/
+
+# journaux d energie du robot (bamboo_base/battery_energy) : ecrits au fil de l eau, taille bornee, propres a la machine.
+data/energy/

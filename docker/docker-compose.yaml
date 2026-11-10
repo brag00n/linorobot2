@@ -685,6 +685,29 @@ services:
       source install/setup.bash &&
       ros2 launch bamboo_base calibration.launch.py robot:=${ROBOT}"
 
+#--- Statistiques d'ENERGIE (bamboo_base/battery_energy_node, 2026-11-10) : COLLECTE seule, ne
+#    pilote rien. Lit /battery, /odom/unfiltered et /navigation/state ; publie /bamboo/energy
+#    (JSON, 1 Hz : courant et puissance par activite, energie depuis le debranchement du
+#    chargeur, resistance interne en roulage, autonomie PROVISOIRE) et journalise dans
+#    data/energy/ (non versionne) avec une taille BORNEE : rotation 2 Mo, gzip, plafond 30 Mo,
+#    arret des ecritures sous 1 Go libre. Lance par `python3 -m` : aucun colcon necessaire pour
+#    un module Python de bamboo_base (le build est en liens symboliques) ; l'entree
+#    `battery_energy` de setup.py servira a la prochaine compilation. Depot monte en ECRITURE
+#    (le journal s'ecrit dedans). Meme image que le driver : zero octet de disque en plus.
+  battery_energy:
+    extends: base
+    profiles: ["boot", "esp32"]
+    restart: unless-stopped
+    volumes:
+      - ..:/root/linorobot2_ws/src/linorobot2:rw
+      - ws_build:/root/linorobot2_ws/build:ro
+      - ws_install:/root/linorobot2_ws/install:ro
+    command: >
+      bash -lc "cd /root/linorobot2_ws &&
+      test -f install/setup.bash &&
+      source install/setup.bash &&
+      exec python3 -m bamboo_base.battery_energy_node"
+
 #--- Controleur STM32 (Yahboom ROS Control Board V3.0, pont MAVLink sysid 1) : proprietaire
 #    UNIQUE du CH340. LECTURE SEULE par defaut (enable_cmd_vel:=false) : le pack 12,6 V arrive
 #    brut sur des moteurs 7,4 V. Les SERVOS, eux, passent par /servo/cmd et sont bornes cote
