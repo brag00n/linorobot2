@@ -85,6 +85,18 @@ def _ccGuard():
     )
 
 
+def _missionManager():
+    """Les MISSIONS du Command Center (capacites enchainees, config/missions.yaml). Il appelle les services
+    de la navigation et de la pile NAV ; il ne pilote aucun moteur et ne s ARME jamais : une etape qui roule
+    exige la traction deja armee par l utilisateur et la liaison du CC saine."""
+    return Node(
+        package="bamboo_control", executable="mission_node", name="bamboo_mission_manager",
+        parameters=[{"missions_file": os.path.join(get_package_share_directory("bamboo_control"), "config",
+                                                   "missions.yaml")}],
+        output="screen",
+    )
+
+
 def _teleop(config, has_gimbal, cmd_topic=None):
     """Le noeud bamboo_teleop, cree ICI et non dans la LaunchDescription.
 
@@ -139,7 +151,7 @@ def _checkAxes(context, *args, **kwargs):
     canonical = resolveRobotConfig(robot, robot_config)
     control, wnotes = _wiring(canonical)
     out = LaunchConfiguration("cmd_vel_out_topic").perform(context) or control["cmd_vel_teleop"]
-    infra = [LogInfo(msg=n) for n in wnotes] + [_mux(control), _ccGuard()]
+    infra = [LogInfo(msg=n) for n in wnotes] + [_mux(control), _ccGuard(), _missionManager()]
     with open(canonical, "r", encoding="utf-8") as fh:
         doc = yaml.safe_load(fh) or {}
     params = {}

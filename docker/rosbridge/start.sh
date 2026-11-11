@@ -20,8 +20,10 @@ TOPICS="/battery,/esp32_status,/wheel_rpm,/imu/*,/odom*,/scan,/tf,/tf_static,/ma
 /videotracking/stats,/videotracking/track_state,/videotracking/recognition,/videotracking/enriched/compressed,\
 /motion_compensation/state,/teleop/state,/bamboo/*,/bamboo_calibration/battery,/bamboo_calibration/report,\
 /navigation/state,/navigation/robot_pose,/navigation/frontiers,/navigation/home,/navigation/map_preview,\
-/cc/heartbeat,/cc/guard/state"
-PUB_TOPICS="/cc/heartbeat"
+/cc/heartbeat,/cc/guard/state,/cc/mission/state,/cc/mission/list"
+# Publiable depuis le reseau : le battement, et les DEUX demandes de mission (lancer, arreter). Une demande de mission
+# ne commande aucun moteur : le moteur de missions refuse toute etape qui roule sans traction armee ET liaison saine.
+PUB_TOPICS="/cc/heartbeat,/cc/mission/request,/cc/mission/cancel_req"
 
 SERVICES="/rosapi/*,/bamboo/*,/cc/guard/arm,/cc/guard/arm_locked,/nav_supervisor/command,\
 */get_parameters,*/list_parameters,*/describe_parameters,*/get_parameter_types,*/set_parameters,\

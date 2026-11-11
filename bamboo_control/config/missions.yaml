@@ -1,0 +1,143 @@
+# ============================================================================
+# bamboo_mission_manager -- CAPACITES et MISSIONS du robot (2026-11-10)
+# ============================================================================
+# Une CAPACITE est une chose que le robot sait faire (relocaliser, explorer, naviguer...). Elle
+# se declare : ce qu'elle exige, comment on la lance, comment on sait qu'elle est PRETE ou
+# TERMINEE. Une MISSION est une liste ordonnee de capacites. Le moteur (mission_core.py) les
+# deroule, et refuse de lancer une etape dont un prerequis n'est pas satisfait.
+#
+# Chaque champ « appel » est une chaine `service|arg` ; `args` est un JSON de la requete.
+#
+#   exige         capacites qui doivent deja etre PRETES (le moteur les ajoute au besoin, dans
+#                 l'ordre, devant l'etape)
+#   demarre       appel qui active la capacite (service) ; absent = rien a demarrer
+#   pret_quand    condition d'etat (voir mission_core.check) : la capacite est utilisable
+#   lance         appel qui declenche l'action (relocaliser, explorer...) ; absent = sans action
+#   fini_quand    condition d'etat : l'action est terminee. Absent = la mission continue des
+#                 que `lance` a repondu OK (ou `pret_quand` est vrai pour une capacite d'etat)
+#   delai_s       temps maximal accorde a l'etape ; passe ce delai, la mission ECHOUE avec la
+#                 raison, et annule ce qu'elle avait lance
+#   arme          vrai si le robot BOUGE pendant l'etape : exige la traction armee ET la liaison
+#                 du CC saine (garde-fou). Le moteur ne l'arme JAMAIS lui-meme.
+#   annule        appel execute pour interrompre l'etape (ARRET d'urgence ou echec)
+#   maintien_s    la condition `fini_quand` doit TENIR ce nombre de secondes avant que l'etape soit finie
+#                 (une localisation « ok » qui retombe aussitot n'est pas une fin)
+#   garde         condition a verifier AU LANCEMENT de l'etape ; fausse, la mission est annulee avec la raison
+#   surveille     condition qui doit RESTER vraie pendant que le robot roule ; fausse, annulation + arret
+#
+# Conditions d'etat (cle -> valeur attendue, ET logique) :
+#   nav.loc_state: ["ok"]            champ de /navigation/state
+#   nav.submode: ["navigation"]
+#   nav.ready: [true]
+#   nav.auto_state: ["off"]
+#   nav.goal_status: ["succeeded"]
+#   noeud: "/nav_supervisor"        noeud ROS vivant
+#   batt.pct_min: 25                charge minimale (%) -- jamais lance sous ce seuil
+# ============================================================================
+
+capacites:
+
+  # --- la pile NAV : lidar + navigation (groupe a la demande `nav`) ---------------------------
+  pile_nav:
+    description: "Demarre le lidar et la navigation (environ 30 s)"
+    demarre: {service: "/bamboo/nav_stack", args: {data: true}}
+    pret_quand: {noeud: "/nav_supervisor", "nav.ready": [true]}
+    delai_s: 90
+    annule: {service: "/bamboo/nav_stack", args: {data: false}}
+
+  # --- relocalisation : retrouver sa place sur la carte courante ---------------------------------
+  relocalisation:
+    description: "Relocalise le robot sur la carte courante (locale, puis globale)"
+    exige: [pile_nav, mode_navigation]
+    lance: {service: "/nav_supervisor/command", args: {command: "relocalize", arg: ""}}
+    fini_quand: {"nav.loc_state": ["ok"]}
+    maintien_s: 15
+    delai_s: 150
+
+  # --- sous-modes du superviseur NAV ----------------------------------------------------------------
+  mode_navigation:
+    description: "Passe le superviseur en sous-mode navigation (carte courante)"
+    exige: [pile_nav]
+    lance: {service: "/nav_supervisor/command", args: {command: "navigation", arg: ""}}
+    fini_quand: {"nav.submode": ["navigation"]}
+    delai_s: 60
+
+  mode_exploration:
+    description: "Passe le superviseur en sous-mode exploration (complete la carte courante)"
+    exige: [pile_nav]
+    lance: {service: "/nav_supervisor/command", args: {command: "exploration", arg: ""}}
+    fini_quand: {"nav.submode": ["exploration"]}
+    delai_s: 60
+
+  # --- exploration automatique : le robot ROULE ----------------------------------------------------
+  exploration:
+    description: "Explore automatiquement les gates puis revient au depart"
+    exige: [mode_exploration]
+    arme: true
+    garde: {"nav.loc_state": ["ok"]}
+    surveille: {"nav.loc_state": ["ok", "douteuse"]}
+    lance: {service: "/nav_supervisor/command", args: {command: "auto_explore", arg: ""}}
+    fini_quand: {"nav.auto_state": ["off"]}
+    delai_s: 900
+    annule: {service: "/nav_supervisor/command", args: {command: "cancel_all", arg: ""}}
+
+  # --- aller a une destination : le robot ROULE ------------------------------------------------------
+  navigation:
+    description: "Va a la destination donnee en parametre de mission"
+    exige: [relocalisation]
+    arme: true
+    garde: {"nav.loc_state": ["ok"]}
+    surveille: {"nav.loc_state": ["ok", "douteuse"]}
+    lance: {service: "/nav_supervisor/command", args: {command: "goto", arg: "$destination"}}
+    fini_quand: {"nav.goal_status": ["succeeded"]}
+    delai_s: 300
+    annule: {service: "/nav_supervisor/command", args: {command: "cancel_all", arg: ""}}
+
+  # --- ronde : le robot ROULE ----------------------------------------------------------------------------
+  ronde:
+    description: "Parcourt les destinations de la carte en boucle"
+    exige: [relocalisation]
+    arme: true
+    garde: {"nav.loc_state": ["ok"]}
+    surveille: {"nav.loc_state": ["ok", "douteuse"]}
+    lance: {service: "/nav_supervisor/command", args: {command: "patrol", arg: ""}}
+    fini_quand: {"nav.auto_state": ["off"]}
+    delai_s: 1800
+    annule: {service: "/nav_supervisor/command", args: {command: "cancel_all", arg: ""}}
+
+  # --- retour au depart : le robot ROULE ----------------------------------------------------------------
+  retour_depart:
+    description: "Retourne au point de depart"
+    exige: [relocalisation]
+    arme: true
+    garde: {"nav.loc_state": ["ok"]}
+    surveille: {"nav.loc_state": ["ok", "douteuse"]}
+    lance: {service: "/nav_supervisor/command", args: {command: "goto", arg: "home"}}
+    fini_quand: {"nav.goal_status": ["succeeded"]}
+    delai_s: 300
+    annule: {service: "/nav_supervisor/command", args: {command: "cancel_all", arg: ""}}
+
+
+# ---- missions : des listes de capacites. Les prerequis sont ajoutes automatiquement. ----------
+missions:
+
+  Exploration:
+    description: "Active la pile NAV, relocalise, puis explore automatiquement"
+    etapes: [pile_nav, relocalisation, mode_exploration, exploration]
+
+  Navigation:
+    description: "Active la pile NAV, relocalise, puis va a une destination"
+    etapes: [pile_nav, relocalisation, navigation]
+    parametres: [destination]
+
+  Ronde:
+    description: "Active la pile NAV, relocalise, puis parcourt les destinations"
+    etapes: [pile_nav, relocalisation, ronde]
+
+  Retour:
+    description: "Retourne au point de depart"
+    etapes: [pile_nav, relocalisation, retour_depart]
+
+  Preparation_NAV:
+    description: "Prepare la navigation sans bouger : pile NAV + relocalisation"
+    etapes: [pile_nav, relocalisation]

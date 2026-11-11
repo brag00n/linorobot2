@@ -32,6 +32,8 @@ setup(
             "cmd_vel_mux = bamboo_control.cmd_vel_mux_node:main",
             # Garde-fou du Command Center : battement de coeur + video, arret si l'un manque.
             "cc_guard = bamboo_control.cc_guard_node:main",
+            # Missions du Command Center : des capacites enchainees (mission_core.py, config/missions.yaml).
+            "mission_node = bamboo_control.mission_node:main",
         ],
     },
 )

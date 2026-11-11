@@ -102,6 +102,8 @@ var V = { bat_v: NaN, soc: NaN, cur: NaN, speed: NaN, cpu: NaN, temp: NaN, mem: 
 var T = null, TT = 0, NAV = null, NAVT = 0, MC = null, BC = null, E32 = null, DT = {}, DMODS = [], HL = null;
 /* Énergie (nœud battery_energy, /bamboo/energy, JSON 1 Hz) : autonomie restante PROVISOIRE tant que `fiable` est faux. */
 var EN = null, ENT = 0;
+/* Missions (nœud bamboo_mission_manager) : liste des missions et état d'avancement, publiés par le robot. */
+var MIS = { list: [], st: null, t: 0 };
 function enFresh() { return EN && performance.now() - ENT < 5000; }
 function enDur(min) { return min == null || !isFinite(min) ? "—" : min >= 90 ? Math.floor(min / 60) + " h " + ("0" + Math.round(min % 60)).slice(-2) : Math.round(min) + " min"; }
 function enAuto() { /* texte d'autonomie, "" si inconnue ; « ~ » = estimation non encore confirmée par une décharge réelle */
@@ -152,6 +154,8 @@ var HANDLERS = {
   "/navigation/state": ["bamboo_interfaces/msg/NavState", 500, 1, function (m) { NAV = m; NAVT = performance.now(); }],
   "/bamboo_calibration/battery": ["bamboo_interfaces/msg/BatteryCalibState", 1000, 1, function (m) { BC = m; }],
   "/bamboo/energy": ["std_msgs/msg/String", 1000, 1, function (m) { try { EN = JSON.parse(m.data); ENT = performance.now(); } catch (e) { } }],
+  "/cc/mission/list": ["std_msgs/msg/String", 0, 1, function (m) { try { MIS.list = JSON.parse(m.data); } catch (e) { } }],
+  "/cc/mission/state": ["std_msgs/msg/String", 500, 1, function (m) { try { MIS.st = JSON.parse(m.data); MIS.t = performance.now(); } catch (e) { } }],
   "/diagnostics_agg": ["diagnostic_msgs/msg/DiagnosticArray", 1000, 1, onDiag],
   "/rosout": ["rcl_interfaces/msg/Log", 0, 40, function (m) {
     if (m.level < 20) return; var l = m.level >= 40 ? 2 : m.level >= 30 ? 1 : 0, t = "[" + m.name + "] " + String(m.msg).replace(/\s+/g, " ");
@@ -175,7 +179,7 @@ function hbSend() {
    le cout suit donc la cadence SOURCE (wheel_rpm 20 Hz = +7 points de CPU, motion_compensation 20 Hz = +9). Ceux-la ne servent
    que dans certains modes. Les autres topics rapides (battery, esp32_status, track_state) nourrissent l'incrustation video et
    l'en-tete, visibles partout : ils restent abonnes. Sans entree ici = toujours abonne. */
-var SCOPE = { "/wheel_rpm": ["vitals"], "/motion_compensation/state": ["config", "calib"] };
+var SCOPE = { "/cc/mission/list": ["mission"], "/cc/mission/state": ["mission"], "/wheel_rpm": ["vitals"], "/motion_compensation/state": ["config", "calib"] };
 var SUBS = {};                                   // topic -> id d'abonnement en cours
 var SCOPE_CLEAR = {                               // valeurs a vider quand on se desabonne (pas d'ancienne valeur affichee au retour)
   "/wheel_rpm": function () { V.rpmL = NaN; V.rpmR = NaN; },
@@ -542,11 +546,57 @@ function panelMission(pb) {
     addB.disabled = !fresh; addB.style.opacity = fresh ? "" : ".4";
     msgP.textContent = performance.now() - MS.msgT < 7000 ? MS.msg : "";
   });
-  var b2 = block("Objectifs", 3, "faisabilité"), L = h("div", "lst"); srcTag(L, "analyse du code existant — pilotage depuis cette page : jalon 2");
-  [["Exploration", "ok", "Prêt", "NavCommand exploration / auto_explore existent"], ["Identifier & suivre", "part", "Partiel", "visages seulement ; classes d'objets à ajouter"], ["Ronde", "part", "Partiel", "goto de destination existe ; enchaînement à écrire"],
-   ["Surveillance", "todo", "À construire", "moteur d'alertes à écrire"], ["Retour base", "part", "Partiel", "goto home existe ; accostage à faire"]].forEach(function (x) {
-    var li = h("div", "li", '<i class="dotc ' + (x[1] === "ok" ? "" : x[1] === "part" ? "w" : "e") + '"></i><div><b></b><small></small></div><span class="st ' + x[1] + '">' + x[2] + '</span>'); li.querySelector("b").textContent = x[0]; li.querySelector("small").textContent = x[3]; L.appendChild(li); });
-  b2.appendChild(L); pb.appendChild(b2);
+  /* --- MISSIONS : des capacités enchaînées, exécutées PAR LE ROBOT (nœud bamboo_mission_manager) ---
+     La page ne fait que demander (/cc/mission/request) et lire l'avancement (/cc/mission/state) : une mission continue
+     donc si l'onglet se ferme, et le garde-fou coupe de toute façon un robot qui roule sans CC. */
+  var b2 = block("Missions", 3, "/cc/mission/list · /cc/mission/state"), mw2 = h("div", "prm"), ML = h("div", "lst"), MSTEP = h("div", "lst"), MST = h("p", "pdesc", "");
+  var MCTL = h("div", "tags2"), mGo = h("button", "btn pri", "Lancer la mission"), mStop = h("button", "btn", "Annuler la mission"), mPar = h("input");
+  mGo.type = "button"; mStop.type = "button"; mPar.type = "text"; mPar.placeholder = "destination (ex. p1)"; mPar.setAttribute("aria-label", "Destination de la mission"); mPar.style.cssText = "flex:1;min-width:120px;display:none";
+  MCTL.append(mPar, mGo, mStop); mw2.append(ML, MCTL, MST, MSTEP); b2.appendChild(mw2); pb.appendChild(b2);
+  var mSel = null, mKey = "", mSteps = "";
+  var mCur = function () { return (MIS.list || []).filter(function (x) { return x.id === mSel; })[0]; };
+  var mBusy = function () { return !!(MIS.st && MIS.st.etat === "running"); };
+  mGo.onclick = function () {
+    var m = mCur(); if (!m) return; var p = {};
+    (m.parametres || []).forEach(function (k) { p[k] = k === "destination" ? (mPar.value.trim() || (MS.dest != null ? String(MS.dest) : "")) : ""; });
+    if (HASH.test === "1") { CALLS_OUT.push("mission:" + JSON.stringify({ mission: m.id, params: p })); msSay("test : mission non envoyée"); return; }
+    rbSend({ op: "publish", topic: "/cc/mission/request", msg: { data: JSON.stringify({ mission: m.id, params: p }) } });
+    log(0, "Mission « " + m.id + " » demandée"); msSay("Mission demandée…"); };
+  mStop.onclick = function () {
+    if (HASH.test === "1") { CALLS_OUT.push("mission:cancel"); return; }
+    rbSend({ op: "publish", topic: "/cc/mission/cancel_req", msg: { data: "1" } }); navStop(); log(1, "Mission : annulation demandée"); };
+  REG.push(function () {
+    var list = MIS.list || [], st = MIS.st, fresh = MIS.t && performance.now() - MIS.t < 6000;
+    var key = JSON.stringify([list.map(function (x) { return x.id; }), mSel, mBusy(), fresh]);
+    if (key !== mKey) {
+      mKey = key; ML.replaceChildren();
+      if (!list.length) ML.appendChild(h("div", "li", "<div><b>Aucune mission</b><small>nœud bamboo_mission_manager absent ou muet</small></div>"));
+      list.forEach(function (m) {
+        var on = m.id === mSel, li = h("div", "li" + (on ? " sel" : ""), '<i class="dotc ' + (m.roule ? "w" : "") + '"></i><div><b></b><small></small></div>' + (m.roule ? '<span class="st part">roule</span>' : '<span class="st ok">immobile</span>'));
+        li.querySelector("b").textContent = m.id.replace(/_/g, " "); li.querySelector("small").textContent = m.description;
+        li.style.cursor = "pointer"; li.setAttribute("role", "button"); li.tabIndex = 0;
+        var pick = function () { mSel = m.id; mKey = ""; };
+        li.onclick = pick; li.onkeydown = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
+        ML.appendChild(li); });
+    }
+    var m = mCur(); mPar.style.display = m && (m.parametres || []).indexOf("destination") >= 0 ? "" : "none";
+    var why = !S.rb ? "rosbridge non connecté" : !m ? "Choisissez une mission" : mBusy() ? "Une mission est déjà en cours" : (m.roule && !ccLinkOk()) ? ccLinkWhy() : (m.roule && !(TR && TR.armed)) ? "Traction désarmée : armer d'abord (A maintenu) — le robot ne s'arme jamais seul" : "";
+    mGo.disabled = !!why; mGo.style.opacity = why ? ".4" : ""; mGo.title = why;
+    mStop.disabled = !S.rb; mStop.style.opacity = S.rb ? "" : ".4";
+    var txt = st ? (st.etat === "running" ? "En cours : " + st.mission.replace(/_/g, " ") : st.etat === "done" ? "Terminée : " + st.mission.replace(/_/g, " ") : st.etat === "failed" ? "ÉCHEC : " + st.raison : st.etat === "cancelled" ? "Annulée : " + st.raison : "") : "";
+    if (st && st.reponse && (!txt || st.etat === "idle")) txt = st.reponse;
+    if (MST.textContent !== txt) MST.textContent = txt;
+    var sk = st ? JSON.stringify(st.etapes) + st.etat : "";
+    if (sk !== mSteps) {
+      mSteps = sk; MSTEP.replaceChildren();
+      (st && st.etapes || []).forEach(function (e, i) {
+        var c = e.etat === "done" ? "" : e.etat === "failed" ? "e" : e.etat === "pending" || e.etat === "cancelled" ? "o" : "w";
+        var li = h("div", "li" + (st.etat === "running" && i === st.i ? " sel" : ""), '<i class="dotc ' + c + '"></i><div><b></b><small></small></div><span class="st ' + (e.etat === "done" ? "ok" : e.etat === "failed" ? "todo" : "part") + '"></span>');
+        li.querySelector("b").textContent = (i + 1) + ". " + e.desc; li.querySelector("small").textContent = e.roule ? "le robot roule" : "";
+        li.querySelector(".st").textContent = ({ done: "fait", pending: "à venir", waiting_ready: "attente", running: "en cours", starting: "départ", failed: "échec", cancelled: "annulée" })[e.etat] || e.etat;
+        MSTEP.appendChild(li); });
+    }
+  });
   var b3 = block("Carte", 4, "/map"), mw = h("div", "card fr"); mw.innerHTML = '<div class="micro">Carte de navigation</div><p class="pdesc" style="margin:0">Le tracé de la carte arrive au jalon 2. Il demande la pile NAV (lidar + SLAM), éteinte au repos.</p>'; b3.appendChild(mw); pb.appendChild(b3);
 }
 function stripMission(st) {
