@@ -175,3 +175,36 @@ def test_jsonl_tail_keeps_only_the_last_lines():
             lines = fh.readlines()
         assert len(lines) <= 12 and '"n": 99' in lines[-1]
         assert os.path.getsize(j.path) < 600
+
+
+# --- segment impossible (2026-11-10) : 2,69 Ah comptes « sur batterie » pour un pack de 0,88 Ah, jauge a 100 % ------
+
+def test_a_segment_above_the_pack_capacity_without_gauge_movement_is_invalid():
+    st = es.EnergyStats(capacity_ah=0.88)
+    t = feed(st, 10, charging=True)
+    # 0,65 A pendant 2 h = 1,3 Ah > 1,5 x 0,88 = 1,32 ? non : on prend 3 h = 1,95 Ah
+    for k in range(3 * 3600):
+        st.update(t + 0.2 + k, 12.05, 0.65, 0, 0, False, 100.0)
+    s = st.snapshot()
+    assert s["segment_invalide"] is True
+    assert s["autonomie_min"] is None and s["fiable"] is False
+    st.update(t + 0.2 + 3 * 3600 + 1, 12.05, 0.65, 0, 0, True, None)      # le chargeur est enfin vu
+    sm = st.take_summary()
+    assert sm["invalide"] is True
+
+
+def test_a_real_discharge_beyond_the_capacity_is_not_flagged():
+    """Un pack qui perd 40 points de jauge a bien consomme ce qu'il a consomme : le segment est valide."""
+    st = es.EnergyStats(capacity_ah=0.88)
+    t = feed(st, 10, charging=True)
+    for k in range(3 * 3600):
+        st.update(t + 0.2 + k, 11.0, 0.65, 0, 0, False, 100.0 - 40.0 * k / (3 * 3600))
+    assert st.snapshot()["segment_invalide"] is False
+
+
+def test_a_normal_short_segment_is_valid():
+    st = es.EnergyStats(capacity_ah=0.88)
+    t = feed(st, 10, charging=True)
+    feed(st, 600, charging=False, soc=100.0, t0=t + 0.2, i=0.66)
+    s = st.snapshot()
+    assert s["segment_invalide"] is False and s["autonomie_min"] is not None

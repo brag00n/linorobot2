@@ -48,13 +48,16 @@ class EnergyStats:
     """Cumuls d'energie. Le courant est compte POSITIF en decharge (le noeud inverse BatteryState)."""
 
     def __init__(self, capacity_ah=0.88, ema_s=60.0, r_window_s=120.0, r_min_spread_a=0.3,
-                 max_gap_s=2.0, reliable_after_s=300.0):
+                 max_gap_s=2.0, reliable_after_s=300.0, impossible_ratio=1.5):
         self.capacity_ah = float(capacity_ah)
         self.ema_s = float(ema_s)
         self.r_window_s = float(r_window_s)
         self.r_min_spread_a = float(r_min_spread_a)
         self.max_gap_s = float(max_gap_s)
         self.reliable_after_s = float(reliable_after_s)
+        # Un segment qui consomme plus de impossible_ratio x la capacite du pack SANS que la jauge ait baisse de 5 points est
+        # physiquement impossible : le chargeur etait branche sans etre vu (2026-11-10 : 2,69 Ah comptes pour un pack de 0,88 Ah).
+        self.impossible_ratio = float(impossible_ratio)
         self.acc = {a: {"t": 0.0, "ah": 0.0, "wh": 0.0, "d": 0.0} for a in ACTIVITIES}
         self._rbuf = collections.deque()
         self._t = None
@@ -71,6 +74,14 @@ class EnergyStats:
         self._seg = {"t0": t, "t": 0.0, "ah": 0.0, "wh": 0.0, "d": 0.0, "soc0": soc,
                      "v0": self.v, "acc0": {a: dict(self.acc[a]) for a in ACTIVITIES}}
 
+    def _implausible(self, s=None):
+        """Vrai si le segment depasse la capacite du pack alors que la jauge n'a presque pas bouge."""
+        s = s or self._seg
+        if s is None or self.capacity_ah <= 0.0 or s["ah"] <= self.impossible_ratio * self.capacity_ah:
+            return False
+        drop = (s["soc0"] - self.soc) if (s["soc0"] is not None and self.soc is not None) else 0.0
+        return drop < 5.0
+
     def end_segment(self):
         """Clot le segment en cours et en garde le resume (lu par take_summary)."""
         s = self._seg
@@ -79,7 +90,7 @@ class EnergyStats:
             return
         soc_end = self.soc
         self._summary = {
-            "kind": "segment", "duree_s": round(s["t"], 0), "ah": round(s["ah"], 4),
+            "kind": "segment", "invalide": self._implausible(s), "duree_s": round(s["t"], 0), "ah": round(s["ah"], 4),
             "wh": round(s["wh"], 3), "dist_m": round(s["d"], 2),
             "soc_debut": _round(s["soc0"], 1), "soc_fin": _round(soc_end, 1),
             "v_debut": _round(s["v0"], 3), "v_fin": _round(self.v, 3),
@@ -194,18 +205,20 @@ class EnergyStats:
         def minutes(i_a):
             return round(rem / i_a * 60.0, 0) if rem is not None and i_a and i_a > 0.05 else None
         dur = seg["t"] if seg else 0.0
+        bad = self._implausible()
         return {
             "charge": bool(self.charging), "v": _round(self.v, 3), "i": _round(self.i, 3),
             "i_ema": _round(self.i_ema, 3), "soc": _round(self.soc, 1),
             "activite": self.activity, "capacite_ah": self.capacity_ah,
             "reste_ah": _round(rem, 3),
-            "autonomie_min": minutes(self.i_ema),
+            "segment_invalide": bad,
+            "autonomie_min": None if bad else minutes(self.i_ema),
             "autonomie_fond_min": minutes(self.acc["arret"]["ah"] * 3600.0 / self.acc["arret"]["t"]
                                           if self.acc["arret"]["t"] >= 60.0 else None),
             "autonomie_roulage_min": minutes(self.acc["ligne"]["ah"] * 3600.0 / d["t"]
                                              if d["t"] >= 20.0 else None),
             "capacite_obs_ah": _round(self._capacity_obs(), 3),
-            "fiable": bool(seg and dur >= self.reliable_after_s and self._capacity_obs()),
+            "fiable": bool(seg and not bad and dur >= self.reliable_after_s and self._capacity_obs()),
             "segment": None if seg is None else {
                 "duree_s": round(dur, 0), "ah": round(seg["ah"], 4), "wh": round(seg["wh"], 3),
                 "dist_m": round(seg["d"], 2), "soc_debut": _round(seg["soc0"], 1)},
