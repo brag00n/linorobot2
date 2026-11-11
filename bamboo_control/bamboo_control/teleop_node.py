@@ -223,6 +223,11 @@ class TeleopNode(Node):
         # perte de la manette ne la desarme plus -- exploration en milieu controle, hors de
         # portee Bluetooth. Securite levee ASSUMEE ; B long la retablit (desarme).
         self._armLatched = False
+        # QUI A ARME (2026-11-11) : "manette" (B long) ou "cc" (boutons / touches A, V de la page). Quatre cas, deux surveillances :
+        #   manette simple -> desarmee si la MANETTE est perdue         manette verrouillee -> jamais desarmee
+        #   cc simple      -> desarmee si le CC ou sa VIDEO est perdu   cc verrouillee      -> jamais desarmee
+        # Echap (CC) et B (manette) sont des arrets d'urgence et valent pour les quatre cas.
+        self._armOrigin = ""
         # VIBRATION de la manette a l'armement (1 impulsion) et au desarmement (2) : un retour
         # LOCAL, qui ne depend pas du Wi-Fi. Le HUD arrive par le reseau ; quand il est en
         # retard, l'operateur croit l'appui rate, rappuie et rebascule (constat du
@@ -722,13 +727,14 @@ class TeleopNode(Node):
             if self._keyValue(msg, "L") and not self._armLatched:
                 # B long AVEC L tenue : armement VERROUILLE, sans controle de presence de la
                 # manette. B long seul (plus bas) le retire.
-                self._motionOn, self._armLatched = True, True
+                self._motionOn, self._armLatched, self._armOrigin = True, True, "manette"
                 self.get_logger().error(
                     "traction VERROUILLEE ARMEE : la perte de la manette ne desarme PLUS "
                     "(securite levee, assumee) -- B long pour desarmer")
             else:
                 self._motionOn = not self._motionOn
                 self._armLatched = False
+                self._armOrigin = "manette" if self._motionOn else ""
                 if not self._motionOn:
                     self._calibCancel("desarmement")
                     self._stopMotion()           # desarmer ARRETE, il ne fige pas
@@ -893,7 +899,7 @@ class TeleopNode(Node):
         """
         silence = time.monotonic() - self._lastJoy
         if self._motionOn and self._lastJoy > 0.0 and silence > self._disarmOnLoss and \
-                not self._armLatched:
+                not self._armLatched and self._armOrigin != "cc":
             # Manette PERDUE : desarmement, arret, annulation d'une calibration. Le rearmement
             # exige un appui LONG sur B, une fois la manette revenue.
             self._motionOn = False
@@ -1868,6 +1874,7 @@ class TeleopNode(Node):
             self._stopMotion()
             self._motionOn = False
             self._armLatched = False
+            self._armOrigin = ""
             self.get_logger().warning("moteurs desarmes depuis le CC")
             self._publishState()
             res.success, res.message = True, "desarme"
@@ -1876,21 +1883,33 @@ class TeleopNode(Node):
             self.get_logger().warning("armement CC REFUSE : pas de liaison saine (page + video)")
             res.success, res.message = False, "liaison CC/video non saine"
             return res
-        self._motionOn, self._armLatched = True, bool(locked)
-        self.get_logger().error("traction %s ARMEE depuis le CC (garde-fou actif%s)" % (
-            "VERROUILLEE" if locked else "", ", manette non exigee" if locked else ""))
+        self._motionOn, self._armLatched, self._armOrigin = True, bool(locked), "cc"
+        self.get_logger().error("traction %s ARMEE depuis le CC (%s)" % (
+            "VERROUILLEE" if locked else "",
+            "plus aucune surveillance : le CC ne la desarme jamais" if locked
+            else "desarmee si le CC ou sa video est perdu ; la manette n'est pas exigee"))
         self._publishState()
         res.success, res.message = True, "arme verrouille" if locked else "arme"
         return res
 
     def _onGuardStop(self, msg):
-        """Le Command Center ne repond plus (battement) ou n'a plus de video : tout arreter.
+        """Le Command Center ne repond plus (battement) ou n'a plus de video.
 
-        Ordre voulu : (1) STOP franc d'abord, c'est ce qui compte pour la securite ; (2) annuler le but de
-        navigation et l'exploration, sinon Nav2 reprend la main des que le multiplexeur lui rend la voie ;
-        (3) annuler une calibration ; (4) DESARMER, y compris l'armement verrouille -- c'est la raison d'etre
-        du garde-fou, la manette n'est pas exigee. Le rearmement est volontaire (B long, ou le CC)."""
+        QUI EST CONCERNE (2026-11-11) : seul un armement SIMPLE pose DEPUIS LE CC. Un armement venu de la manette ne depend pas du CC,
+        et un armement VERROUILLE (manette ou CC) n'est desarme par aucune perte de liaison -- choix assume de l'utilisateur, avec peu
+        de controle. Dans ces cas le garde-fou ne fait RIEN : ni arret, ni annulation du but, la mission continue.
+
+        Pour l'armement concerne : (1) STOP franc d'abord, c'est ce qui compte pour la securite ; (2) annuler le but de navigation,
+        sinon Nav2 reprend la main des que le multiplexeur lui rend la voie ; (3) annuler une calibration ; (4) DESARMER. La mission
+        en cours est mise en PAUSE par le gestionnaire de missions (pas annulee) ; le rearmement est volontaire (A au CC, B long)."""
         if not msg.data:
+            return
+        if not self._motionOn:
+            return
+        if self._armLatched or self._armOrigin != "cc":
+            self.get_logger().warning(
+                "garde-fou CC : liaison perdue, mais la traction est %s -- rien n'est coupe"
+                % ("VERROUILLEE" if self._armLatched else "armee depuis la manette"))
             return
         self.get_logger().error("garde-fou CC : STOP, but annule, traction desarmee")
         self._stopMotion()
@@ -1899,6 +1918,7 @@ class TeleopNode(Node):
         self._calibCancel("liaison CC perdue")
         self._motionOn = False
         self._armLatched = False
+        self._armOrigin = ""
         self._publishState()
         self._rumble(3)
 

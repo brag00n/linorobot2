@@ -170,20 +170,89 @@ def _moving(e):
     return st, t
 
 
-def test_losing_the_cc_link_while_moving_cancels_and_stops():
+def test_losing_the_cc_link_does_not_cancel_the_mission():
+    """Le moteur ne juge plus la liaison : c'est le garde-fou qui desarme (armement CC simple). La mission n'a pas a l'annuler."""
     e = eng()
     st, t = _moving(e)
     acts, t = run(e, t, st, link=False, armed=True)
-    assert e.status == mc.CANCELLED and "liaison" in e.reason
-    assert any(a["args"].get("command") == "cancel_all" for a in acts)
+    assert e.status == mc.RUNNING and e.step_state == mc.RUNNING_STEP
+    assert not any(a.get("args", {}).get("command") == "cancel_all" for a in acts)
 
 
-def test_disarming_while_moving_cancels_and_stops():
+def test_disarming_while_moving_pauses_the_step_instead_of_cancelling():
     e = eng()
     st, t = _moving(e)
     acts, t = run(e, t, st, link=True, armed=False)
-    assert e.status == mc.CANCELLED and "desarm" in e.reason
-    assert any(a["args"].get("command") == "cancel_all" for a in acts)
+    assert e.status == mc.RUNNING and e.step_state == mc.PAUSED and e.current() == "goto"
+    assert e.snapshot(t)["pause"] is True
+    assert not any(a.get("args", {}).get("command") == "cancel_all" for a in acts)   # le teleop a deja arrete le robot
+
+
+def test_rearming_resumes_the_step_where_it_was():
+    e = eng()
+    st, t = _moving(e)
+    run(e, t, st, link=True, armed=False)
+    assert e.step_state == mc.PAUSED
+    acts, t = run(e, t + 1, st, link=True, armed=True, steps=6)
+    assert e.status == mc.RUNNING and e.current() == "goto"
+    assert any(a.get("args", {}).get("command") == "goto" for a in acts)               # l'action de l'etape est RELANCEE
+    assert e.snapshot(t)["pause"] is False
+
+
+def test_the_pause_does_not_consume_the_step_timeout():
+    e = eng()
+    st, t = _moving(e)
+    run(e, t, st, link=True, armed=False)
+    t += 400.0                                                                         # plus que delai_s de goto (300)
+    e.tick(t, st, True, False)
+    assert e.status == mc.RUNNING and e.step_state == mc.PAUSED
+    acts, t = run(e, t, st, link=True, armed=True, steps=4)
+    assert e.status == mc.RUNNING                                                      # le delai repart a la reprise
+
+
+def test_a_pause_longer_than_ten_minutes_cancels_the_mission():
+    e = eng()
+    st, t = _moving(e)
+    run(e, t, st, link=True, armed=False)
+    assert e.step_state == mc.PAUSED
+    t += mc.PAUSE_MAX_S + 5
+    acts = e.tick(t, st, True, False)
+    assert e.status == mc.CANCELLED and "pause" in e.reason
+    assert any(a.get("args", {}).get("command") == "cancel_all" for a in acts)
+
+
+def test_resuming_needs_nothing_but_the_armed_traction():
+    """Decision de l'utilisateur : pas de test supplementaire (liaison, localisation) a la reprise."""
+    e = eng()
+    st, t = _moving(e)
+    run(e, t, st, link=True, armed=False)
+    st2 = dict(st, **{"nav.loc_state": "douteuse"})
+    acts, t = run(e, t + 1, st2, link=False, armed=True, steps=4)
+    assert e.status == mc.RUNNING and e.step_state != mc.PAUSED
+
+
+def test_a_moving_step_waits_instead_of_cancelling_when_the_traction_is_not_armed_yet():
+    e = _hold_model(hold=0)
+    st = {"noeuds": ["/nav_supervisor"], "nav.submode": "navigation", "nav.loc_state": "ok", "nav.goal_status": ""}
+    e.start("Aller", {"destination": "p1"}, 0.0, st, True, True)
+    t = 0.0
+    while e.current() != "goto" and t < 100:
+        t += 1.0
+        e.tick(t, st, True, True)
+    t += 1.0
+    e.tick(t, st, True, False)                                                         # le robot est desarme juste avant l'etape
+    assert e.status == mc.RUNNING and e.step_state == mc.PAUSED
+    t += 1.0
+    acts = e.tick(t, st, True, True)                                                   # puis re-arme : l'etape part
+    assert e.status == mc.RUNNING and e.step_state != mc.PAUSED
+
+
+def test_cancel_during_a_pause_still_works():
+    e = eng()
+    st, t = _moving(e)
+    run(e, t, st, link=True, armed=False)
+    acts = e.cancel(t + 3, "annulation demandee")
+    assert e.status == mc.CANCELLED and any(a.get("args", {}).get("command") == "cancel_all" for a in acts)
 
 
 def test_cancel_returns_the_stop_and_does_not_shut_nav_down():
@@ -334,3 +403,129 @@ def test_the_shipped_model_guards_every_moving_step():
         if c.get("arme"):
             assert c.get("garde") and c.get("surveille"), "%s roule sans garde ni surveillance" % n
     assert model["capacites"]["relocalisation"]["maintien_s"] >= 10
+
+
+# --- services d'une mission (2026-11-11) : eteindre le superflu AVANT de demarrer le necessaire, remettre a la fin ---------------
+
+SVC_MODEL = {
+    "socle": ["driver.esp32", "bamboo_control", "rosbridge"],
+    "optionnels": ["bamboo_videotracking", "bamboo_calibration", "driver.lidarD500", "navigation"],
+    "capacites": {
+        "pile": {"services": ["driver.lidarD500", "navigation"], "demarre": CALL("/nav_stack", data=True),
+                 "pret_quand": {"noeud": "/nav_supervisor"}, "delai_s": 90},
+        "reloc": {"exige": ["pile"], "lance": CALL("/cmd", command="relocalize"), "fini_quand": {"nav.loc_state": ["ok"]}, "delai_s": 120},
+        "goto": {"exige": ["reloc"], "arme": True, "lance": CALL("/cmd", command="goto"), "fini_quand": {"nav.goal_status": ["succeeded"]},
+                 "delai_s": 300, "annule": CALL("/cmd", command="cancel_all")},
+    },
+    "missions": {"Prepa": {"etapes": ["reloc"]}, "Aller": {"etapes": ["goto"]}},
+}
+RUN_ALL = ["driver.esp32", "bamboo_control", "rosbridge", "bamboo_videotracking", "bamboo_calibration"]
+
+
+def test_services_needed_is_the_union_of_the_capabilities():
+    assert mc.services_needed(SVC_MODEL, "Prepa") == ["driver.lidarD500", "navigation"]
+    assert mc.services_needed(SVC_MODEL, "Aller") == ["driver.lidarD500", "navigation"]        # goto n'en ajoute pas
+
+
+def test_the_plan_stops_the_useless_optional_services_and_starts_the_missing_ones():
+    p = mc.service_plan(SVC_MODEL, "Prepa", RUN_ALL)
+    assert p["stop"] == ["bamboo_videotracking", "bamboo_calibration"]
+    assert p["start"] == ["driver.lidarD500", "navigation"]
+    assert p["restore"] == ["bamboo_videotracking", "bamboo_calibration"]
+
+
+def test_the_socle_is_never_stopped():
+    p = mc.service_plan(SVC_MODEL, "Prepa", RUN_ALL)
+    assert not set(p["stop"]) & {"driver.esp32", "bamboo_control", "rosbridge"}
+
+
+def test_a_service_outside_the_two_lists_is_ignored():
+    p = mc.service_plan(SVC_MODEL, "Prepa", RUN_ALL + ["portainer", "inconnu"])
+    assert "portainer" not in p["stop"] and "inconnu" not in p["stop"]
+
+
+def test_nothing_is_stopped_that_is_already_off_and_nothing_started_that_runs():
+    p = mc.service_plan(SVC_MODEL, "Prepa", ["driver.esp32", "driver.lidarD500", "navigation"])
+    assert p == {"stop": [], "start": [], "restore": []}
+
+
+def test_start_emits_stop_before_start():
+    """L'ordre de l'utilisateur : eteindre d'abord, pour ne pas ajouter une surcharge CPU au demarrage."""
+    e = mc.MissionEngine(copy.deepcopy(SVC_MODEL))
+    ok, _why, acts = e.start("Prepa", {}, 0.0, {"services": RUN_ALL}, True, False)
+    assert ok and [a["services"] for a in acts] == ["stop", "start"]
+    assert acts[0]["names"] == ["bamboo_videotracking", "bamboo_calibration"]
+    assert acts[1]["names"] == ["driver.lidarD500", "navigation"]
+
+
+def _finish(e, st, armed=False, steps=400):
+    t, acts = 0.0, []
+    for _ in range(steps):
+        t += 1.0
+        acts += e.tick(t, st, True, armed)
+        if e.status != mc.RUNNING:
+            break
+    return acts
+
+
+def test_services_are_restored_when_the_mission_is_done():
+    e = mc.MissionEngine(copy.deepcopy(SVC_MODEL))
+    st = {"services": RUN_ALL, "noeuds": ["/nav_supervisor"], "nav.loc_state": "ok"}
+    e.start("Prepa", {}, 0.0, st, True, False)
+    acts = _finish(e, st)
+    assert e.status == mc.DONE
+    restore = [a for a in acts if a.get("services") == "start"]
+    assert restore and restore[-1]["names"] == ["bamboo_videotracking", "bamboo_calibration"]
+
+
+def test_services_are_restored_after_a_failure():
+    e = mc.MissionEngine(copy.deepcopy(SVC_MODEL))
+    st = {"services": RUN_ALL, "noeuds": []}                         # la pile ne devient jamais prete : delai
+    e.start("Prepa", {}, 0.0, st, True, False)
+    acts = _finish(e, st)
+    assert e.status == mc.FAILED
+    assert any(a.get("services") == "start" and "bamboo_videotracking" in a["names"] for a in acts)
+
+
+def test_services_are_restored_after_a_cancel_and_the_stop_goes_first():
+    e = mc.MissionEngine(copy.deepcopy(SVC_MODEL))
+    st = {"services": RUN_ALL, "noeuds": ["/nav_supervisor"], "nav.loc_state": "ok", "nav.goal_status": "active"}
+    e.start("Aller", {}, 0.0, st, True, True)
+    t = 0.0
+    for _ in range(40):
+        t += 1.0
+        e.tick(t, st, True, True)
+    acts = e.cancel(t, "arret demande")
+    kinds = [("stop-robot" if a.get("call") else a["services"]) for a in acts]
+    assert kinds[0] == "stop-robot" and kinds[-1] == "start"       # cancel_all d'abord, puis les services remis
+    assert e.restore_actions() == []                               # une seule fois
+
+
+def test_nothing_to_restore_when_nothing_was_stopped():
+    e = mc.MissionEngine(copy.deepcopy(SVC_MODEL))
+    e.start("Prepa", {}, 0.0, {"services": ["driver.esp32"]}, True, False)
+    assert e.restore_actions() == []
+
+
+def test_validate_rejects_an_unknown_service():
+    bad = copy.deepcopy(SVC_MODEL)
+    bad["capacites"]["pile"]["services"] = ["service_fantome"]
+    with pytest.raises(mc.MissionError, match="service_fantome"):
+        mc.validate(bad)
+
+
+def test_validate_rejects_a_service_in_both_lists():
+    bad = copy.deepcopy(SVC_MODEL)
+    bad["optionnels"].append("rosbridge")
+    with pytest.raises(mc.MissionError, match="socle et optionnel"):
+        mc.validate(bad)
+
+
+def test_the_shipped_model_keeps_the_pilot_services_in_the_socle():
+    import yaml
+    model = yaml.safe_load(open(os.path.join(os.path.dirname(__file__), "..", "config", "missions.yaml"), encoding="utf-8"))
+    mc.validate(model)
+    for needed in ("driver.esp32", "bamboo_control", "rosbridge", "camera.h264", "bamboo_video", "battery_energy"):
+        assert needed in model["socle"], needed
+    assert "bamboo_videotracking" in model["optionnels"]
+    assert not set(model["socle"]) & set(model["optionnels"])

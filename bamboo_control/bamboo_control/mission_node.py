@@ -48,6 +48,16 @@ def main(argv=None):
 
     # services appelables par une etape : (type, fabrique de requete). Liste FERMEE : une etape ne peut
     # appeler que ce qui est declare ici, quoi que dise le fichier de missions.
+    # Un service est « en marche » si l'un de ses noeuds temoins est vivant. Liste fermee, alignee sur docker/ondemand/groups.conf.
+    SERVICE_NODES = {
+        "bamboo_videotracking": ("/tracking_node", "/overlay_node", "/videotracking_container"),
+        "bamboo_calibration": ("/bamboo_calibration",),
+        "driver.lidarD500": ("/lidar_driver",),
+        "navigation": ("/nav_supervisor", "/bt_navigator", "/slam_toolbox"),
+    }
+    PLAN = "/run/bamboo-ondemand/mission.plan"
+    PLAN_STATE = "/run/bamboo-ondemand/mission.state"
+
     class MissionNode(Node):
         def __init__(self):
             super().__init__("bamboo_mission_manager")
@@ -64,6 +74,7 @@ def main(argv=None):
             self.navT = 0.0
             self.armed = False
             self.link = False
+            self.guard, self.guardT = {}, 0.0
             self.linkT = 0.0
             self.batt = None
             self.reply = ""
@@ -72,7 +83,7 @@ def main(argv=None):
             self._lastBody, self._lastPubT = "", 0.0
             self.create_subscription(NavState, "/navigation/state", self._onNav, latched)
             self.create_subscription(TeleopState, "/teleop/state", self._onTeleop, latched)
-            self.create_subscription(Bool, "/cc/guard/link", self._onLink, latched)
+            self.create_subscription(String, "/cc/guard/state", self._onGuard, latched)
             self.create_subscription(String, "/cc/mission/request", self._onRequest, 10)
             self.create_subscription(String, "/cc/mission/cancel_req", self._onCancelReq, 10)
             self._pubState = self.create_publisher(String, "/cc/mission/state", latched)
@@ -90,16 +101,31 @@ def main(argv=None):
         def _onTeleop(self, m):
             self.armed = bool(m.armed)
 
-        def _onLink(self, m):
-            self.link, self.linkT = bool(m.data), time.monotonic()
+        def _onGuard(self, m):
+            """Etat du garde-fou, publie a 2 Hz. On lit ICI la liaison, pas sur /cc/guard/link : ce dernier n'est publie que
+            lorsque sa valeur CHANGE, donc au bout de 6 s sans changement il paraissait perime et chaque mission qui roule etait
+            refusee (« liaison absente ») alors que la liaison etait saine depuis des heures (2026-11-11)."""
+            try:
+                d = json.loads(m.data)
+            except ValueError:
+                return
+            self.guard, self.guardT = d, time.monotonic()
+            self.link = d.get("cc") == "ok" and d.get("video") in ("ok", "bad") and not d.get("tripped")
+            self.linkT = self.guardT
 
         def _linkOk(self):
-            # La liaison doit etre FRAICHE : un /cc/guard/link perime (garde-fou mort) n'autorise rien.
-            return self.link and time.monotonic() - self.linkT < 6.0
+            # Frais = le garde-fou a publie dans les 3 dernieres secondes (il publie toutes les 0,5 s) : un garde-fou mort n'autorise rien.
+            return bool(self.link) and time.monotonic() - self.linkT < 3.0
+
+        def _runningServices(self):
+            """Services en marche, deduits des noeuds ROS vivants (un conteneur = ses noeuds). Table fermee : seuls les services que la
+            mission peut eteindre ou demarrer sont reconnus ; un noeud qui n'est dans aucune ligne ne dit rien."""
+            nodes = set(self._nodes())
+            return [svc for svc, marks in SERVICE_NODES.items() if any(m in nodes for m in marks)]
 
         def _state(self):
             """Etat a plat que le moteur sait lire (voir mission_core.check)."""
-            s = {"noeuds": self._nodes()}
+            s = {"noeuds": self._nodes(), "services": self._runningServices()}
             n = self.nav
             if n is not None and time.monotonic() - self.navT < 6.0:
                 s.update({"nav.submode": n.submode, "nav.loc_state": n.loc_state,
@@ -133,6 +159,11 @@ def main(argv=None):
             with self._lock:
                 ok, why, acts = self.engine.start(name, params, time.monotonic(), self._state(),
                                                   self._linkOk(), self.armed)
+            if not ok:
+                with self._lock:
+                    self.engine.reset()                # un refus efface l'echec precedent : la page montre CE refus, pas l'ancien
+            if ok:
+                self._run(acts)                        # plans de services : eteindre le superflu, PUIS demarrer le necessaire
             self._answer(ok, "mission %s lancee" % name if ok else why)
             self.get_logger().info("mission %s : %s" % (name, "LANCEE" if ok else "REFUSEE (%s)" % why))
             self._publishState(force=True)
@@ -165,8 +196,27 @@ def main(argv=None):
                 self._cli[service] = self.create_client(typ, service, callback_group=self._cbg)
             return self._cli[service]
 
+        def _plan(self, verb, names, why):
+            """Depose un plan de services pour l'hote (ecriture atomique). Rend False si le dossier n'existe pas."""
+            self._planId = getattr(self, "_planId", 0) + 1
+            try:
+                tmp = PLAN + ".tmp"
+                with open(tmp, "w") as fh:
+                    fh.write("id=%d\n%s %s\n" % (self._planId, verb, " ".join(names)))
+                os.replace(tmp, PLAN)
+            except OSError as e:
+                self.get_logger().warn("plan de services non depose (%s) : %s" % (PLAN, e))
+                return False
+            self.get_logger().info("mission : %s -> %s %s" % (why, verb, " ".join(names)))
+            return True
+
         def _run(self, acts):
             for a in acts:
+                if "services" in a:
+                    # Les plans partent UN A LA FOIS : l'hote doit avoir fini le precedent (eteindre avant de demarrer).
+                    self._pendingPlans = getattr(self, "_pendingPlans", [])
+                    self._pendingPlans.append(a)
+                    continue
                 svc = a["call"]
                 fut = self._call(svc, a["args"])
                 if fut is None:
@@ -188,8 +238,52 @@ def main(argv=None):
                     self.engine.call_result(time.monotonic(), False, "%s : %s" % (svc, msg))
                 self.get_logger().warn("mission : appel %s refuse (%s)" % (svc, msg))
 
+        def _servicesBusy(self):
+            """Vrai tant qu'un plan de services est en file ou que l'hote n'a pas rapporte l'avoir termine."""
+            if getattr(self, "_pendingPlans", []):
+                return True
+            w = getattr(self, "_planWait", 0)
+            if not w:
+                return False
+            try:
+                with open(PLAN_STATE) as fh:
+                    m = fh.read().split()
+                done = int(m[0].split("=")[1]) if m and m[0].startswith("id=") else 0
+            except (OSError, ValueError, IndexError):
+                done = 0
+            if done >= w or time.monotonic() - self._planT > 120.0:
+                self._planWait = 0
+                return False
+            return True
+
+        def _pumpPlans(self):
+            """Envoie le plan suivant quand l'hote a repondu au precedent (l'etat porte l'id du dernier plan traite)."""
+            q = getattr(self, "_pendingPlans", [])
+            if not q:
+                return
+            last = getattr(self, "_planId", 0)
+            done = 0
+            try:
+                with open(PLAN_STATE) as fh:
+                    m = fh.read().split()
+                    done = int(m[0].split("=")[1]) if m and m[0].startswith("id=") else 0
+                    self._planStatus = " ".join(m[1:])
+            except (OSError, ValueError, IndexError):
+                done = last if not os.path.exists(os.path.dirname(PLAN)) else done
+            if getattr(self, "_planWait", 0) and done < self._planWait and time.monotonic() - self._planT < 120.0:
+                return                                          # l'hote n'a pas fini le plan precedent
+            a = q.pop(0)
+            if self._plan(a["services"], a["names"], a.get("why", "")):
+                self._planWait, self._planT = self._planId, time.monotonic()
+            else:
+                self._planWait = 0
+
         # ---- boucle ----
         def _tick(self):
+            self._pumpPlans()
+            if self._servicesBusy():
+                self._publishState()                   # l'hote prepare les services : le moteur attend (pas d'etape, pas de delai)
+                return
             with self._lock:
                 acts = self.engine.tick(time.monotonic(), self._state(), self._linkOk(), self.armed)
             self._run(acts)

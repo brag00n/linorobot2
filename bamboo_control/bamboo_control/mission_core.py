@@ -25,10 +25,11 @@ import time
 
 # Etats d'une mission
 IDLE, RUNNING, DONE, FAILED, CANCELLED = "idle", "running", "done", "failed", "cancelled"
+PAUSE_MAX_S = 600.0          # une etape en pause plus de 10 minutes est abandonnee (la mission est annulee)
 
 # Etats d'une etape
-PENDING, STARTING, WAITING_READY, RUNNING_STEP, STEP_DONE = (
-    "pending", "starting", "waiting_ready", "running", "done")
+PENDING, STARTING, WAITING_READY, RUNNING_STEP, STEP_DONE, PAUSED = (
+    "pending", "starting", "waiting_ready", "running", "done", "paused")
 
 
 class MissionError(ValueError):
@@ -74,6 +75,15 @@ def validate(model):
             _closure(known, [name])
         except MissionError as e:
             errs.append(str(e))
+    # services : tout service demande doit etre connu (socle ou optionnel), et les deux listes ne se recouvrent pas
+    socle, opt = set(model.get("socle") or []), set(model.get("optionnels") or [])
+    both = sorted(socle & opt)
+    if both:
+        errs.append("service a la fois socle et optionnel : %s" % ", ".join(both))
+    for name, c in caps.items():
+        for svc in c.get("services") or []:
+            if svc not in socle and svc not in opt:
+                errs.append("capacite %s : service %s absent du socle et des optionnels" % (name, svc))
     if errs:
         raise MissionError("; ".join(sorted(set(errs))))
     return model
@@ -105,6 +115,32 @@ def compose(model, mission):
     if m is None:
         raise MissionError("mission inconnue : %s" % mission)
     return _closure(caps, m["etapes"])
+
+
+def services_needed(model, mission):
+    """Services dont une mission a besoin : l'UNION de ceux de ses capacites (prerequis compris), sans doublon, dans l'ordre."""
+    caps, out = model["capacites"], []
+    for n in compose(model, mission):
+        for svc in caps[n].get("services") or []:
+            if svc not in out:
+                out.append(svc)
+    return out
+
+
+def service_plan(model, mission, running):
+    """Plan de services d'une mission, dans l'ORDRE d'execution.
+
+    `running` : ensemble des services actuellement en marche. Rend {"stop": [...], "start": [...], "restore": [...]} :
+      stop     services optionnels EN MARCHE que la mission n'a pas declares : a eteindre EN PREMIER (pas de surcharge CPU au demarrage)
+      start    services declares par la mission qui ne tournent pas : a demarrer ENSUITE
+      restore  ce qu'il faudra REMETTRE a la fin (= les services eteints par `stop`)
+    Le socle n'est jamais dans `stop`, et un service hors socle et hors optionnels est ignore."""
+    need = set(services_needed(model, mission))
+    opt = [x for x in (model.get("optionnels") or [])]
+    run = set(running or ())
+    stop = [x for x in opt if x in run and x not in need]
+    start = [x for x in services_needed(model, mission) if x not in run]
+    return {"stop": stop, "start": start, "restore": list(stop)}
 
 
 def required_params(model, mission):
@@ -182,6 +218,8 @@ class MissionEngine:
         self.plan, self.i = [], 0
         self.step_state, self.step_t0, self.reason = PENDING, 0.0, ""
         self.started_at, self.ended_at, self.hold_t0, self.log = 0.0, 0.0, None, []
+        self.svc_restore = []
+        self.pause_t0, self.pause_from = 0.0, ""
 
     # ---- consultation ----
     def current(self):
@@ -197,7 +235,8 @@ class MissionEngine:
                    "cancelled" if (k == self.i and self.status == CANCELLED) else "pending"))
             steps.append({"id": n, "desc": caps[n].get("description", n),
                           "etat": st, "roule": bool(caps[n].get("arme"))})
-        return {"etat": self.status, "mission": self.name, "etapes": steps, "i": self.i,
+        return {"etat": self.status, "mission": self.name, "pause": bool(self.status == RUNNING and self.step_state == PAUSED),
+                "etapes": steps, "i": self.i,
                 "raison": self.reason, "parametres": self.params,
                 "duree_s": round(((self.ended_at or now) - self.started_at), 1) if (self.ended_at or now) and self.started_at else 0.0}
 
@@ -236,7 +275,21 @@ class MissionEngine:
         self.i, self.started_at = 0, now
         self.step_state, self.step_t0 = PENDING, now
         self._note(now, "mission %s : %s" % (mission, " > ".join(self.plan)))
-        return True, "", []
+        # SERVICES : on eteint d'abord le superflu, on demarre ensuite le necessaire. Les services en marche viennent de `state`.
+        plan = service_plan(self.model, mission, state.get("services"))
+        self.svc_restore = plan["restore"]
+        acts = []
+        if plan["stop"]:
+            acts.append({"services": "stop", "names": plan["stop"], "why": "eteindre les services inutiles : %s" % ", ".join(plan["stop"])})
+            self._note(now, "services eteints : %s" % ", ".join(plan["stop"]))
+        if plan["start"]:
+            acts.append({"services": "start", "names": plan["start"], "why": "demarrer les services necessaires : %s" % ", ".join(plan["start"])})
+        return True, "", acts
+
+    def restore_actions(self):
+        """Services eteints au lancement, a REMETTRE (une seule fois) quand la mission se termine, quelle qu'en soit l'issue."""
+        names, self.svc_restore = list(getattr(self, "svc_restore", []) or []), []
+        return [{"services": "start", "names": names, "why": "remettre les services eteints au lancement : %s" % ", ".join(names)}] if names else []
 
     # ---- cancel ----
     def cancel(self, now, why="arret demande"):
@@ -246,7 +299,7 @@ class MissionEngine:
         acts = self._abort_actions(upto=self.i)
         self.status, self.reason, self.ended_at = CANCELLED, why, now
         self._note(now, "ANNULEE : %s" % why)
-        return acts
+        return acts + self.restore_actions()
 
     def _abort_actions(self, upto):
         """Appels `annule` des etapes lancees (de la plus recente a la plus ancienne), sans doublon."""
@@ -270,7 +323,7 @@ class MissionEngine:
         acts = self._abort_actions(upto=self.i)
         self.status, self.reason, self.ended_at = FAILED, why, now
         self._note(now, "ECHEC : %s" % why)
-        return acts
+        return acts + self.restore_actions()
 
     # ---- avancement ----
     def tick(self, now, state, link_ok, armed):
@@ -280,20 +333,37 @@ class MissionEngine:
         caps = self.model["capacites"]
         n = self.plan[self.i]
         c = caps[n]
-        # Garde-fous : un robot qui roule pendant l'etape exige la liaison ET la traction armee.
+        # PAUSE (2026-11-11) : une etape qui ROULE et dont la traction tombe n'est PAS annulee, elle est mise en pause. La traction peut
+        # tomber par la perte de la manette ou du CC (armement simple), Echap ou B (arret d'urgence) : le robot est deja arrete par
+        # le teleop, et le but de navigation annule. Au reappui (traction de nouveau armee, simple ou verrouillee) l'etape REPREND
+        # ou elle en etait : on relance son action depuis la position actuelle. Seul le bouton « Annuler » abandonne la mission.
+        # Aucun test supplementaire a la reprise (decision de l'utilisateur) : la traction armee est l'autorisation.
+        if self.step_state == PAUSED:
+            if armed:
+                self._note(now, "reprise de %s (traction armee)" % n)
+                self.step_state, self.step_t0, self.hold_t0 = PENDING, now, None
+                self.pause_t0 = 0.0
+                return self.tick(now, state, link_ok, armed)          # relance l'etape depuis le debut de son action
+            if now - self.pause_t0 > PAUSE_MAX_S:
+                return self._cancel_with(now, "%s : pause de plus de %d min sans reprise" % (n, PAUSE_MAX_S // 60))
+            return []
+        if c.get("arme") and self.step_state in (RUNNING_STEP, STARTING) and not armed:
+            self.pause_t0, self.pause_from = now, self.step_state
+            self.step_state = PAUSED
+            self._note(now, "PAUSE de %s : traction desarmee" % n)
+            return []
         if c.get("arme") and self.step_state in (RUNNING_STEP, STARTING):
-            if not link_ok:
-                return self._cancel_with(now, "liaison du CC perdue pendant %s" % n)
-            if not armed:
-                return self._cancel_with(now, "traction desarmee pendant %s" % n)
             watch = c.get("surveille")
             if watch and not check(watch, state):
                 return self._cancel_with(now, "%s : %s" % (n, why_not(watch, state)))
         acts = []
         if self.step_state == PENDING:
-            if c.get("arme") and not (link_ok and armed):
-                return self._cancel_with(
-                    now, "%s exige la traction armee et la liaison du CC" % n)
+            if c.get("arme") and not armed:
+                # Pas encore de traction : l'etape ATTEND au lieu d'annuler la mission (relance des que la traction est armee).
+                self.pause_t0, self.pause_from = now, PENDING
+                self.step_state = PAUSED
+                self._note(now, "PAUSE de %s : traction non armee" % n)
+                return []
             guard = c.get("garde")
             if guard and not check(guard, state):
                 return self._cancel_with(now, "%s refusee : %s" % (n, why_not(guard, state)))
@@ -352,7 +422,7 @@ class MissionEngine:
         if self.i >= len(self.plan):
             self.status, self.ended_at = DONE, now
             self._note(now, "mission terminee")
-            return []
+            return self.restore_actions()
         self.step_state, self.step_t0, self.hold_t0 = PENDING, now, None
         return []
 

@@ -24,6 +24,14 @@
 #                 (une localisation « ok » qui retombe aussitot n'est pas une fin)
 #   garde         condition a verifier AU LANCEMENT de l'etape ; fausse, la mission est annulee avec la raison
 #   surveille     condition qui doit RESTER vraie pendant que le robot roule ; fausse, annulation + arret
+#   services      services Docker dont la capacite a BESOIN (noms du docker-compose). Une mission a besoin de l'UNION des services de ses
+#                 capacites. Au lancement le moteur ETEINT d'abord tout service de la liste `optionnels` qui n'est pas demande (pour ne
+#                 pas ajouter une surcharge CPU au demarrage), PUIS demarre ceux qui manquent. A la fin (terminee, echec, annulee) il
+#                 REMET les services qu'il avait eteints.
+#
+# socle : services JAMAIS touches par une mission (sans eux le robot n'est plus pilotable, surveille ou visible du CC).
+# optionnels : services qu'une mission est autorisee a ETEINDRE si elle n'en a pas besoin. Liste FERMEE : tout service absent des deux
+#              listes est ignore par le moteur.
 #
 # Conditions d'etat (cle -> valeur attendue, ET logique) :
 #   nav.loc_state: ["ok"]            champ de /navigation/state
@@ -35,11 +43,15 @@
 #   batt.pct_min: 25                charge minimale (%) -- jamais lance sous ce seuil
 # ============================================================================
 
+socle: [driver.esp32, bamboo_control, rosbridge, portail, proxy, ap.rpi, camera.h264, bamboo_video, robotdesc, bamboo_diagnostics, battery_energy]
+optionnels: [bamboo_videotracking, bamboo_calibration, driver.lidarD500, navigation]
+
 capacites:
 
   # --- la pile NAV : lidar + navigation (groupe a la demande `nav`) ---------------------------
   pile_nav:
     description: "Demarre le lidar et la navigation (environ 30 s)"
+    services: [driver.lidarD500, navigation]
     demarre: {service: "/bamboo/nav_stack", args: {data: true}}
     pret_quand: {noeud: "/nav_supervisor", "nav.ready": [true]}
     delai_s: 90
