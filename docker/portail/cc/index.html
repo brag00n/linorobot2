@@ -151,9 +151,13 @@ var HANDLERS = {
   "/teleop/state": ["bamboo_interfaces/msg/TeleopState", 0, 1, function (m) { TR = { armed: !!m.armed, latched: !!m.armed_latched }; TRT = performance.now(); }],
   "/cc/guard/state": ["std_msgs/msg/String", 0, 1, function (m) { try { GS = JSON.parse(m.data); GST = performance.now(); } catch (e) { } }],
   "/gamepad/connected": ["std_msgs/msg/Bool", 500, 1, function (m) { var p = !!m.data; if (S.pad !== null && p !== S.pad) log(p ? 0 : 1, p ? "Manette connectée" : "Manette déconnectée"); S.pad = p; }],
-  "/navigation/state": ["bamboo_interfaces/msg/NavState", 500, 1, function (m) { NAV = m; NAVT = performance.now(); }],
+  "/navigation/state": ["bamboo_interfaces/msg/NavState", 500, 1, function (m) { NAV = m; NAVT = performance.now(); MAP.name = m.map_name || MAP.name; }],
   "/bamboo_calibration/battery": ["bamboo_interfaces/msg/BatteryCalibState", 1000, 1, function (m) { BC = m; }],
   "/bamboo/energy": ["std_msgs/msg/String", 1000, 1, function (m) { try { EN = JSON.parse(m.data); ENT = performance.now(); } catch (e) { } }],
+  "/map": ["nav_msgs/msg/OccupancyGrid", 2000, 1, function (m) { mapGot(m, true); MAP.t = performance.now(); }],
+  "/navigation/map_preview": ["nav_msgs/msg/OccupancyGrid", 0, 1, function (m) { mapGot(m, false); }],
+  "/navigation/robot_pose": ["geometry_msgs/msg/PoseStamped", 250, 1, function (m) { MAP.pose = { x: m.pose.position.x, y: m.pose.position.y, yaw: yawOf(m.pose.orientation) }; MAP.tp = performance.now(); }],
+  "/navigation/home": ["geometry_msgs/msg/PoseStamped", 0, 1, function (m) { MAP.home = { x: m.pose.position.x, y: m.pose.position.y }; }],
   "/cc/mission/list": ["std_msgs/msg/String", 0, 1, function (m) { try { MIS.list = JSON.parse(m.data); } catch (e) { } }],
   "/cc/mission/state": ["std_msgs/msg/String", 500, 1, function (m) { try { MIS.st = JSON.parse(m.data); MIS.t = performance.now(); } catch (e) { } }],
   "/diagnostics_agg": ["diagnostic_msgs/msg/DiagnosticArray", 1000, 1, onDiag],
@@ -179,7 +183,7 @@ function hbSend() {
    le cout suit donc la cadence SOURCE (wheel_rpm 20 Hz = +7 points de CPU, motion_compensation 20 Hz = +9). Ceux-la ne servent
    que dans certains modes. Les autres topics rapides (battery, esp32_status, track_state) nourrissent l'incrustation video et
    l'en-tete, visibles partout : ils restent abonnes. Sans entree ici = toujours abonne. */
-var SCOPE = { "/cc/mission/list": ["mission"], "/cc/mission/state": ["mission"], "/wheel_rpm": ["vitals"], "/motion_compensation/state": ["config", "calib"] };
+var SCOPE = { "/map": ["mission"], "/navigation/map_preview": ["mission"], "/navigation/robot_pose": ["mission"], "/navigation/home": ["mission"], "/cc/mission/list": ["mission"], "/cc/mission/state": ["mission"], "/wheel_rpm": ["vitals"], "/motion_compensation/state": ["config", "calib"] };
 var SUBS = {};                                   // topic -> id d'abonnement en cours
 var SCOPE_CLEAR = {                               // valeurs a vider quand on se desabonne (pas d'ancienne valeur affichee au retour)
   "/wheel_rpm": function () { V.rpmL = NaN; V.rpmR = NaN; },
@@ -386,11 +390,101 @@ function VideoView() {
 }
 var stage = VideoView(); $("#slotBig").appendChild(stage.root);
 
+/* ---------- CARTE DE NAVIGATION (2026-11-11) : /map (slam_toolbox, pile NAV en marche) ou, à défaut, /navigation/map_preview (carte courante
+   relue du disque, slam arrêté). Pose du robot : /navigation/robot_pose. Dessin 2D sur un canvas, à la demande, sans bibliothèque.
+   Coût : /map arrive à ~0,5 Hz et pèse jusqu'à quelques dizaines de ko ; on ne s'abonne QUE dans le mode Mission (SCOPE), et le canvas
+   n'est redessiné que si la carte, la pose ou la taille ont changé. */
+var MAP = { grid: null, name: "", pose: null, home: null, t: 0, tp: 0, dirty: true, onStage: false, mini: null, cache: null, cacheKey: "" };
+function gridFrom(m) {
+  var w = m.info && m.info.width, hh = m.info && m.info.height, d = m.data;
+  if (!w || !hh) return null;
+  if (typeof d === "string") { try { var bin = atob(d), a = new Int8Array(bin.length); for (var i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); d = a; } catch (e) { return null; } }
+  if (!d || d.length !== w * hh) return null;
+  return { w: w, h: hh, res: m.info.resolution || 0.05, ox: m.info.origin.position.x, oy: m.info.origin.position.y, d: d };
+}
+function mapGot(m, live) {
+  var g = gridFrom(m); if (!g) { if (!live) { MAP.preview = null; } return; }
+  if (live) { MAP.live = g; MAP.liveT = performance.now(); } else MAP.preview = g;
+  MAP.grid = (MAP.live && performance.now() - MAP.liveT < 8000) ? MAP.live : MAP.preview || MAP.live || null; MAP.dirty = true; MAP.cacheKey = "";
+}
+/* quaternion → cap (rad) */
+function yawOf(q) { return Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)); }
+function drawMap(cv) {
+  var g = MAP.grid, ctx = cv.getContext("2d"), W2 = cv.width, H2 = cv.height;
+  if (!g) { ctx.clearRect(0, 0, W2, H2); ctx.fillStyle = "#03070a"; ctx.fillRect(0, 0, W2, H2); ctx.fillStyle = "#5f98a6"; ctx.font = "500 " + Math.round(H2 / 18) + "px Oxanium, system-ui, sans-serif"; ctx.textAlign = "center";
+    ctx.fillText(navFresh() ? "CARTE EN ATTENTE" : "PILE NAV ARRÊTÉE", W2 / 2, H2 / 2); ctx.textAlign = "left"; return; }
+  var k = Math.min(W2 / g.w, H2 / g.h), ox = (W2 - g.w * k) / 2, oy = (H2 - g.h * k) / 2;
+  var key = [g.w, g.h, W2, H2, MAP.live === g ? MAP.liveT : 0].join("|");
+  if (MAP.cacheKey !== key || MAP.cache == null || MAP.cache.width !== W2) {
+    /* fond de carte : mis en cache (image reconstruite seulement quand la grille ou la taille changent) */
+    var off = document.createElement("canvas"); off.width = g.w; off.height = g.h; var oc = off.getContext("2d"), im = oc.createImageData(g.w, g.h);
+    for (var y = 0; y < g.h; y++) for (var x = 0; x < g.w; x++) {
+      var v = g.d[y * g.w + x], p = ((g.h - 1 - y) * g.w + x) * 4, c;           // axe y de la carte vers le haut
+      if (v < 0) c = [10, 20, 26]; else if (v > 65) c = [228, 238, 241]; else c = [30, 58, 68];
+      im.data[p] = c[0]; im.data[p + 1] = c[1]; im.data[p + 2] = c[2]; im.data[p + 3] = 255; }
+    oc.putImageData(im, 0, 0); MAP.cache = off; MAP.cacheKey = key;
+  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = "#03070a"; ctx.fillRect(0, 0, W2, H2);
+  ctx.imageSmoothingEnabled = false; ctx.drawImage(MAP.cache, ox, oy, g.w * k, g.h * k);
+  var px = function (mx) { return ox + ((mx - g.ox) / g.res) * k; }, py = function (my) { return oy + (g.h - (my - g.oy) / g.res) * k; };
+  /* destinations et gates (NavState) */
+  if (navFresh()) {
+    (NAV.dest_n || []).forEach(function (n, i) { var x = px(NAV.dest_x[i]), y = py(NAV.dest_y[i]); ctx.strokeStyle = "#f1e8b4"; ctx.fillStyle = "rgba(241,232,180,.18)"; ctx.lineWidth = 1.6;
+      ctx.beginPath(); ctx.rect(x - 6, y - 6, 12, 12); ctx.fill(); ctx.stroke(); ctx.fillStyle = "#f1e8b4"; ctx.font = "600 12px Oxanium, system-ui, sans-serif"; ctx.fillText(NAV.dest_name[i] || ("p" + n), x + 9, y - 7); });
+    (NAV.gate_n || []).forEach(function (n, i) { var x = px(NAV.gate_x[i]), y = py(NAV.gate_y[i]), st = NAV.gate_status[i], col = st === "atteinte" || st === "exploree" ? "#58c98a" : st === "inatteignable" || st === "abandonnee" ? "#e5604a" : "#e7a24a";
+      ctx.strokeStyle = col; ctx.lineWidth = 1.6; ctx.beginPath(); ctx.arc(x, y, 7, 0, 7); ctx.stroke(); ctx.fillStyle = col; ctx.font = "600 11px Oxanium, system-ui, sans-serif"; ctx.fillText(String(n), x - 3, y + 4); });
+  }
+  if (MAP.home) { var hx = px(MAP.home.x), hy = py(MAP.home.y); ctx.strokeStyle = "#8fc7d4"; ctx.lineWidth = 1.6; ctx.beginPath(); ctx.moveTo(hx - 7, hy); ctx.lineTo(hx + 7, hy); ctx.moveTo(hx, hy - 7); ctx.lineTo(hx, hy + 7); ctx.stroke(); }
+  /* le robot : triangle orienté, rouge si la localisation est douteuse ou perdue */
+  if (MAP.pose && performance.now() - MAP.tp < 4000) {
+    var rx = px(MAP.pose.x), ry = py(MAP.pose.y), a = -MAP.pose.yaw, ok = navFresh() && NAV.loc_state === "ok";
+    ctx.save(); ctx.translate(rx, ry); ctx.rotate(a); ctx.fillStyle = ok ? "#58c98a" : "#e5604a"; ctx.strokeStyle = "#03070a"; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(11, 0); ctx.lineTo(-7, 6.5); ctx.lineTo(-4, 0); ctx.lineTo(-7, -6.5); ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.restore(); }
+  if (cv.dataset.big === "1") { ctx.fillStyle = "#8fc7d4"; ctx.font = "500 13px Oxanium, system-ui, sans-serif"; ctx.fillText("CARTE  " + (MAP.name || "—") + "  ·  " + g.w + "×" + g.h + "  ·  " + g.res.toFixed(2) + " m/cellule", 14, H2 - 14); }
+}
+/* La carte au centre : le canvas de la scène remplace la vidéo (même emplacement), M ou le bouton la rend. */
+var mapStage = null, miniHost = null;
+/* ECHANGE carte <-> video (touche M, bouton de la section Carte). Un seul element <video> existe : on le DEPLACE (appendChild), on ne le
+   clone pas -- un second lecteur doublerait le decodage sur une page deja chargee. Le garde-fou lit l'etat de la video dans les
+   statistiques WebRTC de la connexion (getStats), pas dans l'element affiche : le deplacer ne change rien au battement. */
+function toggleMapStage() {
+  var slot = $("#slotBig"), stg = document.getElementById("stage"); MAP.onStage = !MAP.onStage;
+  if (MAP.onStage) {
+    if (!mapStage) { mapStage = h("canvas", "mapstage"); mapStage.dataset.big = "1"; mapStage.setAttribute("aria-label", "Carte de navigation"); }
+    var r = slot.getBoundingClientRect(); mapStage.width = Math.max(320, Math.round(r.width)); mapStage.height = Math.max(240, Math.round(r.height));
+    slot.removeChild(stage.root); slot.appendChild(mapStage);                 // la scene montre la carte...
+    if (miniHost) { if (MAP.mini && MAP.mini.parentNode === miniHost) miniHost.removeChild(MAP.mini); stage.root.classList.add("inbox"); miniHost.insertBefore(stage.root, miniHost.firstChild); }   // ...et la section montre la video
+  } else {
+    if (mapStage && mapStage.parentNode) mapStage.parentNode.removeChild(mapStage);
+    stage.root.classList.remove("inbox"); slot.appendChild(stage.root);        // la video retourne a la scene
+    if (miniHost && MAP.mini) miniHost.insertBefore(MAP.mini, miniHost.firstChild);   // et la carte dans la section
+  }
+  stg.classList.toggle("mapon", MAP.onStage); stg.classList.add("swapflash"); setTimeout(function () { stg.classList.remove("swapflash"); }, 520); MAP.dirty = true;
+  try { stage.vid.play().catch(function () { }); } catch (e) { }                // un deplacement de noeud peut mettre la lecture en pause
+}
+
 /* ---------- constructeurs de contenu ---------- */
 var ICON = {
   mission: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>', vitals: '<path d="M2 12h5l2-6 4 12 2-6h7"/>',
   config: '<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>', calib: '<circle cx="12" cy="12" r="9"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4M9 15l6-6"/>' };
 var MODES = [["mission", "Mission", "Objectifs · carte"], ["vitals", "Vitaux", "Énergie · santé"], ["config", "Config", "Réseau · manette"], ["calib", "Calib", "Étalonnage · tuning"]];
+/* Modale de choix de la mission : une ligne par mission publiee par le robot (/cc/mission/list), avec ses etapes. Choisir ne lance RIEN. */
+function openMissionPicker() {
+  var list = MIS.list || [], body = [];
+  if (!list.length) body.push(h("div", "callout", "<strong>Aucune mission disponible</strong><p>Le nœud bamboo_mission_manager ne répond pas (liste vide).</p>"));
+  var box = h("div", "lst");
+  list.forEach(function (m) {
+    var on = m.id === MSEL, li = h("div", "li" + (on ? " sel" : ""), '<i class="dotc ' + (m.roule ? "w" : "") + '"></i><div><b></b><small></small></div>' + (m.roule ? '<span class="st part">roule</span>' : '<span class="st ok">immobile</span>'));
+    li.querySelector("b").textContent = m.id.replace(/_/g, " "); li.querySelector("small").textContent = m.description;
+    li.style.cursor = "pointer"; li.setAttribute("role", "button"); li.tabIndex = 0;
+    var pick = function () { MSEL = m.id; mKeyReset(); dlgClose(); };
+    li.onclick = pick; li.onkeydown = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
+    box.appendChild(li); });
+  body.push(box);
+  body.push(h("p", "mdesc", "Choisir une mission ne la lance pas : le bouton « Lancer » du panneau le fait. Une mission qui roule exige la traction armée et la liaison du CC saine."));
+  dlgShow({ tag: "Mission // choix", title: "Choisir la mission", body: body, foot: [dbtn("Fermer", "pri", dlgClose)] });
+}
+var mKeyReset = function () { };                  // remplace par le panneau Mission quand il est affiche
 function infoModal(title, tag, lines) {
   dlgShow({ tag: tag, title: title, body: [h("div", "callout", "<strong>Pas encore branché</strong><p>" + lines[0] + "</p>"), h("p", "mdesc", lines[1])], foot: [dbtn("Fermer", "pri", dlgClose)] });
 }
@@ -459,10 +553,46 @@ function stripVitals(st) {
 
 /* ---------- mode MISSION (lecture seule : l'état de la navigation) ---------- */
 function navFresh() { return !!NAV && performance.now() - NAVT < 6000; }
+/* Etat d'une mission pour l'en-tete : « off » (rouge : non lancee / arretee), « start » (orange clignotant : lancement, c'est a dire
+   la pile et les services des capacites ne sont pas encore prets), « run » (vert clignotant : une etape qui AGIT s'execute). */
+var MSEL = null;                                   // identifiant de la mission choisie dans la modale
+/* Cinq etats pour la pastille (2026-11-11) :
+     idle  (creme)               pas lance : aucune mission, terminee, annulee, ou mission choisie jamais lancee
+     error (rouge)               la derniere tentative de CETTE mission a echoue ou a ete refusee -- remis a zero au prochain « Lancer »
+     start (orange clignotant)   lancement : verifications et demarrage des services de capacites (pile, modes, relocalisation...)
+     run   (vert clignotant)     execution : l'etape qui AGIT (explorer, aller, ronde) tourne
+     pause (orange FIXE)         traction desarmee en cours d'etape : le robot est arrete, l'etape reprendra au reappui
+   Un echec d'une AUTRE mission que celle choisie ne s'affiche pas : choisir une autre mission repart d'un etat propre. */
+var MREQ = { id: "", t: 0, sig: "" };
+function misSig() { var st = MIS.st; return st ? [st.etat, st.mission, st.i, st.reponse, st.raison, (st.etapes || []).length].join("|") : ""; }
+/* vrai tant que le robot n'a pas repondu a la derniere demande de CETTE page (ou 8 s, delai maximal : un robot muet ne fige pas l'affichage) */
+function reqPending() { return MREQ.t > 0 && performance.now() - MREQ.t < 8000 && misSig() === MREQ.sig; }                  // derniere demande de lancement envoyee par CETTE page (pour effacer l'ancien echec)
+function missionLive() {
+  var st = MIS.st, fresh = MIS.t && performance.now() - MIS.t < 6000;
+  if (!S.rb || !fresh || !st) return { name: MSEL, state: "idle", txt: "robot muet" };
+  var mine = !MSEL || st.mission === MSEL;
+  if (st.etat === "running" && mine && st.pause) {
+    /* PAUSE : la traction est desarmee (perte de la manette ou du CC, Echap, B). L'etape REPREND au reappui, jamais annulee seule. */
+    return { name: st.mission, state: "pause", txt: "en pause — réarmer la traction pour reprendre" };
+  }
+  if (st.etat === "running" && mine) {
+    var cur = (st.etapes || [])[st.i] || {};
+    /* « lancement » = tant que l'etape courante n'est pas l'ACTION de la mission ; « execution » = cette etape a ete lancee. */
+    var acting = cur.roule || /explor|ronde|navigation$/.test(cur.id || "");
+    var launching = !acting || cur.etat === "pending" || cur.etat === "waiting_ready";
+    return { name: st.mission, state: launching ? "start" : "run", txt: launching ? "lancement" : "en cours" };
+  }
+  /* Une demande envoyee APRES le dernier message du robot n'a pas encore de reponse : on n'affiche pas l'ancien echec. */
+  var stale = reqPending();
+  var refused = !stale && st.reponse && /^REFUS/.test(st.reponse) && (st.etat === "idle");
+  var failed = !stale && mine && (st.etat === "failed");
+  if (failed) return { name: st.mission, state: "error", txt: "échec" };
+  if (refused) return { name: MSEL, state: "error", txt: "refusée" };
+  return { name: MSEL || null, state: "idle", txt: mine && st.etat === "done" ? "terminée" : mine && st.etat === "cancelled" ? "annulée" : "non lancée" };
+}
 function missionText() {
-  if (!navFresh()) return ["Aucune mission — pile de navigation arrêtée", "off"];
-  if (NAV.goal) return ["Navigation — vers " + NAV.goal + " · " + f(num(NAV.distance_remaining), 1, " m"), "run"];
-  return ["Navigation — " + (NAV.submode || "?") + (NAV.detail ? " · " + NAV.detail : ""), "run"];
+  var m = missionLive();
+  return [(m.name ? m.name.replace(/_/g, " ") : "Aucune mission choisie") + " · " + m.txt, m.state];
 }
 /* ---------- MISSIONS : commandes de navigation (service /nav_supervisor/command, deja dans la liste blanche) ----------
    Tout ce qui FAIT ROULER est un appui maintenu 1,1 s (meme geste que l'armement) et reste grise sans liaison saine (page +
@@ -503,119 +633,93 @@ function holdButton(label, danger, okFn, whyFn, run) {
   return b;
 }
 function panelMission(pb) {
-  var b1 = block("Navigation", 0, "/navigation/state");
-  b1.appendChild(KV([
-    ["Pile NAV", function () { return navFresh() ? "en marche" : ["arrêtée (A long en mode NAV)", 0]; }], ["Sous-mode", function () { return navFresh() ? NAV.submode || "—" : "—"; }], ["Carte courante", function () { return navFresh() ? NAV.map_name || "—" : "—"; }],
-    ["But", function () { return navFresh() ? (NAV.goal || "aucun") + (NAV.goal_status ? " · " + NAV.goal_status : "") : "—"; }], ["Distance restante", function () { return navFresh() ? f(num(NAV.distance_remaining), 1, " m") : "—"; }],
-    ["Reprises", function () { return navFresh() ? String(NAV.recoveries) : "—"; }], ["Localisation", function () { return navFresh() ? [NAV.loc_state + (isFinite(num(NAV.map_match)) ? " · " + Math.round(NAV.map_match * 100) + " %" : ""), NAV.loc_state === "ok" ? 0 : 1] : "—"; }],
-    ["Capteurs manquants", function () { return navFresh() ? ((NAV.missing_sensors && NAV.missing_sensors.length) ? [NAV.missing_sensors.join(", "), 2] : "aucun") : "—"; }]], "NavState (le superviseur publie seulement quand la pile NAV tourne)"));
-  pb.appendChild(b1);
-  /* --- commandes --- */
-  var bc = block("Pilotage de mission", 1, "/nav_supervisor/command · /bamboo/nav_stack"), bw = h("div", "prm");
-  var stopB = h("button", "btn pri", "ARRÊT — annuler tout  [Échap]"); stopB.type = "button"; stopB.style.width = "100%"; stopB.style.minHeight = "50px";
-  stopB.onclick = function () { navStop(); }; bw.appendChild(stopB);
-  var stackRow = h("div", "tags2"), startB = h("button", "btn", "Démarrer la pile NAV");
-  var stopStack = holdButton("Arrêter la pile NAV (maintenir)", true, function () { return S.rb; }, function () { return "rosbridge non connecté"; },
-    function (done) { rbCall("/bamboo/nav_stack", { data: false }, function (m) { var ok = !!(m.result && m.values && m.values.success); log(ok ? 0 : 1, ok ? "Pile NAV : arrêt demandé" : "Pile NAV : refusé"); done(ok); }); });
-  startB.type = "button";
-  startB.onclick = function () { rbCall("/bamboo/nav_stack", { data: true }, function (m) { var ok = !!(m.result && m.values && m.values.success); msSay(ok ? "Pile NAV : démarrage demandé (environ 30 s)" : "Pile NAV : refusé"); log(ok ? 0 : 1, ok ? "Pile NAV : démarrage demandé" : "Pile NAV : refusé"); }); };
-  stackRow.append(startB); bw.append(stackRow, stopStack);
-  var relB = holdButton("Maintenir pour relocaliser (locale)", false, canReloc, whyReloc, function (done) { navCall("relocalize", "", function (ok) { done(ok); }); });
-  var relG = holdButton("Maintenir pour relocaliser (globale)", false, canReloc, whyReloc, function (done) { navCall("relocalize", "global", function (ok) { done(ok); }); });
-  bw.append(relB, relG);
-  bw.appendChild(h("p", "pdesc", "Relocaliser : d'abord sans bouger (scan contre la carte). Si le résultat est ambigu, le robot ne tourne que traction ARMÉE (touche A) ; sinon il demande de l'armer."));
-  var msgP = h("p", "pdesc", ""); bw.appendChild(msgP);
-  bc.appendChild(bw); pb.appendChild(bc);
-
-  var bd = block("Destinations", 2, "NavState · waypoints, dest_n/x/y"), dw = h("div", "prm"), dl = h("div", "lst"); dw.appendChild(dl);
-  var goB = holdButton("Maintenir pour aller à la destination choisie", true,
-    function () { return canRoll() && NAV.loc_state === "ok" && MS.dest != null; },
-    function () { return !canRoll() ? whyRoll() : NAV.loc_state !== "ok" ? "Indisponible : robot non localisé (" + NAV.loc_state + ")" : "Choisissez d'abord une destination"; },
-    function (done) { navCall("goto", String(MS.dest), function (ok) { done(ok); }); });
-  var patB = holdButton("Maintenir : ronde des destinations (marche / arrêt)", true,
-    function () { return canRoll() && NAV.loc_state === "ok"; }, function () { return !canRoll() ? whyRoll() : "Indisponible : robot non localisé"; },
-    function (done) { navCall("patrol", "", function (ok) { done(ok); }); });
-  var addRow = h("div", "tags2"), nameI = h("input"); nameI.type = "text"; nameI.placeholder = "nom (facultatif)"; nameI.setAttribute("aria-label", "Nom de la destination"); nameI.style.cssText = "flex:1;min-width:120px";
-  var addB = h("button", "btn", "Ajouter ici"); addB.type = "button"; addB.title = "La pose actuelle du robot devient une destination";
-  addB.onclick = function () { if (!navFresh()) { msSay("Indisponible : pile NAV arrêtée"); return; } navCall("dest_add", nameI.value.trim(), function (ok) { if (ok) nameI.value = ""; }); };
-  addRow.append(nameI, addB); dw.append(goB, patB, addRow); bd.appendChild(dw); pb.appendChild(bd);
-  var lastKey = "";
-  REG.push(function () {
-    var fresh = navFresh(), key = fresh ? JSON.stringify([NAV.dest_n, NAV.dest_name, MS.dest]) : "off";
-    if (key !== lastKey) {
-      lastKey = key; dl.replaceChildren();
-      if (!fresh) dl.appendChild(h("div", "li", "<div><b>Pile NAV arrêtée</b><small>Démarrez-la pour voir les destinations</small></div>"));
-      else {
-        var items = [{ n: "home", name: "Départ", x: NaN, y: NaN }];
-        for (var i = 0; i < (NAV.dest_n || []).length; i++) items.push({ n: NAV.dest_n[i], name: NAV.dest_name[i] || ("p" + NAV.dest_n[i]), x: NAV.dest_x[i], y: NAV.dest_y[i] });
-        items.forEach(function (it) {
-          var on = String(MS.dest) === String(it.n);
-          var li = h("div", "li" + (on ? " sel" : ""), '<i class="dotc ' + (on ? "" : "w") + '"></i><div><b></b><small></small></div>');
-          li.querySelector("b").textContent = it.name; li.querySelector("small").textContent = isFinite(it.x) ? "x " + it.x.toFixed(2) + " · y " + it.y.toFixed(2) + " m" : "point de départ de la carte";
-          li.style.cursor = "pointer"; li.setAttribute("role", "button"); li.tabIndex = 0;
-          var pick = function () { MS.dest = it.n; lastKey = ""; };
-          li.onclick = pick; li.onkeydown = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
-          dl.appendChild(li); });
-        if (items.length === 1) dl.appendChild(h("div", "li", "<div><b>Aucune destination</b><small>« Ajouter ici » enregistre la pose actuelle</small></div>"));
-      }
-    }
-    [relB, relG, goB, patB, stopStack].forEach(function (b) { b.refresh(); });
-    stopB.disabled = !S.rb; stopB.style.opacity = S.rb ? "" : ".4";
-    addB.disabled = !fresh; addB.style.opacity = fresh ? "" : ".4";
-    msgP.textContent = performance.now() - MS.msgT < 7000 ? MS.msg : "";
-  });
-  /* --- MISSIONS : des capacités enchaînées, exécutées PAR LE ROBOT (nœud bamboo_mission_manager) ---
-     La page ne fait que demander (/cc/mission/request) et lire l'avancement (/cc/mission/state) : une mission continue
-     donc si l'onglet se ferme, et le garde-fou coupe de toute façon un robot qui roule sans CC. */
-  var b2 = block("Missions", 3, "/cc/mission/list · /cc/mission/state"), mw2 = h("div", "prm"), ML = h("div", "lst"), MSTEP = h("div", "lst"), MST = h("p", "pdesc", "");
-  var MCTL = h("div", "tags2"), mGo = h("button", "btn pri", "Lancer la mission"), mStop = h("button", "btn", "Annuler la mission"), mPar = h("input");
-  mGo.type = "button"; mStop.type = "button"; mPar.type = "text"; mPar.placeholder = "destination (ex. p1)"; mPar.setAttribute("aria-label", "Destination de la mission"); mPar.style.cssText = "flex:1;min-width:120px;display:none";
-  MCTL.append(mPar, mGo, mStop); mw2.append(ML, MCTL, MST, MSTEP); b2.appendChild(mw2); pb.appendChild(b2);
-  var mSel = null, mKey = "", mSteps = "";
-  var mCur = function () { return (MIS.list || []).filter(function (x) { return x.id === mSel; })[0]; };
+  /* --- MISSION (2026-11-11) : [Lancer][Annuler] alignés, puis trois sections dépliantes : carte, informations, étapes.
+     La mission est EXÉCUTÉE PAR LE ROBOT (nœud bamboo_mission_manager) ; la page demande (/cc/mission/request) et lit l'avancement
+     (/cc/mission/state). Une mission continue donc si l'onglet se ferme, et le garde-fou coupe de toute façon un robot qui roule sans CC. */
+  var mwrap = h("div", "prm mpanel"), mrow = h("div", "mbtns"), mGo = h("button", "btn pri", "Lancer"), mStop = h("button", "btn", "Annuler"), mPar = h("input"), MST = h("p", "pdesc", "");
+  mGo.type = "button"; mStop.type = "button"; mPar.type = "text"; mPar.placeholder = "destination (ex. p1)"; mPar.setAttribute("aria-label", "Destination de la mission"); mPar.style.cssText = "display:none;width:100%";
+  mrow.append(mGo, mStop); mwrap.append(mrow, mPar, MST); pb.appendChild(mwrap);
+  var maccs = h("div", "accs rv"); pb.appendChild(maccs); var mlist = [], MAcc = W.Accordion(maccs, mlist, true, REG);
+  var mCur = function () { return (MIS.list || []).filter(function (x) { return x.id === MSEL; })[0]; };
   var mBusy = function () { return !!(MIS.st && MIS.st.etat === "running"); };
+  mKeyReset = function () { mSteps = ""; };
+  var mSteps = "";
   mGo.onclick = function () {
-    var m = mCur(); if (!m) return; var p = {};
+    var m = mCur(); if (!m) { msSay("Choisissez d'abord une mission (bouton « Mission » de l'en-tête)"); openMissionPicker(); return; } var p = {};
     (m.parametres || []).forEach(function (k) { p[k] = k === "destination" ? (mPar.value.trim() || (MS.dest != null ? String(MS.dest) : "")) : ""; });
+    MREQ.id = m.id; MREQ.t = performance.now(); MREQ.sig = misSig(); MS.msgT = 0;                   // efface l'ancien echec affiche, meme pour la MEME mission
     if (HASH.test === "1") { CALLS_OUT.push("mission:" + JSON.stringify({ mission: m.id, params: p })); msSay("test : mission non envoyée"); return; }
     rbSend({ op: "publish", topic: "/cc/mission/request", msg: { data: JSON.stringify({ mission: m.id, params: p }) } });
     log(0, "Mission « " + m.id + " » demandée"); msSay("Mission demandée…"); };
   mStop.onclick = function () {
     if (HASH.test === "1") { CALLS_OUT.push("mission:cancel"); return; }
     rbSend({ op: "publish", topic: "/cc/mission/cancel_req", msg: { data: "1" } }); navStop(); log(1, "Mission : annulation demandée"); };
+
+  /* -- section 1 : la carte de navigation. La touche M l'échange avec la vidéo de la scène centrale. -- */
+  var mapBody = h("div", "prm"), mapHost = h("div", "mapbox"), mapCv = h("canvas", "mapmini"); mapCv.width = 560; mapCv.height = 360; mapCv.setAttribute("aria-label", "Carte de navigation"); mapHost.appendChild(mapCv); miniHost = mapHost;
+  var mapBtn = h("button", "btn", "Afficher la carte au centre  [M]"); mapBtn.type = "button"; mapBtn.onclick = function () { toggleMapStage(); };
+  var mapHint = h("p", "pdesc", ""); mapBody.append(mapHost, mapBtn, mapHint);
+  MAcc("Carte", function () { var g = MAP.grid; return g ? [g.w + "×" + g.h + " · " + (MAP.name || "—"), 0] : [navFresh() ? "pas de carte" : "pile NAV arrêtée", navFresh() ? 1 : -1]; }, mapBody, true);
+  MAP.mini = mapCv; RAFP.push(function () { if (MAP.mini === mapCv && !MAP.onStage && mapCv.parentNode) drawMap(mapCv); });
+  REG.push(function () { mapBtn.textContent = MAP.onStage ? "Remettre la vidéo au centre  [M]" : "Afficher la carte au centre  [M]";
+    mapHint.textContent = !MAP.grid ? (navFresh() ? "En attente de la carte (/map ou /navigation/map_preview)." : "Démarrez la pile NAV pour obtenir la carte.") : ""; });
+
+  /* -- section 3 : informations de la mission (clé / valeur) -- */
+  var infoBody = h("div", "prm");
+  var kvRows = [
+    ["Mission", function () { var x = missionLive(); return x.name ? x.name.replace(/_/g, " ") : "—"; }],
+    ["État", function () { var x = missionLive(); return [x.txt, x.state === "run" ? 0 : x.state === "start" ? 1 : -1]; }],
+    ["Étape", function () { var st = MIS.st; if (!st || !st.etapes || !st.etapes.length) return "—"; var e = st.etapes[Math.min(st.i, st.etapes.length - 1)]; return (Math.min(st.i, st.etapes.length - 1) + 1) + " / " + st.etapes.length + " · " + (e.desc || e.id); }],
+    ["Durée", function () { var st = MIS.st; return st && st.duree_s ? hms(st.duree_s) : "—"; }],
+    ["Paramètres", function () { var st = MIS.st, p = st && st.parametres ? Object.keys(st.parametres).map(function (k) { return k + " = " + st.parametres[k]; }) : []; return p.length ? p.join(", ") : "aucun"; }],
+    ["Raison", function () { var st = MIS.st, x = missionLive(); return st && st.raison && (!MSEL || st.mission === MSEL) && x.state !== "start" && x.state !== "run" ? [st.raison, x.state === "error" ? 2 : 1] : "—"; }],
+    ["Traction", function () { return TR ? (TR.latched ? ["armée verrouillée", 1] : TR.armed ? ["armée", 1] : "désarmée") : "—"; }],
+    ["Liaison CC", function () { return ccLinkOk() ? "saine" : ["non saine", 1]; }],
+    ["Localisation", function () { return navFresh() ? [NAV.loc_state + (isFinite(num(NAV.map_match)) ? " · " + Math.round(NAV.map_match * 100) + " %" : ""), NAV.loc_state === "ok" ? 0 : 1] : "—"; }],
+    ["But de navigation", function () { return navFresh() ? (NAV.goal || "aucun") + (NAV.goal_status ? " · " + NAV.goal_status : "") : "—"; }],
+    ["Distance restante", function () { return navFresh() ? f(num(NAV.distance_remaining), 1, " m") : "—"; }],
+    ["Carte courante", function () { return navFresh() ? NAV.map_name || "—" : "—"; }],
+    ["Autonomie estimée", function () { var a = enAuto(); return a || "—"; }]];
+  infoBody.appendChild(KV(kvRows, "/cc/mission/state · /navigation/state · /bamboo/energy"));
+  var stepsBody = h("div", "prm"), SL = h("div", "lst"); stepsBody.appendChild(SL);
+  MAcc("Étapes", function () { var st = MIS.st, n = st && st.etapes ? st.etapes.length : 0; if (!n) return ["—", -1]; var d = st.etapes.filter(function (e) { return e.etat === "done"; }).length; return [d + " / " + n, st.etat === "failed" ? 2 : 0]; }, stepsBody, false);
+  MAcc("Informations", function () { var x = missionLive(); return [x.name ? x.name.replace(/_/g, " ") + " · " + x.txt : "aucune mission", x.state === "run" ? 0 : x.state === "start" ? 1 : -1]; }, infoBody, false);
+
+  /* -- section 2 : les étapes (lancement des services des capacités, relocalisation, exploration...) avec leur statut -- */
+  var STLAB = { done: "fait", pending: "à venir", waiting_ready: "attente", running: "en cours", starting: "départ", paused: "pause", failed: "échec", cancelled: "annulée" };
   REG.push(function () {
-    var list = MIS.list || [], st = MIS.st, fresh = MIS.t && performance.now() - MIS.t < 6000;
-    var key = JSON.stringify([list.map(function (x) { return x.id; }), mSel, mBusy(), fresh]);
-    if (key !== mKey) {
-      mKey = key; ML.replaceChildren();
-      if (!list.length) ML.appendChild(h("div", "li", "<div><b>Aucune mission</b><small>nœud bamboo_mission_manager absent ou muet</small></div>"));
-      list.forEach(function (m) {
-        var on = m.id === mSel, li = h("div", "li" + (on ? " sel" : ""), '<i class="dotc ' + (m.roule ? "w" : "") + '"></i><div><b></b><small></small></div>' + (m.roule ? '<span class="st part">roule</span>' : '<span class="st ok">immobile</span>'));
-        li.querySelector("b").textContent = m.id.replace(/_/g, " "); li.querySelector("small").textContent = m.description;
-        li.style.cursor = "pointer"; li.setAttribute("role", "button"); li.tabIndex = 0;
-        var pick = function () { mSel = m.id; mKey = ""; };
-        li.onclick = pick; li.onkeydown = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
-        ML.appendChild(li); });
-    }
-    var m = mCur(); mPar.style.display = m && (m.parametres || []).indexOf("destination") >= 0 ? "" : "none";
-    var why = !S.rb ? "rosbridge non connecté" : !m ? "Choisissez une mission" : mBusy() ? "Une mission est déjà en cours" : (m.roule && !ccLinkOk()) ? ccLinkWhy() : (m.roule && !(TR && TR.armed)) ? "Traction désarmée : armer d'abord (A maintenu) — le robot ne s'arme jamais seul" : "";
-    mGo.disabled = !!why; mGo.style.opacity = why ? ".4" : ""; mGo.title = why;
-    mStop.disabled = !S.rb; mStop.style.opacity = S.rb ? "" : ".4";
-    var txt = st ? (st.etat === "running" ? "En cours : " + st.mission.replace(/_/g, " ") : st.etat === "done" ? "Terminée : " + st.mission.replace(/_/g, " ") : st.etat === "failed" ? "ÉCHEC : " + st.raison : st.etat === "cancelled" ? "Annulée : " + st.raison : "") : "";
-    if (st && st.reponse && (!txt || st.etat === "idle")) txt = st.reponse;
-    if (MST.textContent !== txt) MST.textContent = txt;
-    var sk = st ? JSON.stringify(st.etapes) + st.etat : "";
+    var st = MIS.st, list = MIS.list || [], m = mCur();
+    /* aperçu : la mission CHOISIE mais pas lancée montre ses étapes à venir (liste publiée par le robot) */
+    var shown = st && st.etapes && st.etapes.length && (!MSEL || st.mission === MSEL || mBusy()) && !reqPending() ? st.etapes
+      : m ? (m.detail || m.etapes || []).map(function (d, i) { return { id: m.etapes[i], desc: d, etat: "pending", roule: false }; }) : [];
+    var sk = JSON.stringify(shown) + (st ? st.etat + st.i : "") + MSEL;
     if (sk !== mSteps) {
-      mSteps = sk; MSTEP.replaceChildren();
-      (st && st.etapes || []).forEach(function (e, i) {
+      mSteps = sk; SL.replaceChildren();
+      if (!shown.length) SL.appendChild(h("div", "li", "<div><b>Aucune étape</b><small>choisissez une mission</small></div>"));
+      shown.forEach(function (e, i) {
         var c = e.etat === "done" ? "" : e.etat === "failed" ? "e" : e.etat === "pending" || e.etat === "cancelled" ? "o" : "w";
-        var li = h("div", "li" + (st.etat === "running" && i === st.i ? " sel" : ""), '<i class="dotc ' + c + '"></i><div><b></b><small></small></div><span class="st ' + (e.etat === "done" ? "ok" : e.etat === "failed" ? "todo" : "part") + '"></span>');
-        li.querySelector("b").textContent = (i + 1) + ". " + e.desc; li.querySelector("small").textContent = e.roule ? "le robot roule" : "";
-        li.querySelector(".st").textContent = ({ done: "fait", pending: "à venir", waiting_ready: "attente", running: "en cours", starting: "départ", failed: "échec", cancelled: "annulée" })[e.etat] || e.etat;
-        MSTEP.appendChild(li); });
+        var cur = st && st.etat === "running" && i === st.i;
+        var li = h("div", "li" + (cur ? " sel" : ""), '<i class="dotc ' + c + '"></i><div><b></b><small></small></div><span class="st ' + (e.etat === "done" ? "ok" : e.etat === "failed" ? "todo" : "part") + '"></span>');
+        li.querySelector("b").textContent = (i + 1) + ". " + (e.desc || e.id); li.querySelector("small").textContent = e.roule ? "le robot roule" : "";
+        li.querySelector(".st").textContent = STLAB[e.etat] || e.etat;
+        SL.appendChild(li); });
     }
+    /* boutons : Lancer exige une mission choisie, libre, et pour une mission qui roule la traction armée + la liaison saine */
+    var why = !S.rb ? "rosbridge non connecté" : !m ? "Choisissez une mission (bouton « Mission » de l'en-tête)" : mBusy() ? ((MIS.st && MIS.st.pause) ? "Mission en pause : réarmez la traction (A ou V maintenu) pour la reprendre" : "Une mission est déjà en cours")
+      : (m.roule && !ccLinkOk()) ? ccLinkWhy() : (m.roule && !(TR && TR.armed)) ? "Traction désarmée : armer d'abord (A maintenu) — le robot ne s'arme jamais seul" : "";
+    mGo.disabled = !!why; mGo.style.opacity = why ? ".4" : ""; mGo.title = why;
+    mStop.disabled = !S.rb || !mBusy(); mStop.style.opacity = (!S.rb || !mBusy()) ? ".4" : ""; mStop.title = mBusy() ? "Annule la mission et arrête le robot" : "Aucune mission en cours";
+    mPar.style.display = m && (m.parametres || []).indexOf("destination") >= 0 ? "" : "none";
+    var live = missionLive(), txt = "";
+    if (live.state === "pause") txt = "EN PAUSE : traction désarmée. Réarmez (A ou V maintenu, ou B long à la manette) pour reprendre l'étape ; « Annuler » abandonne la mission.";
+    if (live.state === "error") txt = st && st.etat === "failed" ? "ÉCHEC : " + st.raison : (st && st.reponse) || "Refusée";
+    else if (st && st.etat === "cancelled" && (!MSEL || st.mission === MSEL)) txt = "Annulée : " + st.raison;
+    else if (st && st.etat === "done" && (!MSEL || st.mission === MSEL)) txt = "Terminée";
+    if (!txt && st && st.reponse && st.etat === "idle" && !reqPending()) txt = st.reponse;
+    if (!txt && performance.now() - MS.msgT < 7000) txt = MS.msg;
+    if (MST.textContent !== txt) MST.textContent = txt;
   });
-  var b3 = block("Carte", 4, "/map"), mw = h("div", "card fr"); mw.innerHTML = '<div class="micro">Carte de navigation</div><p class="pdesc" style="margin:0">Le tracé de la carte arrive au jalon 2. Il demande la pile NAV (lidar + SLAM), éteinte au repos.</p>'; b3.appendChild(mw); pb.appendChild(b3);
+  /* --- fin MISSION --- */
 }
 function stripMission(st) {
   [["Distance restante", "m", 1, "NavState · distance_remaining", function () { return navFresh() ? num(NAV.distance_remaining) : NaN; }, {}], ["Reprises", "", 0, "NavState · recoveries", function () { return navFresh() ? num(NAV.recoveries) : NaN; }, { warn: 2, crit: 5 }],
@@ -763,18 +867,23 @@ var TITLE = { vitals: ["Vitaux", "Énergie · santé"], config: ["Config", "Rés
 /* ======================= orchestration ======================= */
 function setHeader(m) {
   var ph = $("#ph"); ph.replaceChildren();
-  if (m === "mission" || m === "calib") {
-    var b = h("button", "phbtn"); b.type = "button"; b.setAttribute("aria-haspopup", "dialog"); b.appendChild(h("span", "", m === "mission" ? "Mission" : "Calibration")); b.appendChild(h("i", "chev"));
-    b.onclick = function () { infoModal(m === "mission" ? "Définir une mission" : "Lancer une calibration", m === "mission" ? "Assistant // mission" : "Assistant // calibration",
-      m === "mission" ? ["Le choix et l'engagement des missions arrivent au jalon 2.", "Ce premier jalon est en lecture seule : aucune commande ne part vers le robot depuis cette page."] : ["Le lancement des calibrations arrive au jalon 2.", "Ce premier jalon est en lecture seule : l'état de l'asservissement et de la batterie est affiché en direct."]); };
+  if (m === "mission") {
+    var b = h("button", "phbtn"); b.type = "button"; b.setAttribute("aria-haspopup", "dialog"); b.title = "Choisir la mission"; b.appendChild(h("span", "", "Mission")); b.appendChild(h("i", "chev"));
+    b.onclick = openMissionPicker;
+    var t = h("div", "phtxt", '<i class="mdot"></i><span></span>'); ph.append(b, t);
+    var dot = t.firstChild, sp = t.lastChild;
+    REG.push(function () { var x = missionText(); if (sp.textContent !== x[0]) { sp.textContent = x[0]; sp.title = x[0]; } if (dot.dataset.s !== x[1]) dot.dataset.s = x[1]; });
+  } else if (m === "calib") {
+    var b = h("button", "phbtn"); b.type = "button"; b.setAttribute("aria-haspopup", "dialog"); b.appendChild(h("span", "", "Calibration")); b.appendChild(h("i", "chev"));
+    b.onclick = function () { infoModal("Lancer une calibration", "Assistant // calibration", ["Le lancement des calibrations arrive au jalon 2.", "L'état de l'asservissement et de la batterie est affiché ici en lecture seule."]); };
     var t = h("div", "phtxt", '<i class="pulse off"></i><span></span>'); ph.append(b, t);
-    var dot = t.firstChild, sp = t.lastChild, fn = m === "mission" ? missionText : calText;
-    REG.push(function () { var x = fn(); if (sp.textContent !== x[0]) { sp.textContent = x[0]; sp.title = x[0]; } dot.classList.toggle("off", x[1] !== "run"); });
+    var dot = t.firstChild, sp = t.lastChild;
+    REG.push(function () { var x = calText(); if (sp.textContent !== x[0]) { sp.textContent = x[0]; sp.title = x[0]; } dot.classList.toggle("off", x[1] !== "run"); });
   } else { ph.appendChild(h("h2", "", TITLE[m][0])); ph.appendChild(h("span", "micro", TITLE[m][1])); }
 }
 function setMode(m, instant) {
   var pnl = $("#panel"), pb = $("#pb"), strip = $("#strip");
-  var go = function () { REG.length = 0; RAFP.length = 0; S.mode = m; syncSubs(); pb.replaceChildren(h("div", "sweep")); strip.replaceChildren(); setHeader(m); BUILD[m][0](pb); BUILD[m][1](strip); pb.scrollTop = 0;
+  var go = function () { if (MAP.onStage && m !== "mission") toggleMapStage(); miniHost = null; REG.length = 0; RAFP.length = 0; S.mode = m; syncSubs(); pb.replaceChildren(h("div", "sweep")); strip.replaceChildren(); setHeader(m); BUILD[m][0](pb); BUILD[m][1](strip); pb.scrollTop = 0;
     pnl.classList.remove("out"); pnl.classList.remove("in"); void pnl.offsetWidth; pnl.classList.add("in"); };
   var btns = [].slice.call(document.querySelectorAll(".mode")); btns.forEach(function (b) { b.setAttribute("aria-pressed", b.dataset.mode === m); });
   var act = btns.filter(function (b) { return b.dataset.mode === m; })[0], sb = $("#selb");
@@ -822,7 +931,8 @@ var KEYS = [
     [["1", "2", "3", "4"], "Changer de mode : Mission, Vitaux, Config, Calib."],
     ["J", "Ouvrir / fermer le journal du robot."],
     ["H", "Ouvrir / fermer cette liste des touches."],
-    ["S", "Afficher / masquer la source de chaque donnée (topic ROS)."]]],
+    ["S", "Afficher / masquer la source de chaque donnée (topic ROS)."],
+    ["M", "Mode Mission : échange la carte de navigation et la vidéo de la scène centrale."]]],
   ["Traction", [
     ["A (maintenue 1,1 s)", "Armer la traction. Refusé si la liaison CC ou la vidéo n'est pas saine, ou si cet onglet n'est pas le pilote."],
     ["V (maintenue 1,1 s)", "Armer verrouillé : la perte de la manette ne désarme plus (le garde-fou du CC désarme toujours)."],
@@ -878,7 +988,7 @@ $("#jbtn").onclick = function () { toggleSlide("journal", openJournal); };
 $("#kbtn").onclick = function () { toggleSlide("keys", openKeys); };
 document.addEventListener("keydown", function (e) {
   if (e.ctrlKey || e.metaKey || e.altKey || document.querySelector("dialog[open]:not(.slide)")) return; if (e.target.closest && e.target.closest("input,textarea")) return;
-  var k = e.key.toLowerCase(); if (k >= "1" && k <= "4") setMode(MODES[+k - 1][0]); else if (k === "s") toggleSrc(!document.body.classList.contains("srcs")); else if (k === "j") toggleSlide("journal", openJournal); else if (k === "h") toggleSlide("keys", openKeys);
+  var k = e.key.toLowerCase(); if (k >= "1" && k <= "4") setMode(MODES[+k - 1][0]); else if (k === "s") toggleSrc(!document.body.classList.contains("srcs")); else if (k === "j") toggleSlide("journal", openJournal); else if (k === "h") toggleSlide("keys", openKeys); else if (k === "m" && S.mode === "mission") toggleMapStage();
 });
 
 /* pastilles de santé du pied de page : uniquement ce qui n'est pas vert, comme la carte santé du HUD */
@@ -961,7 +1071,7 @@ var HB = { worker: false, ticks: 0 };
 setInterval(rbPing, 2000); setInterval(vidStats, 2000);
 var wv = wave.children;
 function frame(ts) {
-  stage.draw(ts); RAFP.forEach(function (fn) { fn(ts); });
+  stage.draw(ts); RAFP.forEach(function (fn) { fn(ts); }); if (MAP.onStage && mapStage) { if (S.mode !== "mission") toggleMapStage(); else drawMap(mapStage); }
   for (var i = 0; i < wv.length; i++) wv[i].style.height = (4 + (Math.sin(ts / 420 + i * .6) * .5 + .5) * 6 + (Math.sin(ts / 1100 + i * 1.7) * .5 + .5) * 5) + "px";
   requestAnimationFrame(frame);
 }
@@ -969,7 +1079,7 @@ if (HASH.src) toggleSrc(true);
 setMode(HASH.mode && BUILD[HASH.mode] ? HASH.mode : "vitals", true);
 log(0, "Session ouverte"); typeAI(); rbConnect(); vidStart();
 if (HASH.open === "journal") toggleSlide("journal", openJournal); else if (HASH.open === "keys") toggleSlide("keys", openKeys);
-window.CC = { test: { hide: function (h) { Object.defineProperty(document, "hidden", { configurable: true, get: function () { return h; } }); document.dispatchEvent(new Event("visibilitychange")); }, subs: function () { return Object.keys(SUBS).sort(); }, linkOk: function () { return ccLinkOk(); }, calls: CALLS_OUT, arm: ARM, hb: HB, setWs: function (w) { ws = w; SUBS = {}; syncQ.length = 0; }, resync: function () { syncSubs(); } }, V: V, S: S, inject: function (topic, msg) { var d = HANDLERS[topic]; if (d) d[3](msg); }, state: function () { return { rb: S.rb, vid: S.vid, tasks: Object.keys(DT).length, mods: DMODS.length, V: V, pad: S.pad, mode: S.robotMode, charging: S.charging, T: T }; } };
+window.CC = { test: { hide: function (h) { Object.defineProperty(document, "hidden", { configurable: true, get: function () { return h; } }); document.dispatchEvent(new Event("visibilitychange")); }, subs: function () { return Object.keys(SUBS).sort(); }, linkOk: function () { return ccLinkOk(); }, calls: CALLS_OUT, arm: ARM, hb: HB, setWs: function (w) { ws = w; SUBS = {}; syncQ.length = 0; }, resync: function () { syncSubs(); }, setTR: function (t) { TR = t; TRT = performance.now(); }, setGS: function (st) { GS = { cc: st, video: st, tripped: false, pilot: TABID }; GST = performance.now(); } }, V: V, S: S, inject: function (topic, msg) { var d = HANDLERS[topic]; if (d) d[3](msg); }, state: function () { return { rb: S.rb, vid: S.vid, tasks: Object.keys(DT).length, mods: DMODS.length, V: V, pad: S.pad, mode: S.robotMode, charging: S.charging, T: T }; } };
 requestAnimationFrame(frame);
 })();
 </script>

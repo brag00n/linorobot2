@@ -461,3 +461,24 @@
   .jr.noise{opacity:.55}
   .jnew{align-self:end;justify-self:end;margin-top:-34px;position:relative;z-index:2;box-shadow:0 0 0 1px var(--bg)}
 
+
+  /* ---- panneau Mission (2026-11-11) ---- */
+  .mbtns{display:grid;grid-template-columns:1fr 1fr;gap:10px} .mbtns .btn{min-height:46px;justify-content:center;text-align:center}
+  .mpanel{margin-bottom:12px}
+  .mdot{flex:none;width:11px;height:11px;border-radius:50%;background:var(--cream);box-shadow:0 0 8px rgb(241 232 180/.45)}
+  .mdot[data-s="idle"],.mdot[data-s="off"]{background:var(--cream);box-shadow:0 0 8px rgb(241 232 180/.45);animation:none}
+  .mdot[data-s="error"]{background:var(--alert);box-shadow:0 0 9px rgb(229 96 74/.65);animation:none}
+  .mdot[data-s="pause"]{background:var(--amber);box-shadow:0 0 9px rgb(231 162 74/.65);animation:none;outline:2px solid rgb(231 162 74/.45);outline-offset:2px}
+  .mdot[data-s="start"]{background:var(--amber);box-shadow:0 0 9px rgb(231 162 74/.65);animation:mblink 1s steps(2) infinite}
+  .mdot[data-s="run"]{background:#58c98a;box-shadow:0 0 9px rgb(88 201 138/.65);animation:mblink 1.1s steps(2) infinite}
+  @keyframes mblink{50%{opacity:.3}} @media (prefers-reduced-motion:reduce){.mdot{animation:none!important}}
+  .mapmini{width:100%;height:auto;aspect-ratio:560/360;background:#03070a;border:1px solid var(--line);display:block}
+  .mapstage{position:absolute;inset:0;width:100%;height:100%;background:#03070a;display:block;z-index:1}
+
+  /* ---- boite carte/video de la section Carte (2026-11-11) ---- */
+  .mapbox{position:relative;width:100%;aspect-ratio:560/360;background:#03070a;border:1px solid var(--line);overflow:hidden}
+  .mapbox>.mapmini{position:absolute;inset:0;width:100%;height:100%;aspect-ratio:auto;border:0}
+  .mapbox>.vp.inbox{position:absolute;inset:0;width:100%;height:100%}
+  .mapbox>.vp.inbox canvas.ov{display:block}
+  .stage.mapon .fx,.stage.mapon .glitch{display:none!important}
+  .stage.mapon .slot>.mapstage{z-index:5}
