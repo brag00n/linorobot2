@@ -68,6 +68,8 @@ def main(argv=None):
             self.batt = None
             self.reply = ""
             self.replyT = 0.0
+            self._nodesCache, self._nodesT = [], 0.0
+            self._lastBody, self._lastPubT = "", 0.0
             self.create_subscription(NavState, "/navigation/state", self._onNav, latched)
             self.create_subscription(TeleopState, "/teleop/state", self._onTeleop, latched)
             self.create_subscription(Bool, "/cc/guard/link", self._onLink, latched)
@@ -106,11 +108,19 @@ def main(argv=None):
             return s
 
         def _nodes(self):
+            """Noms des noeuds vivants. Interroger le graphe DDS coute cher (il l'etait a 2 Hz : mesure du 2026-11-11, charge
+            du RPi doublee, battements du garde-fou en retard) : la reponse est gardee 5 s. Une mission attend de toute facon
+            plusieurs secondes l'apparition d'un noeud, ce delai ne la ralentit pas de facon perceptible."""
+            now = time.monotonic()
+            if now - self._nodesT < 5.0:
+                return self._nodesCache
             try:
-                return [("%s/%s" % (ns.rstrip("/"), nm)) for nm, ns in
-                        self.get_node_names_and_namespaces()]
+                self._nodesCache = [("%s/%s" % (ns.rstrip("/"), nm)) for nm, ns in
+                                    self.get_node_names_and_namespaces()]
             except Exception:                                  # noqa: BLE001
-                return []
+                self._nodesCache = []
+            self._nodesT = now
+            return self._nodesCache
 
         # ---- commandes ----
         def _onRequest(self, msg):
@@ -125,7 +135,7 @@ def main(argv=None):
                                                   self._linkOk(), self.armed)
             self._answer(ok, "mission %s lancee" % name if ok else why)
             self.get_logger().info("mission %s : %s" % (name, "LANCEE" if ok else "REFUSEE (%s)" % why))
-            self._publishState()
+            self._publishState(force=True)
 
         def _onCancelReq(self, _msg):
             with self._lock:
@@ -133,7 +143,7 @@ def main(argv=None):
             self.get_logger().warn("mission annulee (arret demande)")
             self._run(acts)
             self._answer(True, "mission annulee")
-            self._publishState()
+            self._publishState(force=True)
 
         def _answer(self, ok, text):
             self.reply, self.replyT = ("OK : " if ok else "REFUS : ") + text, time.monotonic()
@@ -185,14 +195,21 @@ def main(argv=None):
             self._run(acts)
             self._publishState()
 
-        def _publishState(self):
+        def _publishState(self, force=False):
+            """Publie l'etat. Au repos (aucune mission), 1 fois par 2 s ; en mission ou sur un changement, a chaque tic."""
             with self._lock:
                 snap = self.engine.snapshot(time.monotonic())
                 snap["journal"] = [[t, s] for t, s in self.engine.log[-12:]]
             snap["reponse"] = self.reply if time.monotonic() - self.replyT < 30.0 else ""
             snap["liaison"] = self._linkOk()
             snap["armee"] = self.armed
-            self._pubState.publish(String(data=json.dumps(snap, ensure_ascii=False, separators=(",", ":"))))
+            body = json.dumps(snap, ensure_ascii=False, separators=(",", ":"))
+            now = time.monotonic()
+            idle = snap["etat"] != "running"
+            if not force and idle and body == self._lastBody and now - self._lastPubT < 2.0:
+                return
+            self._lastBody, self._lastPubT = body, now
+            self._pubState.publish(String(data=body))
 
         def _publishList(self):
             out = []
