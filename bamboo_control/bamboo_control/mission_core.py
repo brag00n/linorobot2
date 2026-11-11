@@ -219,6 +219,7 @@ class MissionEngine:
         self.step_state, self.step_t0, self.reason = PENDING, 0.0, ""
         self.started_at, self.ended_at, self.hold_t0, self.log = 0.0, 0.0, None, []
         self.svc_restore = []
+        self.began = False
         self.pause_t0, self.pause_from = 0.0, ""
 
     # ---- consultation ----
@@ -393,11 +394,24 @@ class MissionEngine:
                 acts.append({"call": l["service"], "args": _subst(l.get("args"), self.params),
                              "why": "lancer %s" % n})
                 self.step_state = RUNNING_STEP
+                self.began = False
                 # le delai se compte maintenant depuis le LANCEMENT : l'attente de la pile n'en mange pas
                 self.step_t0 = now
                 return acts
             self.step_state = RUNNING_STEP
         if self.step_state == RUNNING_STEP:
+            # DEBUT (2026-11-11) : une action qui ROULE doit d'abord être VUE en marche (`debut_quand`). Sans cela, un arrêt
+            # immédiat du superviseur (ex. « sortie du mode NAV ») ressemble à une fin (`auto_state off`) : mission « terminée » sans avoir roulé.
+            beg = c.get("debut_quand")
+            if beg and not self.began:
+                if check(beg, state):
+                    self.began = True
+                    self._note(now, "%s : action demarree" % n)
+                elif now - self.step_t0 > float(c.get("debut_delai_s", 10)):
+                    why = str(state.get("nav.detail") or "").strip()
+                    return self._fail_acts(now, "%s : l'action n'a pas demarre%s" % (n, " (%s)" % why if why else ""))
+                else:
+                    return acts
             done = check(c.get("fini_quand"), state) if c.get("fini_quand") else True
             if done and self._settled(c, now):
                 hold = float(c.get("maintien_s", 0) or 0)

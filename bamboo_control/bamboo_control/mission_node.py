@@ -43,8 +43,8 @@ def main(argv=None):
     from std_msgs.msg import Bool, String
     from std_srvs.srv import SetBool, Trigger
 
-    from bamboo_interfaces.msg import NavState, TeleopState
-    from bamboo_interfaces.srv import NavCommand
+    from bamboo_interfaces.msg import NavState, RobotMode, TeleopState
+    from bamboo_interfaces.srv import ChangeMode, NavCommand
 
     # services appelables par une etape : (type, fabrique de requete). Liste FERMEE : une etape ne peut
     # appeler que ce qui est declare ici, quoi que dise le fichier de missions.
@@ -71,6 +71,7 @@ def main(argv=None):
             latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                  durability=DurabilityPolicy.TRANSIENT_LOCAL)
             self.nav = None
+            self.robotMode = ""
             self.navT = 0.0
             self.armed = False
             self.link = False
@@ -82,6 +83,7 @@ def main(argv=None):
             self._nodesCache, self._nodesT = [], 0.0
             self._lastBody, self._lastPubT = "", 0.0
             self.create_subscription(NavState, "/navigation/state", self._onNav, latched)
+            self.create_subscription(RobotMode, "/bamboo/mode", self._onRobotMode, latched)
             self.create_subscription(TeleopState, "/teleop/state", self._onTeleop, latched)
             self.create_subscription(String, "/cc/guard/state", self._onGuard, latched)
             self.create_subscription(String, "/cc/mission/request", self._onRequest, 10)
@@ -95,6 +97,9 @@ def main(argv=None):
                 len(self.model["capacites"]), len(self.model["missions"]), path))
 
         # ---- entrees ----
+        def _onRobotMode(self, m):
+            self.robotMode = m.mode
+
         def _onNav(self, m):
             self.nav, self.navT = m, time.monotonic()
 
@@ -125,12 +130,13 @@ def main(argv=None):
 
         def _state(self):
             """Etat a plat que le moteur sait lire (voir mission_core.check)."""
-            s = {"noeuds": self._nodes(), "services": self._runningServices()}
+            s = {"noeuds": self._nodes(), "services": self._runningServices(), "robot.mode": self.robotMode}
             n = self.nav
             if n is not None and time.monotonic() - self.navT < 6.0:
                 s.update({"nav.submode": n.submode, "nav.loc_state": n.loc_state,
                           "nav.ready": bool(n.ready), "nav.goal_status": n.goal_status,
-                          "nav.auto_state": getattr(n, "auto_state", "off") or "off"})
+                          "nav.auto_state": getattr(n, "auto_state", "off") or "off",
+                          "nav.detail": getattr(n, "detail", "") or ""})
             return s
 
         def _nodes(self):
@@ -186,6 +192,9 @@ def main(argv=None):
                 cli = self._client(NavCommand, service)
                 return cli.call_async(NavCommand.Request(command=str(args.get("command", "")),
                                                          arg=str(args.get("arg", ""))))
+            if service == "/bamboo/change_mode":
+                cli = self._client(ChangeMode, service)
+                return cli.call_async(ChangeMode.Request(mode=str(args.get("mode", ""))))
             if service == "/bamboo/nav_stack":
                 cli = self._client(SetBool, service)
                 return cli.call_async(SetBool.Request(data=bool(args.get("data"))))

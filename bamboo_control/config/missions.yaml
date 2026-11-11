@@ -13,6 +13,8 @@
 #   demarre       appel qui active la capacite (service) ; absent = rien a demarrer
 #   pret_quand    condition d'etat (voir mission_core.check) : la capacite est utilisable
 #   lance         appel qui declenche l'action (relocaliser, explorer...) ; absent = sans action
+#   debut_quand   condition qui doit etre VUE vraie apres le lancement (debut_delai_s, 10 s par defaut), sinon l'etape echoue avec la raison du
+#                 superviseur : un arret immediat n'est pas une fin. Obligatoire pour les actions qui roulent et finissent sur « off »
 #   fini_quand    condition d'etat : l'action est terminee. Absent = la mission continue des
 #                 que `lance` a repondu OK (ou `pret_quand` est vrai pour une capacite d'etat)
 #   delai_s       temps maximal accorde a l'etape ; passe ce delai, la mission ECHOUE avec la
@@ -60,26 +62,41 @@ capacites:
   # --- relocalisation : retrouver sa place sur la carte courante ---------------------------------
   relocalisation:
     description: "Relocalise le robot sur la carte courante (locale, puis globale)"
-    exige: [pile_nav, mode_navigation]
+    exige: [pile_nav, mode_robot_nav, mode_navigation]
     lance: {service: "/nav_supervisor/command", args: {command: "relocalize", arg: ""}}
     fini_quand: {"nav.loc_state": ["ok"]}
     maintien_s: 15
     delai_s: 150
 
+  # --- mode du ROBOT : l'exploration auto s'arrete des que le robot n'est plus en mode NAV (« sortie du mode NAV ») ---
+  mode_robot_nav:
+    description: "Passe le robot en mode NAV (sans lui, l'exploration automatique s'arrete aussitot)"
+    exige: [pile_nav]
+    lance: {service: "/bamboo/change_mode", args: {mode: "navigation"}}
+    fini_quand: {"robot.mode": ["navigation"]}
+    delai_s: 90
+
   # --- sous-modes du superviseur NAV ----------------------------------------------------------------
   mode_navigation:
     description: "Passe le superviseur en sous-mode navigation (carte courante)"
-    exige: [pile_nav]
+    exige: [pile_nav, mode_robot_nav]
     lance: {service: "/nav_supervisor/command", args: {command: "navigation", arg: ""}}
     fini_quand: {"nav.submode": ["navigation"]}
     delai_s: 60
 
   mode_exploration:
     description: "Passe le superviseur en sous-mode exploration (complete la carte courante)"
-    exige: [pile_nav]
+    exige: [pile_nav, mode_robot_nav]
     lance: {service: "/nav_supervisor/command", args: {command: "exploration", arg: ""}}
     fini_quand: {"nav.submode": ["exploration"]}
     delai_s: 60
+
+  mode_exploration_vierge:
+    description: "Cree une carte vierge et passe en cartographie (le robot part de l'origine, rien a relocaliser)"
+    exige: [pile_nav, mode_robot_nav]
+    lance: {service: "/nav_supervisor/command", args: {command: "exploration", arg: "new"}}
+    fini_quand: {"nav.submode": ["exploration"], "nav.loc_state": ["ok"]}
+    delai_s: 120
 
   # --- exploration automatique : le robot ROULE ----------------------------------------------------
   exploration:
@@ -89,6 +106,21 @@ capacites:
     garde: {"nav.loc_state": ["ok"]}
     surveille: {"nav.loc_state": ["ok", "douteuse"]}
     lance: {service: "/nav_supervisor/command", args: {command: "auto_explore", arg: ""}}
+    debut_quand: {"nav.auto_state": ["exploration", "gate", "homing"]}
+    debut_delai_s: 10
+    fini_quand: {"nav.auto_state": ["off"]}
+    delai_s: 900
+    annule: {service: "/nav_supervisor/command", args: {command: "cancel_all", arg: ""}}
+
+  exploration_vierge:
+    description: "Explore automatiquement la carte vierge, puis revient au depart"
+    exige: [mode_exploration_vierge]
+    arme: true
+    garde: {"nav.loc_state": ["ok"]}
+    surveille: {"nav.loc_state": ["ok", "douteuse"]}
+    lance: {service: "/nav_supervisor/command", args: {command: "auto_explore", arg: ""}}
+    debut_quand: {"nav.auto_state": ["exploration", "gate", "homing"]}
+    debut_delai_s: 10
     fini_quand: {"nav.auto_state": ["off"]}
     delai_s: 900
     annule: {service: "/nav_supervisor/command", args: {command: "cancel_all", arg: ""}}
@@ -113,6 +145,8 @@ capacites:
     garde: {"nav.loc_state": ["ok"]}
     surveille: {"nav.loc_state": ["ok", "douteuse"]}
     lance: {service: "/nav_supervisor/command", args: {command: "patrol", arg: ""}}
+    debut_quand: {"nav.auto_state": ["patrol", "goal", "home"]}
+    debut_delai_s: 10
     fini_quand: {"nav.auto_state": ["off"]}
     delai_s: 1800
     annule: {service: "/nav_supervisor/command", args: {command: "cancel_all", arg: ""}}
@@ -136,6 +170,10 @@ missions:
   Exploration:
     description: "Active la pile NAV, relocalise, puis explore automatiquement"
     etapes: [pile_nav, relocalisation, mode_exploration, exploration]
+
+  Exploration_carte_vierge:
+    description: "Active la pile NAV, cree une carte vierge, puis l'explore automatiquement"
+    etapes: [pile_nav, mode_exploration_vierge, exploration_vierge]
 
   Navigation:
     description: "Active la pile NAV, relocalise, puis va a une destination"

@@ -529,3 +529,83 @@ def test_the_shipped_model_keeps_the_pilot_services_in_the_socle():
         assert needed in model["socle"], needed
     assert "bamboo_videotracking" in model["optionnels"]
     assert not set(model["socle"]) & set(model["optionnels"])
+
+
+# --- mission « Exploration carte vierge » (2026-11-11) -------------------------------------------------------------
+
+def _shipped():
+    import yaml
+    return yaml.safe_load(open(os.path.join(os.path.dirname(__file__), "..", "config", "missions.yaml"), encoding="utf-8"))
+
+
+def test_the_blank_map_mission_skips_the_relocalisation():
+    """Sur une carte neuve il n'y a rien a relocaliser : le robot part de l'origine (le superviseur pose loc = ok)."""
+    m = _shipped()
+    plan = mc.compose(m, "Exploration_carte_vierge")
+    assert plan == ["pile_nav", "mode_robot_nav", "mode_exploration_vierge", "exploration_vierge"]
+    assert "relocalisation" not in plan
+    assert "relocalisation" in mc.compose(m, "Exploration")                        # l'exploration ordinaire, elle, relocalise
+
+
+def test_the_blank_map_mission_creates_a_new_map_and_still_guards_the_driving_step():
+    m = _shipped()
+    assert m["capacites"]["mode_exploration_vierge"]["lance"]["args"] == {"command": "exploration", "arg": "new"}
+    assert m["capacites"]["mode_exploration"]["lance"]["args"]["arg"] == ""        # l'autre ne cree jamais de carte
+    c = m["capacites"]["exploration_vierge"]
+    assert c["arme"] is True and c["garde"] and c["surveille"] and c["annule"]
+
+
+def test_the_blank_map_mission_needs_the_same_services_as_the_other_exploration():
+    m = _shipped()
+    assert mc.services_needed(m, "Exploration_carte_vierge") == mc.services_needed(m, "Exploration")
+
+
+def test_the_blank_map_mission_is_refused_without_the_traction_armed():
+    e = mc.MissionEngine(_shipped())
+    ok, why, _ = e.start("Exploration_carte_vierge", {}, 0.0, {}, True, False)
+    assert not ok and "armee" in why
+
+
+# ---- debut_quand : un arret immediat n'est pas une fin (2026-11-11) ----
+def _explore_model():
+    m = copy.deepcopy(MODEL)
+    m["capacites"]["explo"] = {"exige": ["pile", "mode_nav"], "arme": True,
+                               "lance": CALL("/cmd", command="auto_explore"),
+                               "debut_quand": {"nav.auto_state": ["exploration"]}, "debut_delai_s": 10,
+                               "fini_quand": {"nav.auto_state": ["off"]}, "delai_s": 900}
+    m["missions"]["Explo"] = {"etapes": ["explo"]}
+    return mc.MissionEngine(m)
+
+
+def test_an_exploration_that_stops_at_once_fails_instead_of_finishing():
+    e = _explore_model()
+    st = {"noeuds": ["/nav_supervisor"], "nav.submode": "navigation", "nav.loc_state": "ok", "nav.auto_state": "off",
+          "nav.detail": "sortie du mode NAV"}
+    e.start("Explo", {}, 0.0, st, True, True)
+    run(e, 0.0, st, link=True, armed=True, steps=40)
+    assert e.status == mc.FAILED and "sortie du mode NAV" in e.reason and "n'a pas demarre" in e.reason
+
+
+def test_an_exploration_seen_running_then_off_finishes():
+    e = _explore_model()
+    st = {"noeuds": ["/nav_supervisor"], "nav.submode": "navigation", "nav.loc_state": "ok", "nav.auto_state": "off"}
+    e.start("Explo", {}, 0.0, st, True, True)
+    t = 0.0
+    for _ in range(6):
+        _a, t = run(e, t, st, armed=True)
+    st["nav.auto_state"] = "exploration"
+    _a, t = run(e, t, st, armed=True, steps=3)
+    assert e.status == mc.RUNNING
+    st["nav.auto_state"] = "off"
+    run(e, t, st, armed=True, steps=3)
+    assert e.status == mc.DONE
+
+
+def test_the_shipped_exploration_missions_need_the_nav_robot_mode_and_a_start_condition():
+    import yaml
+    m = yaml.safe_load(open(os.path.join(os.path.dirname(__file__), "..", "config", "missions.yaml"), encoding="utf-8"))
+    for mission in ("Exploration", "Exploration_carte_vierge", "Navigation", "Ronde", "Retour"):
+        assert "mode_robot_nav" in mc.compose(m, mission)
+    for cap in ("exploration", "exploration_vierge", "ronde"):
+        assert m["capacites"][cap].get("debut_quand")
+    assert m["capacites"]["mode_robot_nav"]["lance"]["service"] == "/bamboo/change_mode"
