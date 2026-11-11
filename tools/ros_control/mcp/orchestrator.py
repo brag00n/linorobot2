@@ -20,6 +20,10 @@ GARDE-FOUS :
   - PAS de backdoor d'actuation : demarrer `driver.real` le lance en LECTURE SEULE
     (enable_cmd_vel=false par defaut, cf. plan barriere L6). Ce serveur ne publie aucun
     /cmd_vel et ne modifie aucun parametre : il ne fait que up/stop/ps/logs des services.
+  - TRACTION ARMEE (2026-11-10) : arreter ou redemarrer un service qui PORTE LE PILOTAGE (driver.*,
+    bamboo_control, bamboo_teleop...) est REFUSE tant que /teleop/state dit « armee », ou si l'etat
+    d'armement est illisible (on refuse dans le doute). Coupee en route, la consigne s'arrete sans que
+    le robot sache pourquoi. `force: true` passe outre, et le journal le dit.
 
 Outils :
   services / status      -> etat des services (lecture)
@@ -62,6 +66,16 @@ SSH_TIMEOUT = int(os.environ.get("RPI_SSH_TIMEOUT", "30"))
 
 # `docker compose` a besoin de sudo -n sur le RPi (dietpi n'est pas dans le groupe docker).
 COMPOSE = "sudo -n docker compose"
+# Les services du robot sont ETIQUETES par profil (boot, esp32, nav, lidar...) : sans profil, `compose up` repond
+# « no such service » pour ceux qu'il ne voit pas (2026-11-09). Liste fermee, la meme que docker/robot.sh.
+PROFILES = ("boot", "esp32", "nav", "lidar")
+COMPOSE_P = COMPOSE + "".join(" --profile %s" % p for p in PROFILES)
+# Nom du projet compose (prefixe des conteneurs : <projet>-<service>-1), lu du .env du RPi.
+PROJECT = os.environ.get("RPI_COMPOSE_PROJECT", "bamboov4_humble")
+
+# Services qui PORTENT LE PILOTAGE : les couper traction armee laisse le robot sans consigne ou sans garde-fou.
+GUARDED = frozenset(["driver.esp32", "driver.stm32", "driver.real", "drive.real", "bamboo_control",
+                     "bringup.esp32", "bringup.stm32", "bringup.real", "navigation"])
 
 # ALLOW-LIST : seuls ces services (daemons durables du compose) sont pilotables. Les
 # services one-shot/interactifs (savemap, teleop, bash, rviz, build.*) sont volontairement
@@ -102,6 +116,11 @@ SERVICES = {
     "bamboo_calibration": "calibration du glissement en rotation (action /bamboo_calibration/calibrate, arbre py_trees) -- LE ROBOT TOURNE pendant une mesure ; BambooWS seulement",
     "battery_energy": "statistiques d'energie (bamboo_base/battery_energy) : /bamboo/energy + journaux a taille "
                       "bornee dans data/energy/ -- COLLECTE seule, ne pilote rien ; BambooWS",
+    "ap.rpi": "point d'acces Wi-Fi du robot (AP + STA sur UNE puce, reseau 10.3.141.1) -- le couper coupe le Wi-Fi \"Bamboo\" ; "
+              "l'acces par la box reste",
+    "portail": "portail web du robot : page d'accueil, Command Center (/cc/), HUD, theme (:8000)",
+    "proxy": "proxy HTTPS Caddy (:8443) devant le portail, rosbridge (wss) et la video du CC ; UDP/HTTP3 desactive. "
+             "Le Caddyfile n'est relu qu'au redemarrage de ce conteneur",
     "bringup.stm32": "bringup COMPLET de bambooSTM32YB en un conteneur (banc) : EXCLUSIF avec bamboo_video/bamboo_videotracking/driver.stm32",
     "bringup.esp32": "bringup COMPLET de BambooWS en un conteneur (banc) : EXCLUSIF avec bamboo_video/bamboo_videotracking/driver.esp32",
     "robotdesc": "robot_state_publisher (description URDF)",
@@ -166,7 +185,7 @@ def _compose_state():
     """Etat courant : dict {service -> (state, status)} depuis `compose ps -a`.
     Les warnings DISPLAY de compose partent sur stderr -> ignores (on parse stdout)."""
     rc, out, err = _ssh(
-        "%s ps -a --format '{{.Service}}\t{{.State}}\t{{.Status}}'" % COMPOSE)
+        "%s ps -a --format '{{.Service}}\t{{.State}}\t{{.Status}}'" % COMPOSE_P)
     if rc != 0:
         raise OrchestratorError("`compose ps` a echoue (rc=%d) : %s"
                                 % (rc, (err or out).strip()[:400]))
@@ -205,10 +224,50 @@ def t_status(_args):
             % (len(up), ", ".join(up) or "-", len(down), ", ".join(down) or "-"))
 
 
+def _armed():
+    """True / False / None (illisible) : la traction est-elle armee ? Lu sur /teleop/state par rosbridge."""
+    try:
+        from .ros2 import Bridge
+        msgs = Bridge(timeout=4.0).subscribe_collect("/teleop/state", 3.0, count=1)
+    except Exception:                                               # noqa: BLE001
+        return None
+    if not msgs:
+        return None
+    return bool(msgs[0].get("armed")) or bool(msgs[0].get("armed_latched"))
+
+
+def _check_armed(svc, args):
+    """Refuse de couper un service qui porte le pilotage tant que la traction est armee (ou illisible)."""
+    if svc not in GUARDED:
+        return ""
+    if args.get("force") is True:
+        _LOG("FORCE : %s touche alors que la traction est peut-etre armee" % svc)
+        return " [force]"
+    armed = _armed()
+    if armed is True:
+        raise OrchestratorError(
+            "%s refuse : la traction est ARMEE. Desarmer d'abord (Echap dans le CC, B long a la manette), "
+            "ou repeter avec force=true si c'est voulu." % svc)
+    if armed is None:
+        raise OrchestratorError(
+            "%s refuse : l'etat d'armement est ILLISIBLE (rosbridge muet ou /teleop/state absent), donc la traction "
+            "pourrait etre armee. Repeter avec force=true si c'est voulu." % svc)
+    return ""
+
+
+def _container(svc):
+    return "%s-%s-1" % (PROJECT, svc)
+
+
+def _exists(svc):
+    rc, out, _err = _ssh("sudo -n docker inspect -f '{{.State.Status}}' %s" % _container(svc), timeout=30)
+    return rc == 0 and bool(out.strip())
+
+
 def t_start(args):
-    """Demarre un service en arriere-plan (`compose up -d <service>`)."""
+    """Demarre un service en arriere-plan (`compose up -d <service>`, profils du robot compris)."""
     svc = _check_service(args.get("service"))
-    rc, out, err = _ssh("%s up -d %s" % (COMPOSE, svc), timeout=180)
+    rc, out, err = _ssh("%s up -d %s" % (COMPOSE_P, svc), timeout=180)
     if rc != 0:
         raise OrchestratorError("demarrage %s echoue (rc=%d) : %s"
                                 % (svc, rc, (err or out).strip()[:400]))
@@ -220,26 +279,37 @@ def t_start(args):
 def t_stop(args):
     """Arrete un service (`compose stop <service>`), conteneur conserve."""
     svc = _check_service(args.get("service"))
-    rc, out, err = _ssh("%s stop %s" % (COMPOSE, svc), timeout=120)
+    note = _check_armed(svc, args)
+    rc, out, err = _ssh("%s stop %s" % (COMPOSE_P, svc), timeout=120)
     if rc != 0:
         raise OrchestratorError("arret %s echoue (rc=%d) : %s"
                                 % (svc, rc, (err or out).strip()[:400]))
-    return "service '%s' arrete." % svc
+    return "service '%s' arrete.%s" % (svc, note)
 
 
 def t_restart(args):
-    """Redemarre un service. stop -> pause 3s -> up : evite la course 'device busy'
-    sur /dev/video0 (camera.real, v4l2_camera ne reessaie pas l'ouverture)."""
+    """Redemarre un service SANS le recreer (`docker restart` du conteneur) : meme configuration, memes volumes,
+    aucune dependance rallumee. Un service jamais cree, ou `recreate: true`, passe par stop puis up -d (pause de 3 s
+    contre la course 'device busy' de la camera). Le Caddyfile du proxy n'est relu QU'ainsi (`admin off`)."""
     svc = _check_service(args.get("service"))
-    _ssh("%s stop %s" % (COMPOSE, svc), timeout=120)
-    time.sleep(3.0)
-    rc, out, err = _ssh("%s up -d %s" % (COMPOSE, svc), timeout=180)
-    if rc != 0:
-        raise OrchestratorError("redemarrage %s echoue (rc=%d) : %s"
-                                % (svc, rc, (err or out).strip()[:400]))
+    note = _check_armed(svc, args)
+    if args.get("recreate") is not True and _exists(svc):
+        rc, out, err = _ssh("sudo -n docker restart %s" % _container(svc), timeout=120)
+        if rc != 0:
+            raise OrchestratorError("redemarrage %s echoue (rc=%d) : %s"
+                                    % (svc, rc, (err or out).strip()[:400]))
+        how = "docker restart"
+    else:
+        _ssh("%s stop %s" % (COMPOSE_P, svc), timeout=120)
+        time.sleep(3.0)
+        rc, out, err = _ssh("%s up -d %s" % (COMPOSE_P, svc), timeout=180)
+        if rc != 0:
+            raise OrchestratorError("redemarrage %s echoue (rc=%d) : %s"
+                                    % (svc, rc, (err or out).strip()[:400]))
+        how = "stop puis up -d (conteneur recree)"
     time.sleep(2.0)
     state = _compose_state().get(svc, ("?", ""))
-    return "service '%s' redemarre -> etat=%s (%s)" % (svc, state[0], state[1])
+    return "service '%s' redemarre (%s) -> etat=%s (%s)%s" % (svc, how, state[0], state[1], note)
 
 
 def t_logs(args):
@@ -247,7 +317,7 @@ def t_logs(args):
     svc = _check_service(args.get("service"))
     n = int(args.get("lines", 40))
     n = max(1, min(n, 400))
-    rc, out, err = _ssh("%s logs --tail=%d --no-color %s" % (COMPOSE, n, svc), timeout=60)
+    rc, out, err = _ssh("%s logs --tail=%d --no-color %s" % (COMPOSE_P, n, svc), timeout=60)
     txt = (out or "").strip() or (err or "").strip()
     if rc != 0 and not txt:
         raise OrchestratorError("logs %s indisponibles (rc=%d)." % (svc, rc))
@@ -276,16 +346,26 @@ TOOLS = [
                                                  "description": _SVC_DESC}},
                      "required": ["service"]}},
     {"name": "stop",
-     "description": "Arrete un service (docker compose stop). Le conteneur est conserve.",
+     "description": "Arrete un service (docker compose stop). Le conteneur est conserve. REFUSE pour un service de "
+                    "pilotage (driver.*, bamboo_control, navigation...) tant que la traction est armee ou que son "
+                    "etat est illisible, sauf force=true.",
      "inputSchema": {"type": "object",
                      "properties": {"service": {"type": "string", "enum": _SVC_ENUM,
-                                                 "description": _SVC_DESC}},
+                                                 "description": _SVC_DESC},
+                                    "force": {"type": "boolean",
+                                              "description": "passer outre le refus traction armee/illisible (service de pilotage)"}},
                      "required": ["service"]}},
     {"name": "restart",
-     "description": "Redemarre un service (stop puis up, avec pause anti 'device busy').",
+     "description": "Redemarre un service SANS le recreer (docker restart du conteneur : meme configuration, memes "
+                    "volumes, aucune dependance rallumee). recreate=true force stop puis up -d (recree le conteneur, "
+                    "pour appliquer un changement du compose). Meme garde traction armee que stop (force=true).",
      "inputSchema": {"type": "object",
                      "properties": {"service": {"type": "string", "enum": _SVC_ENUM,
-                                                 "description": _SVC_DESC}},
+                                                 "description": _SVC_DESC},
+                                    "force": {"type": "boolean",
+                                              "description": "passer outre le refus traction armee/illisible (service de pilotage)"},
+                                    "recreate": {"type": "boolean",
+                                                 "description": "recreer le conteneur (stop puis up -d) au lieu de docker restart"}},
                      "required": ["service"]}},
     {"name": "logs",
      "description": "Dernieres lignes de log d'un service (lecture seule).",
