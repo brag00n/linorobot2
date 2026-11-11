@@ -65,7 +65,9 @@ class ChargerDetector:
     def __init__(self, step_v=0.10, quiet_s=60.0, slope_v_min=0.015, slope_span_s=180.0,
                  slope_rest_s=360.0, load_di_a=0.08, big_step_v=0.25, slope_hold_s=180.0,
                  reg_min_di_a=0.25, reg_max_slope_v_a=0.05, reg_min_v=11.95,
-                 jump_v=0.15, jump_plateau_v=0.04, jump_plateau_s=5.0, jump_di_a=0.12):
+                 jump_v=0.15, jump_plateau_v=0.04, jump_plateau_s=5.0, jump_di_a=0.12,
+                 unknown_min_v=11.75, unknown_span_s=300.0, unknown_max_slope_v_min=-0.003,
+                 unknown_max_swing_v=0.30):
         self.step_v = step_v
         self.quiet_s = quiet_s
         self.slope_v_min = slope_v_min
@@ -91,6 +93,16 @@ class ChargerDetector:
         self.jump_plateau_v = jump_plateau_v
         self.jump_plateau_s = jump_plateau_s
         self.jump_di_a = jump_di_a
+        # ETAT INCONNU APRES UN REDEMARRAGE (2026-11-10). Un driver relance alors que le chargeur est DEJA branche ne voit
+        # aucun saut, et la pente exige un repos de 6 min avec une tension qui MONTE : sur un chargeur qui tient la tension
+        # (12,0 a 12,13 V, pente nulle) l'etat restait « inconnu » pendant 4 h, la jauge affichait 100 % et le noeud d'energie
+        # comptait 2,69 Ah « sur batterie » pour un pack de 0,88 Ah. Un pack SEUL ne tient pas 11,75 V stable sous 0,6 A :
+        # il decroit. Tension haute ET plate sur unknown_span_s, sans oscillation = alimentation externe.
+        self.unknown_min_v = unknown_min_v
+        self.unknown_span_s = unknown_span_s
+        self.unknown_max_slope_v_min = unknown_max_slope_v_min
+        self.unknown_max_swing_v = unknown_max_swing_v
+        self._unk = collections.deque()            # (t, v), un point par 2 s, tant que l'etat est inconnu
         self._cont = collections.deque()           # (t, v, i) sur 40 s
         self._pending = None                       # (t0, dv, v_avant, i_avant) a valider
         self._hist = collections.deque()         # (t, v, i) au repos, un point par 0,5 s
@@ -166,6 +178,28 @@ class ChargerDetector:
             self._cont.clear()
             return self._set(False, dv, "saut V continu")
         return None
+
+    def observe_unknown(self, t, v):
+        """Resout l'etat INCONNU par une tension haute et plate. Rend ("branche", v, "tension haute stable") ou None.
+        Ne fait rien des que l'etat est connu : un saut ou une pente restent les seuls juges d'un changement."""
+        if self.charging is not None or v is None:
+            self._unk.clear()
+            return None
+        u = self._unk
+        if u and t - u[-1][0] < 2.0:
+            return None
+        u.append((t, v))
+        while u and t - u[0][0] > self.unknown_span_s + 10.0:
+            u.popleft()
+        if t - u[0][0] < self.unknown_span_s:
+            return None
+        vs = [x for _, x in u]
+        if min(vs) < self.unknown_min_v or max(vs) - min(vs) > self.unknown_max_swing_v:
+            return None
+        pts = [(tt, x, None) for tt, x in u]
+        if self._slope(pts) < self.unknown_max_slope_v_min:
+            return None
+        return self._set(True, statistics.median(vs), "tension haute stable")
 
     def observe_regulation(self, v, i):
         """Un point (V, I) a toute heure. Rend ("branche", pente V/A, "tension insensible au
@@ -255,6 +289,7 @@ class ChargerDetector:
     def _set(self, state, value, kind):
         self.charging = state
         self._hist.clear()                       # le meme saut ne doit pas compter deux fois
+        self._unk.clear()
         self._slopeSince = None
         return ("branche" if state else "debranche", value, kind)
 
@@ -344,7 +379,7 @@ class BatteryHealth:
             self._low.popleft()
         rest_age = (t - self._rest_since) if at_rest and self._rest_since is not None else None
         ev = (self.charger.observe(t, v, rest_age, i) or self.charger.observe_jump(t, v, i)
-              or self.charger.observe_regulation(v, i))
+              or self.charger.observe_regulation(v, i) or self.charger.observe_unknown(t, v))
         if ev:
             self._chgEvents.append(ev)
             # La tension d'AVANT l'evenement n'est plus celle du pack (2026-10-17 : 85 % affiches

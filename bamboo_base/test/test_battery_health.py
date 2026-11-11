@@ -335,3 +335,61 @@ def test_lidar_plugged_is_not_an_unplug():
     ev = _jump(det, 0, 200, lambda t: 11.19 if t < 100 else 11.07,
                cur=lambda t: 0.52 if t < 100 else 0.61)
     assert ev == [] and det.charging is True
+
+
+# --- ETAT INCONNU APRES UN REDEMARRAGE (2026-11-10) -----------------------------------------------
+# Un driver relance alors que le chargeur est deja branche ne voit aucun saut. Releve reel : 4 h a 12,0-12,13 V,
+# pente nulle, courant 0,6 A, etat reste « inconnu » (jauge 100 %, energie comptee « sur batterie »).
+
+def _flat(det, t0, t1, volt, cur=0.62, step=0.5):
+    ev, t = [], t0
+    while t < t1:
+        e = det.observe_unknown(t, volt(t))
+        if e:
+            ev.append((t, e[0], e[2]))
+        t += step
+    return ev
+
+
+def test_unknown_state_resolves_on_a_high_flat_voltage():
+    det = ChargerDetector()
+    ev = _flat(det, 0, 900, lambda t: 12.05 + 0.02 * math.sin(t / 7.0))
+    assert ev and ev[0][1] == "branche" and ev[0][2] == "tension haute stable"
+    assert 295 <= ev[0][0] <= 320 and det.charging is True
+
+
+def test_a_discharging_pack_is_never_taken_for_a_charger():
+    """Un pack seul decroit : 11,25 -> 10,9 V en 15 min (releve du 2026-11-10, 0,7 A)."""
+    det = ChargerDetector()
+    assert _flat(det, 0, 900, lambda t: 11.25 - 0.35 * t / 900.0) == []
+    assert det.charging is None
+
+
+def test_a_slowly_discharging_pack_above_the_threshold_is_not_a_charger():
+    det = ChargerDetector()
+    assert _flat(det, 0, 1200, lambda t: 11.95 - 0.012 * t / 60.0) == []   # -0,012 V/min : un pack, pas un chargeur
+
+
+def test_a_low_flat_voltage_is_not_a_charger():
+    det = ChargerDetector()
+    assert _flat(det, 0, 900, lambda t: 11.4) == []
+
+
+def test_a_noisy_voltage_is_not_a_charger():
+    det = ChargerDetector()
+    assert _flat(det, 0, 900, lambda t: 12.0 + 0.2 * math.sin(t / 5.0)) == []
+
+
+def test_a_known_state_is_never_overridden_by_the_unknown_rule():
+    det = ChargerDetector()
+    det.charging = False
+    assert _flat(det, 0, 900, lambda t: 12.05) == [] and det.charging is False
+
+
+def test_health_reports_the_charger_after_five_minutes_flat():
+    h = BatteryHealth()
+    for k in range(int(420 / 0.5)):
+        t = 0.5 * k
+        h.observe(t, 12.06, 0.62, [0.0, 0.0], [0.0, 0.0])
+    assert h.charger.charging is True
+    assert h.display_soc(420.0) is None                      # sur chargeur : pas de pourcentage affiche
