@@ -76,7 +76,53 @@ applyGroup() { # $1 groupe, $2 voulu (on|off), $3... services
     fi
 }
 
+# ---- PLAN DE MISSION (2026-11-11) ------------------------------------------------------------------------------------------------
+# Une mission declare les services dont elle a besoin. Le conteneur depose /run/bamboo-ondemand/mission.plan :
+#     id=<n>
+#     stop  <service> [<service>...]      a ETEINDRE d'abord (pas de surcharge CPU au demarrage)
+#     start <service> [<service>...]      a DEMARRER ensuite
+# On execute dans CET ordre, uniquement pour les services de la ligne `mission` de groups.conf, et on rapporte ce qui s'est VRAIMENT
+# passe (un service deja eteint n'est pas `stopped`) : c'est ce rapport qui sert a tout REMETTRE a la fin de la mission.
+#     mission.state : id=<n> ok|error stopped=a,b started=c [raison]
+missionPlan() {
+    local f="$DIR/mission.plan" run="$DIR/.mission.plan.run"
+    [ -r "$f" ] || return 0
+    mv -f "$f" "$run" 2>/dev/null || return 0
+    local allowed id verb rest svc status="ok" why=""
+    local stopped=() started=() missing=() names=()
+    allowed=" $(sed -e 's/#.*//' "$CONF" | awk '$1=="mission" { $1=""; print }') "
+    id="$(sed -n 's/^id=//p' "$run" | head -1 | tr -d '[:space:]')"
+    while read -r verb rest; do
+        case "$verb" in
+            id=*|"") continue ;;
+            stop)
+                for svc in $rest; do
+                    case "$allowed" in *" $svc "*) ;; *) status="error"; why="refuse: $svc hors liste"; continue ;; esac
+                    running "$svc" || continue                       # deja eteint : rien a faire, et rien a remettre
+                    log "mission : arret de $svc"
+                    if docker stop "${PROJECT}-$svc-1" >/dev/null; then stopped+=("$svc"); else status="error"; why="docker stop $svc"; fi
+                done ;;
+            start)
+                missing=()
+                for svc in $rest; do
+                    case "$allowed" in *" $svc "*) ;; *) status="error"; why="refuse: $svc hors liste"; continue ;; esac
+                    running "$svc" || missing+=("$svc")
+                done
+                if [ "${#missing[@]}" -gt 0 ]; then
+                    log "mission : demarrage de ${missing[*]}"
+                    if (cd "$COMPOSE_DIR" && docker compose up -d --no-build "${missing[@]}"); then started+=("${missing[@]}"); else status="error"; why="docker compose up"; fi
+                fi ;;
+            *) status="error"; why="verbe inconnu: $verb" ;;
+        esac
+    done < "$run"
+    rm -f "$run"
+    local st sd
+    st="$(IFS=,; echo "${stopped[*]:-}")"; sd="$(IFS=,; echo "${started[*]:-}")"
+    setState mission "id=${id:-0} $status stopped=$st started=$sd${why:+ $why}"
+}
+
 pass() {
+    missionPlan
     local g svcs want
     while read -r g svcs; do
         [ -z "$g" ] || [ "${g#\#}" != "$g" ] && continue
