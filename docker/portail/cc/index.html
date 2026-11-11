@@ -188,14 +188,31 @@ var SUBN = 0;
 /* Onglet MASQUE ou reduit : rien n'est affiche, donc rien n'est lu, sauf ce qui sert la securite et le retour. Le BATTEMENT de
    coeur, lui, continue (hbSend) : un onglet masque reste le pilote tant que le navigateur lui laisse ses minuteries, et le
    garde-fou traite un onglet gele comme perdu, ce qui est voulu. Au retour, tout est reabonne en une fois. */
-var KEEP_HIDDEN = ["/cc/guard/state", "/teleop/state", "/gamepad/connected"];
-document.addEventListener("visibilitychange", function () { syncSubs(); if (document.hidden) { log(0, "Onglet masqué : abonnements réduits au garde-fou"); } });
+var KEEP_HIDDEN = ["/cc/guard/state", "/teleop/state", "/gamepad/connected",
+  /* Topics LEGERS gardes aussi onglet masque (2026-11-11) : ce n'est pas leur flux qui coute, c'est le RE-ENVOI en rafale a chaque
+     reabonnement (derniere valeur de douze topics d'un coup, dont /diagnostics_agg et /rosout) sur un rosbridge a un seul coeur deja
+     charge : mesure du journal, 13 cycles abonnement/desabonnement en 15 min pour un onglet qui bascule masque/visible, chacun
+     retardant les battements du garde-fou de 1 a 3 s (oscillation de « Liaison CC »). Debit de ces quatre : < 4 messages/s. */
+  "/battery", "/bamboo/energy", "/navigation/state", "/cc/mission/state", "/cc/mission/list"];
+var syncT = 0, syncQ = [];
+document.addEventListener("visibilitychange", function () { syncSubs(); if (document.hidden) { log(0, "Onglet masqué : abonnements réduits aux topics légers et au garde-fou"); } });
 function syncSubs() {
   if (!ws || ws.readyState !== 1) return;
   Object.keys(HANDLERS).forEach(function (t) {
     var d = HANDLERS[t], want = (!SCOPE[t] || SCOPE[t].indexOf(S.mode) >= 0) && (!document.hidden || KEEP_HIDDEN.indexOf(t) >= 0), have = SUBS[t] != null;
-    if (want && !have) { var id = "s" + (++SUBN); SUBS[t] = id; rbSend({ op: "subscribe", id: id, topic: t, type: d[0], throttle_rate: d[1], queue_length: d[2] }); }
-    else if (!want && have) { rbSend({ op: "unsubscribe", id: SUBS[t], topic: t }); delete SUBS[t]; if (SCOPE_CLEAR[t]) SCOPE_CLEAR[t](); }
+    if (want && !have) {
+      /* Les abonnements s'etalent (un toutes les 150 ms) au lieu de partir d'un coup : la rafale de dernieres valeurs arrive alors
+         par petits paquets, et un battement du garde-fou ne reste pas derriere douze messages a convertir. */
+      var id = "s" + (++SUBN); SUBS[t] = id;
+      syncQ.push({ op: "subscribe", id: id, topic: t, type: d[0], throttle_rate: d[1], queue_length: d[2] });
+      if (!syncT) syncT = setInterval(function () { var m = syncQ.shift(); if (m) rbSend(m); if (!syncQ.length) { clearInterval(syncT); syncT = 0; } }, 150);
+    }
+    else if (!want && have) {
+      var gone = SUBS[t]; delete SUBS[t];
+      var k = syncQ.findIndex(function (m) { return m.id === gone; });
+      if (k >= 0) syncQ.splice(k, 1); else rbSend({ op: "unsubscribe", id: gone, topic: t });
+      if (SCOPE_CLEAR[t]) SCOPE_CLEAR[t]();
+    }
   });
 }
 var ws = null, rbBack = 1000, callN = 0, calls = {}, lastRb = 0;
@@ -204,11 +221,12 @@ var ws = null, rbBack = 1000, callN = 0, calls = {}, lastRb = 0;
    l'effondrement. Le defaut est cote serveur ; le remede est la surveillance bamboo-rbwatch (docker/watchdog). */
 function rbSend(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
 function rbConnect() {
+  if (HASH.nows) return;                    // essai local : aucune connexion reelle (la page recoit une socket simulee par CC.test.setWs)
   try { ws = new WebSocket(RB_URL); } catch (e) { return rbRetry(); }
   ws.onopen = function () {
     rbSend({ op: "advertise", topic: "/cc/heartbeat", type: "std_msgs/msg/String" });
     S.rb = true; rbBack = 1000; log(0, "rosbridge connecté (" + RB_URL.replace(/^wss?:\/\//, "") + ")");
-    SUBS = {}; syncSubs();
+    SUBS = {}; syncQ.length = 0; syncSubs();
   };
   ws.onmessage = function (ev) {
     var m; try { m = JSON.parse(ev.data); } catch (e) { return; } lastRb = performance.now();
@@ -951,7 +969,7 @@ if (HASH.src) toggleSrc(true);
 setMode(HASH.mode && BUILD[HASH.mode] ? HASH.mode : "vitals", true);
 log(0, "Session ouverte"); typeAI(); rbConnect(); vidStart();
 if (HASH.open === "journal") toggleSlide("journal", openJournal); else if (HASH.open === "keys") toggleSlide("keys", openKeys);
-window.CC = { test: { hide: function (h) { Object.defineProperty(document, "hidden", { configurable: true, get: function () { return h; } }); document.dispatchEvent(new Event("visibilitychange")); }, subs: function () { return Object.keys(SUBS).sort(); }, linkOk: function () { return ccLinkOk(); }, calls: CALLS_OUT, arm: ARM, hb: HB }, V: V, S: S, inject: function (topic, msg) { var d = HANDLERS[topic]; if (d) d[3](msg); }, state: function () { return { rb: S.rb, vid: S.vid, tasks: Object.keys(DT).length, mods: DMODS.length, V: V, pad: S.pad, mode: S.robotMode, charging: S.charging, T: T }; } };
+window.CC = { test: { hide: function (h) { Object.defineProperty(document, "hidden", { configurable: true, get: function () { return h; } }); document.dispatchEvent(new Event("visibilitychange")); }, subs: function () { return Object.keys(SUBS).sort(); }, linkOk: function () { return ccLinkOk(); }, calls: CALLS_OUT, arm: ARM, hb: HB, setWs: function (w) { ws = w; SUBS = {}; syncQ.length = 0; }, resync: function () { syncSubs(); } }, V: V, S: S, inject: function (topic, msg) { var d = HANDLERS[topic]; if (d) d[3](msg); }, state: function () { return { rb: S.rb, vid: S.vid, tasks: Object.keys(DT).length, mods: DMODS.length, V: V, pad: S.pad, mode: S.robotMode, charging: S.charging, T: T }; } };
 requestAnimationFrame(frame);
 })();
 </script>
