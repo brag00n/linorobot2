@@ -116,3 +116,38 @@ def test_battery_group_has_no_plein_key():
     assert "calib_batt_full" not in src
     bloc = re.search(r"batterie:\n((?:          .*\n)+)", src).group(1)
     assert "X_long" in bloc and "Y_long" in bloc and "R_long" in bloc and 'A_long: "calib_batt_save"' in bloc
+
+
+# ---- combinaison ZL + ZR (2026-11-12) ----
+def test_the_chord_fires_once_after_the_hold_time():
+    from bamboo_control.keymap_model import Chord
+    c = Chord(0.6)
+    assert c.update(1, 1, 0.0) == (False, True)
+    assert c.update(1, 1, 0.5) == (False, True)
+    assert c.update(1, 1, 0.7) == (True, True)
+    assert c.update(1, 1, 2.0) == (False, True)          # une seule fois par appui
+
+
+def test_a_single_trigger_never_starts_the_chord_and_releasing_one_does_not_rearm():
+    from bamboo_control.keymap_model import Chord
+    c = Chord(0.6)
+    assert c.update(0, 1, 0.0) == (False, False) and c.update(0, 1, 5.0) == (False, False)
+    c.update(1, 1, 6.0); assert c.update(1, 1, 6.7)[0]
+    assert c.update(1, 0, 6.8) == (False, True)           # ZL lache : les touches restent ignorees
+    assert c.update(1, 1, 7.5) == (False, True)           # ...et ne redeclenchent pas
+    assert c.update(0, 0, 8.0) == (False, False)
+    c.update(1, 1, 9.0); assert c.update(1, 1, 9.7)[0]    # nouvel appui complet : redeclenche
+
+
+def test_a_released_early_chord_does_not_fire():
+    from bamboo_control.keymap_model import Chord
+    c = Chord(0.6)
+    c.update(1, 1, 0.0); c.update(1, 1, 0.3)
+    assert c.update(0, 0, 0.4) == (False, False)
+    assert c.update(1, 1, 1.0) == (False, True) and c.update(1, 1, 1.5) == (False, True)
+
+
+def test_the_tracking_group_is_declared_for_the_host():
+    path = os.path.join(HERE, "..", "..", "docker", "ondemand", "groups.conf")
+    lines = [l.split("#")[0].split() for l in open(path, encoding="utf-8")]
+    assert ["tracking", "bamboo_videotracking"] in lines

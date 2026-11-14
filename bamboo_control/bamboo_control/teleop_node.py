@@ -80,6 +80,7 @@ PERTE DE MANETTE = ARRET DE LA CAMERA. Sans /joy depuis `joy_timeout_s`, la vite
 remise a zero. Avec `autorepeat_rate: 25.0` cote joy_linux, un stick tenu republie en
 continu : le silence signifie donc reellement "plus de manette", et pas "stick immobile".
 """
+import os
 import random
 import time
 
@@ -100,7 +101,7 @@ from bamboo_interfaces.action import Calibrate, TrainFaces
 from bamboo_interfaces.msg import (BatteryCalibState, ModeCmd, NavState, RobotMode,
                                    TeleopState)
 from bamboo_interfaces.srv import ChangeMode, NavCommand, Nudge
-from bamboo_control.keymap_model import KEYS, LONG, PREFIX, displayKey, parseKeymap
+from bamboo_control.keymap_model import KEYS, LONG, PREFIX, Chord, displayKey, parseKeymap
 
 # Enumerations RESOLUES ICI (cf. docstring : le consommateur refuse une valeur vide).
 # A garder alignees sur face_detection.cpp (detecteurs et trackers) et sur
@@ -391,6 +392,10 @@ class TeleopNode(Node):
                                             durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self._flipGet = self.create_client(GetParameters, self._trackNode + "/get_parameters")
         self._flipSet = self.create_client(SetParameters, self._trackNode + "/set_parameters")
+        # ZL + ZR tenues ensemble (appui long, TOUS les modes) : lance / arrete le service bamboo_videotracking (2026-11-12). Sans lui le
+        # HUD n'a plus de bandeau ni de touches (c'est overlay_node qui les dessine) : a n'utiliser que sachant le retour a l'ecran.
+        self._chord = Chord(self._longPress)
+        self._odDir = str(self.declare_parameter("ondemand_dir", "/run/bamboo-ondemand").value)
 
         # --- modes du robot (bamboo_mode_manager) ------------------------------
         # Sans gestionnaire, on reste dans `fallback_mode` : la conduite marche toujours.
@@ -761,6 +766,9 @@ class TeleopNode(Node):
         # --- touches du MODE et du GROUPE courants ---------------------------
         # Une touche qui a un appui LONG dans ce groupe passe par _holdEdge (son appui court
         # part alors au RELACHEMENT) ; sinon elle part au front, comme le prototype.
+        fire, chordOn = self._chord.update(self._keyValue(msg, "ZL"), self._keyValue(msg, "ZR"), now)
+        if fire and self._confirm is None:
+            self._actToggleTracking()
         if self._confirm is not None:
             self._confirmJoy(msg, now)
             return
@@ -768,6 +776,11 @@ class TeleopNode(Node):
         for key in KEYS:
             value = self._keyValue(msg, key)
             tag = "key:" + key
+            if chordOn and key in ("ZL", "ZR"):
+                # Combinaison ZL + ZR en cours : ni le miroir (ZR long) ni les plafonds de vitesse ne doivent partir.
+                self._prev[tag] = value
+                self._hold.pop(tag, None)
+                continue
             if key == "L" and self._button(msg, self._btn["motion"]):
                 # L tenue AVEC B : c'est le geste de verrouillage de la traction, pas l'action
                 # de L dans le mode (qui partirait sinon au relachement).
@@ -1712,6 +1725,29 @@ class TeleopNode(Node):
             self._publishState()
         self._navCli.call_async(NavCommand.Request(command=command, arg=arg)) \
             .add_done_callback(done)
+
+    def _actToggleTracking(self):
+        """Lance ou arrete le service bamboo_videotracking (ZL + ZR long). Le conteneur ne touche pas Docker : il depose une demande que
+        l'hote execute (groupe `tracking` de docker/ondemand/groups.conf), exactement comme pour la pile NAV. Le service est tenu pour
+        EN MARCHE quand le noeud repond (`flipGet`) ; une demande deja en cours (starting / stopping) est ignoree. Sans effet sur la
+        traction : on n'arrete pas le service moteurs armes, c'est de l'affichage."""
+        if not (os.path.isdir(self._odDir) and os.access(self._odDir, os.W_OK)):
+            self.get_logger().warning("suivi video : %s absent (bamboo-ondemand.path non pose ?)" % self._odDir)
+            return
+        try:
+            with open(os.path.join(self._odDir, "tracking.state")) as fh:
+                st = fh.read().split()
+            if st and st[0] in ("starting", "stopping") and time.time() - float(st[-1]) < 90:
+                self.get_logger().warning("suivi video : %s en cours, demande ignoree" % st[0])
+                return
+        except (OSError, ValueError):
+            pass
+        want = "off" if self._flipGet.service_is_ready() else "on"
+        tmp = os.path.join(self._odDir, ".tracking.want.tmp")
+        with open(tmp, "w") as fh:
+            fh.write(want + "\n")
+        os.replace(tmp, os.path.join(self._odDir, "tracking.want"))
+        self.get_logger().info("suivi video : %s demande (ZL + ZR long)" % ("ARRET" if want == "off" else "DEMARRAGE"))
 
     def _actFlip(self):
         """Bascule le miroir HORIZONTAL de l'image (`flip` de tracking_node : h <-> none).

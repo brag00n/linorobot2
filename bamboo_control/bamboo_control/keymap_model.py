@@ -83,3 +83,32 @@ def displayKey(key):
     base = key[:-len(LONG)] if long_ else key
     base = {"MINUS": "-", "PLUS": "+"}.get(base, base)
     return base + (" long" if long_ else "")
+
+
+class Chord:
+    """Combinaison de DEUX touches tenues ensemble (ZL + ZR), sans ROS.
+
+    `update(a, b, now)` rend (fire, active) :
+      fire    vrai UNE seule fois, quand les deux touches sont tenues depuis `hold_s` ;
+      active  vrai tant que la combinaison est en cours, jusqu'au relachement des DEUX touches : l'appelant ignore alors les actions
+              individuelles de ces touches (le miroir de ZR long, les plafonds de vitesse de ZR et ZL ne doivent pas partir).
+    Lacher une touche avant l'echeance annule ; relacher une seule touche apres le declenchement ne le rearme pas."""
+
+    def __init__(self, hold_s):
+        self.hold_s = float(hold_s)
+        self.t0, self.fired, self.latched = None, False, False
+
+    def update(self, a, b, now):
+        if a and b:
+            self.latched = True
+            if self.t0 is None:
+                self.t0 = now
+            if not self.fired and now - self.t0 >= self.hold_s:
+                self.fired = True
+                return True, True
+            return False, True
+        if not a and not b:
+            self.t0, self.fired, self.latched = None, False, False
+            return False, False
+        self.t0 = None                       # une seule touche reste enfoncee : le decompte repart si l'autre revient
+        return False, self.latched
