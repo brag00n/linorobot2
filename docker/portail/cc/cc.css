@@ -97,10 +97,20 @@
   .aisend{background:none;border:0;color:var(--cream);cursor:pointer;padding:0;display:inline-flex;flex:none}
   .aisend:disabled{color:var(--mute);cursor:default}
   .aisend svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.5}
+  .aibtn{position:relative;background:none;border:1px solid var(--line);color:var(--mute);cursor:pointer;padding:2px 3px;display:inline-flex;flex:none;border-radius:2px}
+  .aibtn:hover{color:var(--cream);border-color:var(--line-hi)}
+  .aibtn svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round}
+  .aibtn .off{display:block}
+  .aibtn[aria-pressed=true] .off{display:none}
+  .aibtn[aria-pressed=true]{color:var(--cream);border-color:var(--cream)}
+  .aibtn:disabled{opacity:.4;cursor:default}
+  #aiMic[aria-pressed=true]::after{content:"";position:absolute;top:-3px;right:-3px;width:6px;height:6px;border-radius:50%;background:var(--alert);animation:pulse 1.6s ease-out infinite}
+  #aiMic.hear{border-color:var(--alert);color:var(--alert)}
   .aigear{background:none;border:0;color:var(--mute);cursor:pointer;padding:0 2px;display:inline-flex}
   .aigear:hover{color:var(--cream)}
   .aigear svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.4}
-  .ai .opmeta{gap:6px;justify-content:flex-start;flex-wrap:nowrap;min-width:0}
+  .ai .opmeta{gap:4px;justify-content:flex-start;flex-wrap:nowrap;min-width:0}
+  .ai .opmeta .badge{padding:3px 5px;letter-spacing:.1em}
   .ai .opmeta .micro{margin-right:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .ai .opmeta .badge,.ai .opmeta .aigear{flex:none}
   .aiin{min-width:0}

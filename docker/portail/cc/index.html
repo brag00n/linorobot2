@@ -50,7 +50,7 @@
         <button class="btn on-btn" id="camOn" type="button" title="La webcam du PC exige HTTPS ou localhost">Activer ma webcam</button>
       </div>
       <div class="ai">
-        <div class="opmeta"><span class="micro">Assistant IA</span><span class="badge" id="aiBadge" title="">Hors ligne</span><button class="aigear" id="aiGear" type="button" title="Réglages de l'assistant" aria-label="Réglages de l'assistant"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg></button></div>
+        <div class="opmeta"><span class="micro" title="Assistant IA">Assistant</span><span class="badge" id="aiBadge" title="">Hors ligne</span><button class="aibtn" id="aiMic" type="button" aria-pressed="false" title="Micro : parler à l'assistant" aria-label="Micro"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="off" d="M4 4l16 16"/></svg></button><button class="aibtn" id="aiSpk" type="button" aria-pressed="false" title="Voix : l'assistant répond à voix haute" aria-label="Voix de l'assistant"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z"/><path class="wv" d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/><path class="off" d="M4 4l16 16"/></svg></button><button class="aigear" id="aiGear" type="button" title="Réglages de l'assistant" aria-label="Réglages de l'assistant"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg></button></div>
         <div class="wave" id="wave"></div>
         <div class="aitxt" id="aitxt" aria-live="polite"></div>
         <form class="aiin" id="aiForm" autocomplete="off"><input id="aiIn" type="text" maxlength="600" placeholder="Parle au robot…" aria-label="Message à l'assistant" disabled><button class="aisend" id="aiSend" type="submit" disabled title="Envoyer" aria-label="Envoyer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12l16-8-6 16-3-7z"/></svg></button></form>
@@ -983,7 +983,8 @@ var mb = $("#mbat"); for (var mi = 0; mi < 8; mi++) mb.appendChild(h("i"));
      - AUCUNE fonction du CC (armement, missions, rosbridge) n'est donnee a l'assistant : il ne recoit que du texte et ne rend que du texte ;
      - les reponses sont affichees avec textContent, jamais innerHTML.
    Voix (micro) : volontairement absente (voice:false) ; elle charge deux bibliotheques depuis Internet (jsDelivr) et sera traitee a part. */
-var AI = { url: "", key: "", client: null, loading: null, busy: false, q: "", ans: "" };
+var AI = { url: "", key: "", client: null, loading: null, busy: false, q: "", ans: "", voice: false, mic: false, spk: false, level: 0, lvT: 0, st: "" };
+var AI_KEY_SPK = "cc.ai.spk";
 var AI_KEY_URL = "cc.ai.url", AI_KEY_KEY = "cc.ai.key", AI_DEFAULT_URL = "https://localhost:7861";
 var AI_PROMPT = "Tu es la voix de Bamboo, un petit robot roulant d'intérieur, et tu parles à son opérateur depuis le Command Center. " +
   "RÉPONDS TRÈS COURT : une à deux phrases, 25 mots au plus, sans liste ni mise en forme (l'espace d'affichage est minuscule). " +
@@ -1022,10 +1023,19 @@ function aiScript() {
 function aiClient() {
   if (AI.client) return Promise.resolve(AI.client);
   return aiScript().then(function () {
-    var c = window.AriaClient.create({ baseUrl: AI.url, apiKey: AI.key, voice: false, speak: false, session: "bamboo-cc", systemPrompt: AI_PROMPT });
+    /* UN SEUL client pour le texte et la voix : l'historique de la conversation est commun. `voice:true` ne charge RIEN a la creation (les bibliotheques du
+       detecteur de parole ne sont chargees qu'au premier start()). `speak` suit le bouton haut-parleur, coupe par defaut. */
+    var c = window.AriaClient.create({ baseUrl: AI.url, apiKey: AI.key, voice: true, speak: AI.spk, session: "bamboo-cc", systemPrompt: AI_PROMPT });
+    c.mute(!AI.spk);
     c.on("text", function (t) { AI.ans = t; aiShow(AI.q, t, true); });
-    c.on("state", function (s) { if (s === "thinking") aiBadge("Réfléchit", "warn"); else if (s === "speaking") aiBadge("Répond", "ok"); else if (s === "idle" || s === "listening") aiBadge("Prêt", "ok"); });
-    c.on("done", function () { AI.busy = false; aiShow(AI.q, AI.ans || "(pas de réponse)", false); aiBadge("Prêt", "ok"); aiEnable(true); $("#aiIn").focus(); });
+    c.on("user_text", function (t) { AI.q = t; aiShow(t, "", true); });
+    c.on("state", function (s) {
+      AI.st = s; document.getElementById("aiMic").classList.toggle("hear", s === "hearing");
+      if (s === "thinking") aiBadge("Réfléchit", "warn"); else if (s === "speaking") aiBadge("Répond", "ok"); else if (s === "hearing") aiBadge("T'entend", "warn");
+      else if (s === "listening") aiBadge("Écoute", "ok"); else if (s === "idle") aiBadge("Prêt", "ok");
+    });
+    c.on("level", function (l) { AI.level = l.value || 0; AI.lvT = performance.now(); });
+    c.on("done", function () { AI.busy = false; aiShow(AI.q, AI.ans || "(pas de réponse)", false); aiBadge(AI.mic ? "Écoute" : "Prêt", "ok"); aiEnable(true); if (!AI.mic) $("#aiIn").focus(); });
     c.on("warning", function (w) { log(1, "[assistant] " + (w.message || w.code)); });
     c.on("error", function (e) { aiFail(e); });
     AI.client = c; return c;
@@ -1033,7 +1043,8 @@ function aiClient() {
 }
 var AI_ERR = { network: "Service injoignable. Ouvre /v1/health pour accepter le certificat.", unauthorized: "Clé refusée ou révoquée.", forbidden: "Domaine du CC non autorisé pour cette clé.",
   rate_limited: "Trop de demandes, patiente un instant.", quota: "Quota du jour atteint.", blocked: "Trop d'échecs d'authentification : attends quelques minutes.",
-  busy: "Une réponse est déjà en cours.", llm: "L'assistant n'a pas pu répondre.", too_large: "Message trop long." };
+  busy: "Une réponse est déjà en cours.", llm: "L'assistant n'a pas pu répondre.", too_large: "Message trop long.",
+  voice_disabled: "Voix désactivée pour cette clé.", audio_too_long: "Phrase trop longue (30 s au plus).", bad_audio: "Audio illisible." };
 function aiFail(e) {
   AI.busy = false; var code = e && e.code ? e.code : "network";
   /* Le code `session` a DEUX causes (trop de conversations ouvertes, ou clé sans profil) : le message du serveur les distingue, on le garde tel quel. */
@@ -1076,10 +1087,45 @@ function aiSettings() {
   dlgShow({ tag: "Assistant IA", title: "Réglages de l'assistant", body: [body], foot: [test, rst, dbtn("Annuler", "", function () { dlgClose(); }), ok] });
 }
 function aiInit() {
-  aiLoad(); aiEnable(true);
+  aiLoad(); aiEnable(true); aiMicSet(false);
+  var sp = false; try { sp = localStorage.getItem(AI_KEY_SPK) === "1"; } catch (e) { }
+  AI.spk = sp; $("#aiSpk").setAttribute("aria-pressed", sp ? "true" : "false");
   if (!AI.key) { aiBadge("Clé absente", "warn", "Renseigne la clé dans les réglages"); aiNote("Assistant prêt : renseigne la clé (engrenage), puis écris-lui."); }
   else { aiBadge("Prêt", "ok", AI.url); aiNote("Écris un message à l'assistant."); }
 }
+/* ---------- micro et voix (2026-11-14) ----------
+   MICRO : jamais rouvert tout seul (un geste a chaque session : confidentialite, et le navigateur l'impose). Il s'arrete a la fermeture ou au masquage de l'onglet.
+   Le detecteur de parole (onnxruntime-web + vad-web, ~570 Ko) vient de cdn.jsdelivr.net, par defaut du client : l'assistant vocal exige donc Internet cote PC.
+   VOIX : coupee par defaut, choix memorise (localStorage). Elle est lue sur le PC qui affiche le CC, pas sur le robot. */
+function aiMicSet(on) { AI.mic = on; var b = $("#aiMic"); b.setAttribute("aria-pressed", on ? "true" : "false"); b.classList.remove("hear"); b.title = on ? "Micro ouvert : cliquer pour couper" : "Micro : parler à l'assistant"; }
+function aiMicStop(why) {
+  if (AI.client && AI.mic) { try { AI.client.stop(); } catch (e) { } }
+  var was = AI.mic; aiMicSet(false); AI.level = 0;
+  if (was) { aiBadge("Prêt", "ok"); if (why) log(0, "[assistant] micro coupé : " + why); }
+}
+function aiMicStart() {
+  if (!AI.key) { aiNote("Renseigne la clé de l'assistant (engrenage)."); aiBadge("Clé absente", "warn"); return; }
+  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { aiNote("Le micro exige HTTPS (ou localhost) : ouvre le CC en https://…:8443."); aiBadge("Micro bloqué", "bad"); return; }
+  var b = $("#aiMic"); b.disabled = true; aiBadge("Micro…", "warn");
+  aiClient().then(function (c) { return c.start(); }).then(function () { aiMicSet(true); aiBadge("Écoute", "ok"); aiNote("Je t'écoute."); })
+    .catch(function (e) {
+      aiMicSet(false); var n = e && e.name, m = (e && e.message) || "";
+      if (n === "NotAllowedError" || n === "SecurityError") { aiBadge("Micro refusé", "bad"); aiNote("Micro refusé : autorise-le pour cette page dans le navigateur."); }
+      else if (n === "NotFoundError" || n === "OverconstrainedError") { aiBadge("Pas de micro", "bad"); aiNote("Aucun micro détecté sur ce PC."); }
+      else if (/chargement impossible|ort|vad/i.test(m)) { aiBadge("Micro indisponible", "bad"); aiNote("Bibliothèques de détection de parole injoignables (Internet ?)."); }
+      else aiFail(e && e.code ? e : { code: "network", message: m });
+    }).then(function () { b.disabled = false; });
+}
+function aiSpkSet(on) {
+  AI.spk = on; var b = $("#aiSpk"); b.setAttribute("aria-pressed", on ? "true" : "false"); b.title = on ? "Voix activée : cliquer pour couper" : "Voix : l'assistant répond à voix haute";
+  try { localStorage.setItem(AI_KEY_SPK, on ? "1" : "0"); } catch (e) { }
+  if (AI.client) { try { AI.client.mute(!on); } catch (e) { } if (!on) { try { AI.client.interrupt(); } catch (e) { } } }
+}
+$("#aiMic").onclick = function () { if (AI.mic) aiMicStop(""); else aiMicStart(); };
+$("#aiSpk").onclick = function () { aiSpkSet(!AI.spk); };
+/* Onglet masque ou page quittee : le micro ne reste JAMAIS ouvert derriere. */
+document.addEventListener("visibilitychange", function () { if (document.hidden) aiMicStop("onglet masqué"); });
+window.addEventListener("pagehide", function () { aiMicStop(""); });
 $("#aiGear").onclick = aiSettings;
 $("#aiForm").onsubmit = function (e) { e.preventDefault(); var i = $("#aiIn"), v = i.value; i.value = ""; aiAsk(v); };
 function typeAI() { aiInit(); }
@@ -1178,14 +1224,16 @@ setInterval(rbPing, 2000); setInterval(vidStats, 2000);
 var wv = wave.children;
 function frame(ts) {
   stage.draw(ts); RAFP.forEach(function (fn) { fn(ts); }); if (MAP.onStage && mapStage) { if (S.mode !== "mission") toggleMapStage(); else drawMap(mapStage); }
-  for (var i = 0; i < wv.length; i++) wv[i].style.height = (4 + (Math.sin(ts / 420 + i * .6) * .5 + .5) * 6 + (Math.sin(ts / 1100 + i * 1.7) * .5 + .5) * 5) + "px";
+  var live = AI.client && (AI.mic || AI.st === "speaking") && performance.now() - AI.lvT < 400, lv = live ? Math.min(1, AI.level * 4) : 0;
+  for (var i = 0; i < wv.length; i++) wv[i].style.height = live ? (4 + lv * (6 + (Math.sin(ts / 90 + i * 1.3) * .5 + .5) * 22)) + "px"
+    : (4 + (Math.sin(ts / 420 + i * .6) * .5 + .5) * 6 + (Math.sin(ts / 1100 + i * 1.7) * .5 + .5) * 5) + "px";
   requestAnimationFrame(frame);
 }
 if (HASH.src) toggleSrc(true);
 setMode(HASH.mode && BUILD[HASH.mode] ? HASH.mode : "vitals", true);
 log(0, "Session ouverte"); typeAI(); rbConnect(); vidStart();
 if (HASH.open === "journal") toggleSlide("journal", openJournal); else if (HASH.open === "keys") toggleSlide("keys", openKeys);
-window.CC = { test: { ai: { init: function () { aiInit(); }, save: function (u, k) { aiSave(u, k); }, state: function () { return AI; }, fail: function (e) { aiFail(e); }, settings: function () { aiSettings(); } }, hide: function (h) { Object.defineProperty(document, "hidden", { configurable: true, get: function () { return h; } }); document.dispatchEvent(new Event("visibilitychange")); }, subs: function () { return Object.keys(SUBS).sort(); }, linkOk: function () { return ccLinkOk(); }, calls: CALLS_OUT, arm: ARM, hb: HB, setWs: function (w) { ws = w; SUBS = {}; syncQ.length = 0; }, resync: function () { syncSubs(); }, setTR: function (t) { TR = t; TRT = performance.now(); }, setGS: function (st) { GS = { cc: st, video: st, tripped: false, pilot: TABID }; GST = performance.now(); } }, V: V, S: S, inject: function (topic, msg) { var d = HANDLERS[topic]; if (d) d[3](msg); }, state: function () { return { rb: S.rb, vid: S.vid, tasks: Object.keys(DT).length, mods: DMODS.length, V: V, pad: S.pad, mode: S.robotMode, charging: S.charging, T: T }; } };
+window.CC = { test: { ai: { init: function () { aiInit(); }, save: function (u, k) { aiSave(u, k); }, state: function () { return AI; }, fail: function (e) { aiFail(e); }, settings: function () { aiSettings(); }, mic: function (on) { if (on) aiMicStart(); else aiMicStop("test"); } }, hide: function (h) { Object.defineProperty(document, "hidden", { configurable: true, get: function () { return h; } }); document.dispatchEvent(new Event("visibilitychange")); }, subs: function () { return Object.keys(SUBS).sort(); }, linkOk: function () { return ccLinkOk(); }, calls: CALLS_OUT, arm: ARM, hb: HB, setWs: function (w) { ws = w; SUBS = {}; syncQ.length = 0; }, resync: function () { syncSubs(); }, setTR: function (t) { TR = t; TRT = performance.now(); }, setGS: function (st) { GS = { cc: st, video: st, tripped: false, pilot: TABID }; GST = performance.now(); } }, V: V, S: S, inject: function (topic, msg) { var d = HANDLERS[topic]; if (d) d[3](msg); }, state: function () { return { rb: S.rb, vid: S.vid, tasks: Object.keys(DT).length, mods: DMODS.length, V: V, pad: S.pad, mode: S.robotMode, charging: S.charging, T: T }; } };
 requestAnimationFrame(frame);
 })();
 </script>
