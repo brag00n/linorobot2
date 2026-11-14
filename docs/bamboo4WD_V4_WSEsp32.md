@@ -736,6 +736,10 @@ bamboo_diagnostics, battery_energy, driver.esp32.
 Conséquences : plus de HUD enrichi tant que le suivi est éteint (le CC garde sa vidéo, `raw` est indépendant) ; les diagnostics du suivi passent en erreur « absent ».
 Les missions continuent d'éteindre puis de remettre ces services (liste `optionnels` de `missions.yaml`) : elles ne remettent que ce qu'elles ont éteint, donc rien si le service était déjà arrêté.
 
+**Essai validé le 2026-11-14 (après redémarrage du robot)** : ZL + ZR long démarre le suivi (nœud `/tracking_node` présent en ~14 s, **HUD enrichi de retour en moins de 60 s**, constaté
+par l'opérateur), le même appui l'arrête (conteneur arrêté en ~12 s, `tracking.state = stopped`). Aucune autre action n'est partie (ni le miroir de ZR long, ni les plafonds de vitesse).
+Non testé : la combinaison robot armé.
+
 **Pour appliquer sur un robot déjà installé** : `sudo bash docker/robot.sh use esp32 --yes` repose l'unité `bamboo4wd.service` avec la nouvelle liste de boot.
 
 ## 7. État d'avancement
