@@ -524,8 +524,12 @@ services:
 #      docker compose up -d bamboo_videotracking
   bamboo_videotracking:
     extends: base
-    profiles: ["hmi", "boot", "esp32"]
-    restart: unless-stopped
+    # A LA DEMANDE (2026-11-14, decision de l'utilisateur) : ne demarre PLUS au boot (pas de profil `boot`) et n'est plus relance seul par
+    # Docker (`restart: "no"`). Pourquoi : ~60 % d'un coeur, inutile quand seul le CC est utilise. Se lance par ZL + ZR long (groupe
+    # `tracking` de docker/ondemand/groups.conf) ; les missions l'eteignent et le remettent comme avant. Sans lui, pas de HUD enrichi
+    # (overlay_node en fait partie) : le CC, lui, garde sa video.
+    profiles: ["hmi", "esp32"]
+    restart: "no"
     volumes:
       - /dev:/dev
       # Les .onnx vivent dans l'AUTRE depot. Monte en LECTURE SEULE : ce groupe lit des
@@ -664,8 +668,10 @@ services:
 #    bambooSTM32YB reste desarme (pack 12,6 V brut sur moteurs 7,4 V).
   bamboo_calibration:
     image: linorobot2-behaviors:${ROS_DISTRO}
-    profiles: ["boot", "esp32"]
-    restart: unless-stopped
+    # A LA DEMANDE (2026-11-14, decision de l'utilisateur) : ne demarre PLUS au boot et n'est plus relance seul. Le mode CALIB n'est donc
+    # utilisable qu'apres l'avoir demarre (`docker compose up -d bamboo_calibration` sur le RPi, ou une mission qui le declare).
+    profiles: ["esp32"]
+    restart: "no"
     build:
       context: ../
       dockerfile: docker/Dockerfile

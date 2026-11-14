@@ -707,7 +707,7 @@ réelle avec le CC branché en médiane ~100 ms.
 
 **Santé.** Un module dont *tous* les nœuds sont muets est présenté « arrêté » (neutre) et non comme plusieurs pannes critiques ; le pied de page résume en deux compteurs et le problème le plus grave.
 
-### 6.8 Cadence vidéo publiée dans ROS : décimation à 15 img/s (2026-11-12)
+### 6.13 Cadence vidéo publiée dans ROS : décimation à 15 img/s (2026-11-12)
 
 `BAMBOO_OUT_FPS=15` dans `docker/.env` du RPi (hors dépôt) : `bamboo_video` publie `/video/raw/compressed` à **~15 Hz** au lieu de ~30 Hz. La webcam reste à 30 img/s
 (elle n'annonce que cela en MJPG 640×480 : lui demander 15 la rend muette) ; un élément GStreamer `videorate drop-only=true` jette une trame sur deux **après** la
@@ -721,6 +721,22 @@ caméra, sans décoder le JPEG. Argument de launch `output_fps` (`0` = désactiv
 
 > ⚠️ **Tests de tracking** : le suivi de visage travaillait à 20–29 Hz et reçoit maintenant ~15 Hz. Si un essai de suivi est dégradé (cible perdue, pompage pan/tilt,
 > latence), **le refaire avec `BAMBOO_OUT_FPS=0`** (puis recréer `bamboo_video`) avant de chercher une autre cause.
+
+### 6.14 Services à la demande : suivi vidéo et calibration ne démarrent plus au boot (2026-11-14)
+
+`bamboo_videotracking` (≈ 60 % d'un cœur) et `bamboo_calibration` (≈ 6 %) ne portent plus le profil `boot` et ont `restart: "no"` : ils ne repartent ni au démarrage du robot ni après
+un redémarrage de Docker. La liste de boot dérivée (`robot.sh boot-list esp32`) devient : rosbridge, robotdesc, camera.h264, ap.rpi, portail, proxy, bamboo_video, bamboo_control,
+bamboo_diagnostics, battery_energy, driver.esp32.
+
+| Service | Comment le démarrer |
+|---|---|
+| `bamboo_videotracking` | **ZL + ZR** en appui long à la manette (bascule lancer/arrêter, tous les modes), ou `docker compose up -d bamboo_videotracking` |
+| `bamboo_calibration` | `docker compose up -d bamboo_calibration` sur le RPi (ou une mission qui le déclare) ; sans lui le mode CALIB est **indisponible** |
+
+Conséquences : plus de HUD enrichi tant que le suivi est éteint (le CC garde sa vidéo, `raw` est indépendant) ; les diagnostics du suivi passent en erreur « absent ».
+Les missions continuent d'éteindre puis de remettre ces services (liste `optionnels` de `missions.yaml`) : elles ne remettent que ce qu'elles ont éteint, donc rien si le service était déjà arrêté.
+
+**Pour appliquer sur un robot déjà installé** : `sudo bash docker/robot.sh use esp32 --yes` repose l'unité `bamboo4wd.service` avec la nouvelle liste de boot.
 
 ## 7. État d'avancement
 
