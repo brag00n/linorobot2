@@ -609,3 +609,19 @@ def test_the_shipped_exploration_missions_need_the_nav_robot_mode_and_a_start_co
     for cap in ("exploration", "exploration_vierge", "ronde"):
         assert m["capacites"][cap].get("debut_quand")
     assert m["capacites"]["mode_robot_nav"]["lance"]["service"] == "/bamboo/change_mode"
+
+
+def test_a_text_condition_matches_a_substring_of_the_supervisor_message():
+    cond = {"nav.detail~": ["slam_toolbox (mapping) actif"]}
+    assert not mc.check(cond, {"nav.detail": "creation en cours"})
+    assert not mc.check(cond, {})
+    assert mc.check(cond, {"nav.detail": "nouvelle carte c : slam_toolbox (mapping) actif"})
+    assert "nav.detail" in mc.why_not(cond, {"nav.detail": "x"})
+
+
+def test_the_blank_map_step_waits_for_the_end_of_the_map_creation():
+    import yaml
+    m = yaml.safe_load(open(os.path.join(os.path.dirname(__file__), "..", "config", "missions.yaml"), encoding="utf-8"))
+    assert "nav.detail~" in m["capacites"]["mode_exploration_vierge"]["fini_quand"]
+    for cap in ("exploration", "exploration_vierge"):
+        assert m["capacites"][cap]["debut_delai_s"] >= 45

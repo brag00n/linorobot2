@@ -41,6 +41,7 @@
 #   nav.ready: [true]
 #   nav.auto_state: ["off"]
 #   nav.goal_status: ["succeeded"]
+#   nav.detail~: ["texte"]          le message du superviseur CONTIENT l'un des textes
 #   noeud: "/nav_supervisor"        noeud ROS vivant
 #   batt.pct_min: 25                charge minimale (%) -- jamais lance sous ce seuil
 # ============================================================================
@@ -95,7 +96,9 @@ capacites:
     description: "Cree une carte vierge et passe en cartographie (le robot part de l'origine, rien a relocaliser)"
     exige: [pile_nav, mode_robot_nav]
     lance: {service: "/nav_supervisor/command", args: {command: "exploration", arg: "new"}}
-    fini_quand: {"nav.submode": ["exploration"], "nav.loc_state": ["ok"]}
+    # La creation de la carte vierge prend ~26 s (demarrage de slam_toolbox) et les commandes du superviseur passent l'une apres l'autre :
+    # sous-mode + localisation « ok » sont vrais des le debut. La commande est finie quand le superviseur rend « slam_toolbox ... actif ».
+    fini_quand: {"nav.submode": ["exploration"], "nav.loc_state": ["ok"], "nav.detail~": ["slam_toolbox (mapping) actif"]}
     delai_s: 120
 
   # --- exploration automatique : le robot ROULE ----------------------------------------------------
@@ -107,7 +110,7 @@ capacites:
     surveille: {"nav.loc_state": ["ok", "douteuse"]}
     lance: {service: "/nav_supervisor/command", args: {command: "auto_explore", arg: ""}}
     debut_quand: {"nav.auto_state": ["exploration", "gate", "homing"]}
-    debut_delai_s: 10
+    debut_delai_s: 45
     fini_quand: {"nav.auto_state": ["off"]}
     delai_s: 900
     annule: {service: "/nav_supervisor/command", args: {command: "cancel_all", arg: ""}}
@@ -120,7 +123,7 @@ capacites:
     surveille: {"nav.loc_state": ["ok", "douteuse"]}
     lance: {service: "/nav_supervisor/command", args: {command: "auto_explore", arg: ""}}
     debut_quand: {"nav.auto_state": ["exploration", "gate", "homing"]}
-    debut_delai_s: 10
+    debut_delai_s: 45
     fini_quand: {"nav.auto_state": ["off"]}
     delai_s: 900
     annule: {service: "/nav_supervisor/command", args: {command: "cancel_all", arg: ""}}
@@ -146,7 +149,7 @@ capacites:
     surveille: {"nav.loc_state": ["ok", "douteuse"]}
     lance: {service: "/nav_supervisor/command", args: {command: "patrol", arg: ""}}
     debut_quand: {"nav.auto_state": ["patrol", "goal", "home"]}
-    debut_delai_s: 10
+    debut_delai_s: 45
     fini_quand: {"nav.auto_state": ["off"]}
     delai_s: 1800
     annule: {service: "/nav_supervisor/command", args: {command: "cancel_all", arg: ""}}

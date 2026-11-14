@@ -166,6 +166,10 @@ def check(cond, state):
             v = state.get("batt.pct")
             if v is None or v < float(want):
                 return False
+        elif key.endswith("~"):
+            v = str(state.get(key[:-1]) or "")
+            if not any(w in v for w in want):
+                return False
         else:
             if state.get(key) not in want:
                 return False
@@ -183,6 +187,9 @@ def why_not(cond, state):
             v = state.get("batt.pct")
             if v is None or v < float(want):
                 out.append("batterie %s %% < %s %%" % ("?" if v is None else int(v), want))
+        elif key.endswith("~"):
+            if not any(w in str(state.get(key[:-1]) or "") for w in want):
+                out.append("%s ne contient pas %s" % (key[:-1], " / ".join(map(str, want))))
         elif state.get(key) not in want:
             out.append("%s = %r (attendu %s)" % (key, state.get(key), "/".join(map(str, want))))
     return ", ".join(out)
