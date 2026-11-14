@@ -25,7 +25,7 @@
 analyzers:
   ros__parameters:
     path: Robot
-    pub_rate: 1.0
+    pub_rate: 0.33          # 1 message toutes les 3 s (2026-11-11) : mesure, +6 points de CPU rosbridge par client abonne a 1 Hz
 
     # --- Video : capture, multiplexage, diffusion web -----------------------------------
     bamboo_video:
