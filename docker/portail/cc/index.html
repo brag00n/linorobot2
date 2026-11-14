@@ -1024,8 +1024,11 @@ function aiClient() {
   if (AI.client) return Promise.resolve(AI.client);
   return aiScript().then(function () {
     /* UN SEUL client pour le texte et la voix : l'historique de la conversation est commun. `voice:true` ne charge RIEN a la creation (les bibliotheques du
-       detecteur de parole ne sont chargees qu'au premier start()). `speak` suit le bouton haut-parleur, coupe par defaut. */
-    var c = window.AriaClient.create({ baseUrl: AI.url, apiKey: AI.key, voice: true, speak: AI.spk, session: "bamboo-cc", systemPrompt: AI_PROMPT });
+       detecteur de parole ne sont chargees qu'au premier start()).
+       `speak` est TOUJOURS true a la creation, et SEUL le bouton haut-parleur decide, par mute() : le client calcule `speak: o.speak && !muted` a CHAQUE tour,
+       mais `o.speak` est fige a la creation. Cree en `speak:false`, un mute(false) ulterieur ne pouvait plus jamais rendre la voix (bogue du 2026-11-15 : micro et
+       haut-parleur actives, aucun son). Le micro, lui, n'a AUCUNE action sur la voix : les deux boutons sont independants. */
+    var c = window.AriaClient.create({ baseUrl: AI.url, apiKey: AI.key, voice: true, speak: true, session: "bamboo-cc", systemPrompt: AI_PROMPT });
     c.mute(!AI.spk);
     c.on("text", function (t) { AI.ans = t; aiShow(AI.q, t, true); });
     c.on("user_text", function (t) { AI.q = t; aiShow(t, "", true); });
