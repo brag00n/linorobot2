@@ -50,10 +50,10 @@
         <button class="btn on-btn" id="camOn" type="button" title="La webcam du PC exige HTTPS ou localhost">Activer ma webcam</button>
       </div>
       <div class="ai">
-        <div class="opmeta"><span class="micro">Assistant IA</span><span class="badge">Prévu</span></div>
+        <div class="opmeta"><span class="micro">Assistant IA</span><span class="badge" id="aiBadge" title="">Hors ligne</span><button class="aigear" id="aiGear" type="button" title="Réglages de l'assistant" aria-label="Réglages de l'assistant"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg></button></div>
         <div class="wave" id="wave"></div>
-        <div class="aitxt" id="aitxt"></div>
-        <div class="aiin"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg><span>Parle au robot…</span></div>
+        <div class="aitxt" id="aitxt" aria-live="polite"></div>
+        <form class="aiin" id="aiForm" autocomplete="off"><input id="aiIn" type="text" maxlength="600" placeholder="Parle au robot…" aria-label="Message à l'assistant" disabled><button class="aisend" id="aiSend" type="submit" disabled title="Envoyer" aria-label="Envoyer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12l16-8-6 16-3-7z"/></svg></button></form>
       </div>
     </section>
     <nav class="modes fr" id="modes" aria-label="Modes d'action"><div class="micro" style="padding:2px 4px 0">Actions</div><div class="selb" id="selb"></div></nav>
@@ -975,8 +975,114 @@ $("#dlg").addEventListener("close", function () { if (!this.open) { JL = null; S
 var mdiv = $("#modes"); MODES.forEach(function (m) { var b = h("button", "mode"); b.type = "button"; b.dataset.mode = m[0]; b.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + ICON[m[0]] + '</svg><b>' + m[1] + '</b><small>' + m[2] + '</small>'; b.onclick = function () { setMode(m[0]); }; mdiv.appendChild(b); });
 var wave = $("#wave"); for (var wi = 0; wi < 28; wi++) wave.appendChild(h("i"));
 var mb = $("#mbat"); for (var mi = 0; mi < 8; mi++) mb.appendChild(h("i"));
-var typed = "Module de dialogue non connecté. Prévu : consignes en langage naturel, compte rendu de mission, alertes parlées."; var ti = 0;
-function typeAI() { var t = $("#aitxt"); if (ti <= typed.length) { t.innerHTML = typed.slice(0, ti) + '<span class="cur"></span>'; ti++; setTimeout(typeAI, reduce ? 0 : 38); } }
+/* ---------- ASSISTANT IA (Aria, service externe, 2026-11-14) : conversation en TEXTE (etape E1) ----------
+   Le service tourne HORS du robot (conteneur sur le PC de l'operateur) : aucune charge pour le RPi. Le navigateur l'appelle directement
+   (HTTPS + SSE). Regles de securite, decidees avec l'utilisateur :
+     - la CLE (ak_...) n'est JAMAIS ecrite dans le depot : saisie dans le panneau de reglage, stockee dans le localStorage de CE navigateur ;
+     - le script aria-client.js est charge depuis le service lui-meme, A LA PREMIERE UTILISATION seulement (pas au chargement du CC) ;
+     - AUCUNE fonction du CC (armement, missions, rosbridge) n'est donnee a l'assistant : il ne recoit que du texte et ne rend que du texte ;
+     - les reponses sont affichees avec textContent, jamais innerHTML.
+   Voix (micro) : volontairement absente (voice:false) ; elle charge deux bibliotheques depuis Internet (jsDelivr) et sera traitee a part. */
+var AI = { url: "", key: "", client: null, loading: null, busy: false, q: "", ans: "" };
+var AI_KEY_URL = "cc.ai.url", AI_KEY_KEY = "cc.ai.key", AI_DEFAULT_URL = "https://localhost:7861";
+var AI_PROMPT = "Tu es la voix de Bamboo, un petit robot roulant d'intérieur, et tu parles à son opérateur depuis le Command Center. " +
+  "RÉPONDS TRÈS COURT : une à deux phrases, 25 mots au plus, sans liste ni mise en forme (l'espace d'affichage est minuscule). " +
+  "Ton : sobre, direct, attentionné, avec un brin de caractère ; tu dis « je » pour le robot. " +
+  "Rôle : te mettre au service de l'opérateur pour ses missions (explorer, naviguer, ronde, retour au départ), signaler les anomalies dès qu'elles apparaissent " +
+  "(batterie basse, localisation douteuse, liaison instable, CPU élevé, capteur muet) et anticiper les problèmes avant qu'ils ne bloquent une mission. " +
+  "Si tu ignores l'état du robot, dis-le en quelques mots plutôt que d'inventer. Tu ne peux ni armer la traction ni lancer une mission : tu conseilles, l'opérateur décide.";
+function aiLoad() {
+  try { AI.url = localStorage.getItem(AI_KEY_URL) || AI_DEFAULT_URL; AI.key = localStorage.getItem(AI_KEY_KEY) || ""; }
+  catch (e) { AI.url = AI_DEFAULT_URL; AI.key = ""; }
+}
+function aiSave(url, key) {
+  AI.url = (url || "").trim().replace(/\/+$/, "") || AI_DEFAULT_URL; AI.key = (key || "").trim();
+  try { localStorage.setItem(AI_KEY_URL, AI.url); localStorage.setItem(AI_KEY_KEY, AI.key); } catch (e) { }
+}
+function aiBadge(txt, cls, title) { var b = $("#aiBadge"); if (!b) return; b.textContent = txt; b.className = "badge" + (cls ? " " + cls : ""); b.title = title || ""; }
+function aiEnable(on) { $("#aiIn").disabled = !on; $("#aiSend").disabled = !on; }
+function aiShow(q, a, cur) {
+  var t = $("#aitxt"); t.replaceChildren();
+  if (q) { var qe = h("span", "q"); qe.textContent = "› " + q; t.appendChild(qe); }
+  var ae = h("span", "a"); ae.textContent = a || ""; t.appendChild(ae); if (cur) t.appendChild(h("span", "cur"));
+}
+function aiNote(txt) { aiShow("", txt, false); }
+/* Charge le script du service UNE FOIS. Une erreur (service arrete, certificat non accepte) est dite en clair. */
+function aiScript() {
+  if (window.AriaClient) return Promise.resolve();
+  if (AI.loading) return AI.loading;
+  AI.loading = new Promise(function (res, rej) {
+    var s = document.createElement("script"); s.src = AI.url + "/aria-client.js"; s.async = true;
+    s.onload = function () { window.AriaClient ? res() : rej(new Error("script sans AriaClient")); };
+    s.onerror = function () { AI.loading = null; rej(new Error("injoignable")); };
+    document.head.appendChild(s);
+  });
+  return AI.loading;
+}
+function aiClient() {
+  if (AI.client) return Promise.resolve(AI.client);
+  return aiScript().then(function () {
+    var c = window.AriaClient.create({ baseUrl: AI.url, apiKey: AI.key, voice: false, speak: false, session: "bamboo-cc", systemPrompt: AI_PROMPT });
+    c.on("text", function (t) { AI.ans = t; aiShow(AI.q, t, true); });
+    c.on("state", function (s) { if (s === "thinking") aiBadge("Réfléchit", "warn"); else if (s === "speaking") aiBadge("Répond", "ok"); else if (s === "idle" || s === "listening") aiBadge("Prêt", "ok"); });
+    c.on("done", function () { AI.busy = false; aiShow(AI.q, AI.ans || "(pas de réponse)", false); aiBadge("Prêt", "ok"); aiEnable(true); $("#aiIn").focus(); });
+    c.on("warning", function (w) { log(1, "[assistant] " + (w.message || w.code)); });
+    c.on("error", function (e) { aiFail(e); });
+    AI.client = c; return c;
+  });
+}
+var AI_ERR = { network: "Service injoignable. Ouvre /v1/health pour accepter le certificat.", unauthorized: "Clé refusée ou révoquée.", forbidden: "Domaine du CC non autorisé pour cette clé.",
+  rate_limited: "Trop de demandes, patiente un instant.", quota: "Quota du jour atteint.", blocked: "Trop d'échecs d'authentification : attends quelques minutes.",
+  busy: "Une réponse est déjà en cours.", llm: "L'assistant n'a pas pu répondre.", too_large: "Message trop long." };
+function aiFail(e) {
+  AI.busy = false; var code = e && e.code ? e.code : "network";
+  /* Le code `session` a DEUX causes (trop de conversations ouvertes, ou clé sans profil) : le message du serveur les distingue, on le garde tel quel. */
+  var msg = code === "session" ? ((e && e.message) || "Conversation refusée par le service.") : (AI_ERR[code] || (e && e.message) || "Erreur de l'assistant.");
+  if (code === "network") { try { AI.client && AI.client.destroy(); } catch (x) { } AI.client = null; }
+  aiBadge(code === "unauthorized" || code === "forbidden" || code === "blocked" ? "Refusé" : "Hors ligne", "bad", msg);
+  aiNote(msg); aiEnable(code !== "unauthorized" && code !== "blocked");
+}
+function aiAsk(text) {
+  text = (text || "").trim(); if (!text || AI.busy) return;
+  if (!AI.key) { aiNote("Renseigne la clé de l'assistant (engrenage)."); aiBadge("Clé absente", "warn"); return; }
+  AI.busy = true; AI.q = text; AI.ans = ""; aiEnable(false); aiBadge("Connexion…", "warn"); aiShow(text, "", true);
+  aiClient().then(function (c) { return c.say(text); }).catch(function (e) { aiFail(e && e.code ? e : { code: "network", message: e && e.message }); });
+}
+function aiSettings() {
+  var url = h("input"); url.type = "text"; url.value = AI.url; url.setAttribute("aria-label", "Adresse du service"); url.autocomplete = "off"; url.spellcheck = false;
+  var key = h("input"); key.type = "password"; key.value = AI.key; key.setAttribute("aria-label", "Clé d'API"); key.autocomplete = "off"; key.spellcheck = false;
+  var st = h("p", "mdesc");
+  var row = function (lab, el) {
+    var d = h("div"); var l = h("label", "micro"); l.textContent = lab; d.append(l, el); d.style.cssText = "display:grid;gap:4px;margin-bottom:10px";
+    el.style.cssText = "background:transparent;border:1px solid var(--line);color:var(--ink);padding:8px 10px;font:12px var(--mono)"; return d;
+  };
+  var body = h("div"); body.append(row("Adresse du service", url), row("Clé d'API (ak_…)", key), st);
+  st.textContent = "La clé reste dans ce navigateur (localStorage). Elle n'est jamais envoyée au robot ni écrite dans le dépôt.";
+  var test = dbtn("Tester", "", function () {
+    aiSave(url.value, key.value); st.textContent = "Test en cours…";
+    fetch(AI.url + "/v1/health", { headers: { Authorization: "Bearer " + AI.key } })
+      .then(function (r) { return r.json().then(function (j) { st.textContent = r.ok && j.ok ? "Service joignable, clé valide." + (j.voice ? " (voix disponible)" : "") : "Réponse refusée (" + r.status + ")."; }); })
+      .catch(function () { st.textContent = "Injoignable. Ouvre " + AI.url + "/v1/health dans ce navigateur pour accepter le certificat."; });
+  });
+  /* Efface l'historique de la conversation (consignes conservees). Sans conversation commencee, il n'y a rien a effacer : on ne cree pas de client pour ca. */
+  var rst = dbtn("Reset conversation", "", function () {
+    AI.q = ""; AI.ans = "";
+    if (!AI.client) { aiNote("Conversation vide."); st.textContent = "Aucune conversation en cours."; return; }
+    st.textContent = "Réinitialisation…";
+    Promise.resolve(AI.client.reset()).then(function () { st.textContent = "Conversation réinitialisée."; aiNote("Conversation réinitialisée."); })
+      .catch(function (e) { st.textContent = "Échec : " + ((e && e.message) || "service injoignable"); });
+  });
+  var ok = dbtn("Enregistrer", "on", function () { aiSave(url.value, key.value); try { AI.client && AI.client.destroy(); } catch (x) { } AI.client = null; aiInit(); dlgClose(); });
+  dlgShow({ tag: "Assistant IA", title: "Réglages de l'assistant", body: [body], foot: [test, rst, dbtn("Annuler", "", function () { dlgClose(); }), ok] });
+}
+function aiInit() {
+  aiLoad(); aiEnable(true);
+  if (!AI.key) { aiBadge("Clé absente", "warn", "Renseigne la clé dans les réglages"); aiNote("Assistant prêt : renseigne la clé (engrenage), puis écris-lui."); }
+  else { aiBadge("Prêt", "ok", AI.url); aiNote("Écris un message à l'assistant."); }
+}
+$("#aiGear").onclick = aiSettings;
+$("#aiForm").onsubmit = function (e) { e.preventDefault(); var i = $("#aiIn"), v = i.value; i.value = ""; aiAsk(v); };
+function typeAI() { aiInit(); }
 $("#camOn").onclick = function () {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { $("#camOn").textContent = "Webcam bloquée en HTTP simple"; $("#camOn").title = "Le navigateur n'autorise la webcam qu'en HTTPS ou sur localhost"; return; }
   navigator.mediaDevices.getUserMedia({ video: true }).then(function (s) { $("#opvid").srcObject = s; $("#opcam").classList.add("on"); }).catch(function () { $("#camOn").textContent = "Accès refusé"; });
@@ -1079,7 +1185,7 @@ if (HASH.src) toggleSrc(true);
 setMode(HASH.mode && BUILD[HASH.mode] ? HASH.mode : "vitals", true);
 log(0, "Session ouverte"); typeAI(); rbConnect(); vidStart();
 if (HASH.open === "journal") toggleSlide("journal", openJournal); else if (HASH.open === "keys") toggleSlide("keys", openKeys);
-window.CC = { test: { hide: function (h) { Object.defineProperty(document, "hidden", { configurable: true, get: function () { return h; } }); document.dispatchEvent(new Event("visibilitychange")); }, subs: function () { return Object.keys(SUBS).sort(); }, linkOk: function () { return ccLinkOk(); }, calls: CALLS_OUT, arm: ARM, hb: HB, setWs: function (w) { ws = w; SUBS = {}; syncQ.length = 0; }, resync: function () { syncSubs(); }, setTR: function (t) { TR = t; TRT = performance.now(); }, setGS: function (st) { GS = { cc: st, video: st, tripped: false, pilot: TABID }; GST = performance.now(); } }, V: V, S: S, inject: function (topic, msg) { var d = HANDLERS[topic]; if (d) d[3](msg); }, state: function () { return { rb: S.rb, vid: S.vid, tasks: Object.keys(DT).length, mods: DMODS.length, V: V, pad: S.pad, mode: S.robotMode, charging: S.charging, T: T }; } };
+window.CC = { test: { ai: { init: function () { aiInit(); }, save: function (u, k) { aiSave(u, k); }, state: function () { return AI; }, fail: function (e) { aiFail(e); }, settings: function () { aiSettings(); } }, hide: function (h) { Object.defineProperty(document, "hidden", { configurable: true, get: function () { return h; } }); document.dispatchEvent(new Event("visibilitychange")); }, subs: function () { return Object.keys(SUBS).sort(); }, linkOk: function () { return ccLinkOk(); }, calls: CALLS_OUT, arm: ARM, hb: HB, setWs: function (w) { ws = w; SUBS = {}; syncQ.length = 0; }, resync: function () { syncSubs(); }, setTR: function (t) { TR = t; TRT = performance.now(); }, setGS: function (st) { GS = { cc: st, video: st, tripped: false, pilot: TABID }; GST = performance.now(); } }, V: V, S: S, inject: function (topic, msg) { var d = HANDLERS[topic]; if (d) d[3](msg); }, state: function () { return { rb: S.rb, vid: S.vid, tasks: Object.keys(DT).length, mods: DMODS.length, V: V, pad: S.pad, mode: S.robotMode, charging: S.charging, T: T }; } };
 requestAnimationFrame(frame);
 })();
 </script>

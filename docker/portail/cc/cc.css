@@ -68,7 +68,8 @@
   .selb{position:absolute;left:8px;right:8px;top:0;height:56px;border:1px solid var(--cream);background:linear-gradient(90deg,rgb(241 232 180/.13),transparent);transition:transform .45s cubic-bezier(.7,0,.2,1);z-index:0;pointer-events:none}
   .selb::before{content:"";position:absolute;left:-1px;top:-1px;bottom:-1px;width:4px;background:var(--cream)}
 
-  .op{display:grid;grid-template-rows:auto auto minmax(0,1fr);gap:8px;padding:10px;min-height:0}
+  .op{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr);gap:8px;padding:10px;min-height:0;min-width:0}
+  .op>*{min-width:0}
   .opcam{position:relative;aspect-ratio:4/3;background:#03070a;border:1px solid var(--line);overflow:hidden}
   .opcam video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);display:none;filter:saturate(.35) contrast(1.1) brightness(.9) hue-rotate(150deg)}
   .opcam.on video{display:block}
@@ -83,13 +84,30 @@
   .btn.pri{background:var(--seg);border-color:var(--seg);color:var(--bg);font-weight:600}
   .btn.pri:hover{background:var(--cream);border-color:var(--cream)}
   .opmeta{display:flex;justify-content:space-between;gap:8px}
-  .ai{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;gap:8px;min-height:0}
+  .ai{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr) auto;gap:8px;min-height:0;min-width:0}
   .wave{display:flex;align-items:center;gap:3px;height:34px}
   .wave i{flex:1;background:var(--line-hi);height:4px;border-radius:1px;transition:height .12s}
   .aitxt{font:12px/1.5 var(--mono);color:var(--ink2);overflow:hidden}
   .aitxt .cur{display:inline-block;width:7px;height:13px;background:var(--cream);vertical-align:-2px;animation:blink 1s steps(2) infinite}
   .aiin{display:flex;gap:8px;align-items:center;border:1px solid var(--line);padding:8px 10px;color:var(--mute);font:12px var(--mono)}
   .aiin svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.5}
+  .aiin input{flex:1;min-width:0;background:transparent;border:0;outline:0;color:var(--ink);font:12px var(--mono)}
+  .aiin input::placeholder{color:var(--mute)}
+  .aiin:focus-within{border-color:var(--cream)}
+  .aisend{background:none;border:0;color:var(--cream);cursor:pointer;padding:0;display:inline-flex;flex:none}
+  .aisend:disabled{color:var(--mute);cursor:default}
+  .aisend svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.5}
+  .aigear{background:none;border:0;color:var(--mute);cursor:pointer;padding:0 2px;display:inline-flex}
+  .aigear:hover{color:var(--cream)}
+  .aigear svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.4}
+  .ai .opmeta{gap:6px;justify-content:flex-start;flex-wrap:nowrap;min-width:0}
+  .ai .opmeta .micro{margin-right:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ai .opmeta .badge,.ai .opmeta .aigear{flex:none}
+  .aiin{min-width:0}
+  .badge.warn{border-color:var(--amber);color:var(--amber)}
+  .badge.bad{border-color:#e5604a;color:#e5604a}
+  .aitxt .q{color:var(--mute);display:block;margin-bottom:4px}
+  .aitxt .a{white-space:pre-wrap;overflow-wrap:anywhere}
 
   /* ---------- scène caméra ---------- */
   .stage{grid-area:stage;overflow:hidden}
