@@ -489,6 +489,10 @@ services:
       - "8080:8080"
     volumes:
       - /dev:/dev
+    # BAMBOO_OUT_FPS (2026-11-12) : cadence PUBLIEE dans ROS, par decimation APRES la camera (videorate, trames JPEG jetees sans
+    # decodage). 15 sur le RPi (docker/.env) car le CC n'affiche que 15 img/s ; 0 = pas de decimation. ATTENTION : le suivi de visage
+    # recoit alors ~15 Hz au lieu de 20-29. Si un test de tracking est DEGRADE, le refaire avec BAMBOO_OUT_FPS=0 avant de chercher
+    # ailleurs (puis `restart recreate` de bamboo_video). Demander 15 a la camera elle-meme ne marche pas : elle n'annonce que 30.
     # BAMBOO_CAM : mettre /dev/bamboocam dans .env des que la regle udev 99-bambooSTM32YB
     # est posee (lien qui SUIT la webcam 05a3:9331). /dev/video0 en dur est un piege : le
     # 2026-10-13 la webcam a decroche de l'USB (chaine de tracking complete, CPU au maximum)
@@ -506,7 +510,7 @@ services:
       test -f install/setup.bash &&
       source install/setup.bash &&
       ros2 launch bamboo_video video.launch.py
-      robot:=${ROBOT} stream_mode:=mjpg video_device:=${BAMBOO_CAM:-/dev/video0}"
+      robot:=${ROBOT} stream_mode:=mjpg video_device:=${BAMBOO_CAM:-/dev/video0} output_fps:=${BAMBOO_OUT_FPS:-0}"
 
 #--- Groupe TRACKING : Tracking / FaceRecog / FaceTrain / ServoCam dans UN process composee
 #    (component_container_mt + intra-process). Il s'ENREGISTRE sur bamboo_video

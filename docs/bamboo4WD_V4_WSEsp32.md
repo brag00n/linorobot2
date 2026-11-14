@@ -707,6 +707,21 @@ réelle avec le CC branché en médiane ~100 ms.
 
 **Santé.** Un module dont *tous* les nœuds sont muets est présenté « arrêté » (neutre) et non comme plusieurs pannes critiques ; le pied de page résume en deux compteurs et le problème le plus grave.
 
+### 6.8 Cadence vidéo publiée dans ROS : décimation à 15 img/s (2026-11-12)
+
+`BAMBOO_OUT_FPS=15` dans `docker/.env` du RPi (hors dépôt) : `bamboo_video` publie `/video/raw/compressed` à **~15 Hz** au lieu de ~30 Hz. La webcam reste à 30 img/s
+(elle n'annonce que cela en MJPG 640×480 : lui demander 15 la rend muette) ; un élément GStreamer `videorate drop-only=true` jette une trame sur deux **après** la
+caméra, sans décoder le JPEG. Argument de launch `output_fps` (`0` = désactivé).
+
+| Mesure (CC seul, sans suivi) | 30 img/s | 15 img/s |
+|---|---|---|
+| `bamboo_video` | 40 % d'un cœur | 22 % |
+| `camera.h264` (ffmpeg `raw`) | 27 % | 15 % |
+| **CPU global** | 50,7 % | 50,2 % (gain global **non démontré** : rosbridge et `bamboo_control` ont monté) |
+
+> ⚠️ **Tests de tracking** : le suivi de visage travaillait à 20–29 Hz et reçoit maintenant ~15 Hz. Si un essai de suivi est dégradé (cible perdue, pompage pan/tilt,
+> latence), **le refaire avec `BAMBOO_OUT_FPS=0`** (puis recréer `bamboo_video`) avant de chercher une autre cause.
+
 ## 7. État d'avancement
 
 - **L0** — protocole hôte (`mav/bamboo.py` généré, `tools/pyproject.toml`) : **fait** (banc).

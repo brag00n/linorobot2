@@ -78,6 +78,7 @@ def _launchSetup(context, *args, **kwargs):
     robot_config = LaunchConfiguration("robot_config").perform(context)
     device = LaunchConfiguration("video_device").perform(context)
     framerate = LaunchConfiguration("framerate").perform(context)
+    output_fps = LaunchConfiguration("output_fps").perform(context)
     frame_id = LaunchConfiguration("frame_id").perform(context)
     port = LaunchConfiguration("port").perform(context)
     raw_topic = LaunchConfiguration("raw_topic").perform(context)
@@ -122,7 +123,11 @@ def _launchSetup(context, *args, **kwargs):
                 "v4l2src device=" + device + " do-timestamp=true ! capsfilter caps=image/jpeg"
                 + ",width=" + str(size["camera_width"])
                 + ",height=" + str(size["camera_height"])
-                + ",framerate=" + framerate + "/1"),
+                + ",framerate=" + framerate + "/1"
+                # Decimation APRES la camera (2026-11-12) : la webcam n'annonce que 30 img/s en MJPG, demander 15 la rend muette. `videorate`
+                # ne fait que JETER des trames JPEG (aucun decodage). 0 = desactive (comportement d'origine).
+                + ((" ! videorate drop-only=true ! capsfilter caps=image/jpeg,framerate=" + output_fps + "/1")
+                   if output_fps not in ("", "0") else "")),
             "image_encoding": "jpeg",
             "camera_name": "camera",
             "frame_id": frame_id,
@@ -202,6 +207,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "framerate", default_value="30",
             description="Cadence demandee au capteur en MJPG (fps)."),
+        DeclareLaunchArgument(
+            "output_fps", default_value="0",
+            description="Cadence PUBLIEE dans ROS (img/s) par decimation apres la camera ; 0 = pas de decimation."),
         DeclareLaunchArgument(
             "frame_id", default_value="camera_link",
             description="Repere TF porte par les trames."),
