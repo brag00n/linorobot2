@@ -78,6 +78,7 @@
 <dialog id="dlg" aria-labelledby="dlgT"></dialog>
 
 <script src="widgets.js"></script>
+<script src="robot3d.js"></script>
 <script>
 (function () {
 "use strict";
@@ -161,7 +162,9 @@ var HANDLERS = {
   "/cc/mission/list": ["std_msgs/msg/String", 0, 1, function (m) { try { MIS.list = JSON.parse(m.data); } catch (e) { } }],
   "/cc/mission/state": ["std_msgs/msg/String", 500, 1, function (m) { try { MIS.st = JSON.parse(m.data); MIS.t = performance.now(); } catch (e) { } }],
   "/diagnostics_agg": ["diagnostic_msgs/msg/DiagnosticArray", 1000, 1, onDiag],
-  "/bamboo/incidents": ["std_msgs/msg/String", 1000, 1, function (m) { try { INC = JSON.parse(m.data); INCT = performance.now(); incBadge(); if (SLIDE === "incidents" && INCFILL) INCFILL(); } catch (e) { } }],
+  "/bamboo/parts": ["std_msgs/msg/String", 0, 1, function (m) { try { PARTS = JSON.parse(m.data); r3dFeed(); } catch (e) { } }],
+  "/robot_description": ["std_msgs/msg/String", 0, 1, function (m) { URDF_XML = String(m.data || ""); r3dFeed(); }],
+  "/bamboo/incidents": ["std_msgs/msg/String", 1000, 1, function (m) { try { INC = JSON.parse(m.data); INCT = performance.now(); incBadge(); if (SLIDE === "incidents" && INCFILL) INCFILL(); if (R3D) R3D.setIncidents(INC); } catch (e) { } }],
   "/rosout": ["rcl_interfaces/msg/Log", 0, 40, function (m) {
     if (m.level < 20) return; var l = m.level >= 40 ? 2 : m.level >= 30 ? 1 : 0, t = "[" + m.name + "] " + String(m.msg).replace(/\s+/g, " ");
     log(l, t.length > 220 ? t.slice(0, 219) + "…" : t); }]
@@ -198,7 +201,7 @@ var KEEP_HIDDEN = ["/cc/guard/state", "/teleop/state", "/gamepad/connected",
      reabonnement (derniere valeur de douze topics d'un coup, dont /diagnostics_agg et /rosout) sur un rosbridge a un seul coeur deja
      charge : mesure du journal, 13 cycles abonnement/desabonnement en 15 min pour un onglet qui bascule masque/visible, chacun
      retardant les battements du garde-fou de 1 a 3 s (oscillation de « Liaison CC »). Debit de ces quatre : < 4 messages/s. */
-  "/battery", "/bamboo/energy", "/bamboo/incidents", "/navigation/state", "/cc/mission/state", "/cc/mission/list"];
+  "/battery", "/bamboo/energy", "/bamboo/incidents", "/bamboo/parts", "/robot_description", "/navigation/state", "/cc/mission/state", "/cc/mission/list"];
 var syncT = 0, syncQ = [];
 document.addEventListener("visibilitychange", function () { syncSubs(); if (document.hidden) { log(0, "Onglet masqué : abonnements réduits aux topics légers et au garde-fou"); } });
 function syncSubs() {
@@ -972,11 +975,14 @@ function openJournal() {
   var tools = h("div", "jtools"); tools.append(seg, noiseB, pause); S.jPause = false; JL = list; S.unread = 0; S.unreadLv = 0; jbadge(); fill();
   dlgShow({ tag: "Journal // temps réel", title: "Journal du robot", slide: true, body: [tools, list, newB, cnt, h("div", "srcnote", "/rosout (INFO et au-dessus) · changements d'état de /diagnostics_agg · événements de cette page")], foot: [dbtn("Fermer", "pri", dlgClose)] });
 }
-$("#dlg").addEventListener("close", function () { if (!this.open) { JL = null; SLIDE = null; INCFILL = null; } });
+$("#dlg").addEventListener("close", function () { if (!this.open) { JL = null; SLIDE = null; INCFILL = null; if (R3D) { R3D.destroy(); R3D = null; } } });
 
 /* ---------- INCIDENTS (2026-11-18) : lecture de /bamboo/incidents (noeud incident_node, JSON v1). LECTURE SEULE : aucun bouton n'agit sur le robot.
    Les pistes de resolution sont du texte ; quand une etape contient une commande, un bouton la COPIE (presse-papiers) sans l'executer. ---------- */
-var INC = null, INCT = 0, INCFILL = null, INC_STALE_MS = 90000;
+var INC = null, INCT = 0, INCFILL = null, INC_STALE_MS = 90000, PARTS = null, URDF_XML = "", R3D = null;
+/* Vue 3D : la nomenclature (/bamboo/parts) et l'URDF reel (/robot_description) arrivent par deux topics latches ; la scene se construit des que la nomenclature est la
+   (sans URDF, seuls les blocs dessines a la main apparaissent). */
+function r3dFeed() { if (R3D && PARTS) R3D.setModel(PARTS, URDF_XML); }
 function incLv(x) { return x.niveau === "ERROR" || x.niveau === "STALE" || x.niveau >= 2 ? 2 : 1; }
 function incFresh() { return INC && performance.now() - INCT < INC_STALE_MS; }
 function incBadge() {
@@ -1019,7 +1025,10 @@ function incRender(wrap) {
 function openIncidents() {
   SLIDE = "incidents";
   var wrap = h("div", "kbd"); INCFILL = function () { incRender(wrap); }; INCFILL();
-  dlgShow({ tag: "Maintenance // incidents", title: "Incidents du robot", slide: true, body: [wrap, h("div", "srcnote", "/bamboo/incidents (incident_node, lecture seule) · nomenclature parts.yaml")], foot: [dbtn("Fermer", "pri", dlgClose)] });
+  if (R3D) { R3D.destroy(); R3D = null; }
+  var box = h("div", "r3d"), cv = h("canvas", "r3dc"); cv.setAttribute("role", "img"); cv.setAttribute("aria-label", "Vue 3D filaire du robot, parts en incident colorées"); box.appendChild(cv);
+  dlgShow({ tag: "Maintenance // incidents", title: "Incidents du robot", slide: true, body: [box, wrap, h("div", "srcnote", "/bamboo/incidents (incident_node, lecture seule) · nomenclature parts.yaml")], foot: [dbtn("Fermer", "pri", dlgClose)] });
+  R3D = Robot3D.create(cv, { lvFn: incLv }); R3D.setIncidents(INC); r3dFeed();
 }
 
 var mdiv = $("#modes"); MODES.forEach(function (m) { var b = h("button", "mode"); b.type = "button"; b.dataset.mode = m[0]; b.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + ICON[m[0]] + '</svg><b>' + m[1] + '</b><small>' + m[2] + '</small>'; b.onclick = function () { setMode(m[0]); }; mdiv.appendChild(b); });
@@ -1287,7 +1296,7 @@ if (HASH.src) toggleSrc(true);
 setMode(HASH.mode && BUILD[HASH.mode] ? HASH.mode : "vitals", true);
 log(0, "Session ouverte"); typeAI(); rbConnect(); vidStart();
 if (HASH.open === "journal") toggleSlide("journal", openJournal); else if (HASH.open === "keys") toggleSlide("keys", openKeys);
-window.CC = { test: { ai: { init: function () { aiInit(); }, save: function (u, k) { aiSave(u, k); }, state: function () { return AI; }, fail: function (e) { aiFail(e); }, settings: function () { aiSettings(); }, mic: function (on) { if (on) aiMicStart(); else aiMicStop("test"); } }, hide: function (h) { Object.defineProperty(document, "hidden", { configurable: true, get: function () { return h; } }); document.dispatchEvent(new Event("visibilitychange")); }, subs: function () { return Object.keys(SUBS).sort(); }, linkOk: function () { return ccLinkOk(); }, calls: CALLS_OUT, arm: ARM, hb: HB, setWs: function (w) { ws = w; SUBS = {}; syncQ.length = 0; }, resync: function () { syncSubs(); }, setTR: function (t) { TR = t; TRT = performance.now(); }, setGS: function (st) { GS = { cc: st, video: st, tripped: false, pilot: TABID }; GST = performance.now(); } }, V: V, S: S, inject: function (topic, msg) { var d = HANDLERS[topic]; if (d) d[3](msg); }, state: function () { return { rb: S.rb, vid: S.vid, tasks: Object.keys(DT).length, mods: DMODS.length, V: V, pad: S.pad, mode: S.robotMode, charging: S.charging, T: T }; } };
+window.CC = { test: { r3d: function () { return R3D; }, ai: { init: function () { aiInit(); }, save: function (u, k) { aiSave(u, k); }, state: function () { return AI; }, fail: function (e) { aiFail(e); }, settings: function () { aiSettings(); }, mic: function (on) { if (on) aiMicStart(); else aiMicStop("test"); } }, hide: function (h) { Object.defineProperty(document, "hidden", { configurable: true, get: function () { return h; } }); document.dispatchEvent(new Event("visibilitychange")); }, subs: function () { return Object.keys(SUBS).sort(); }, linkOk: function () { return ccLinkOk(); }, calls: CALLS_OUT, arm: ARM, hb: HB, setWs: function (w) { ws = w; SUBS = {}; syncQ.length = 0; }, resync: function () { syncSubs(); }, setTR: function (t) { TR = t; TRT = performance.now(); }, setGS: function (st) { GS = { cc: st, video: st, tripped: false, pilot: TABID }; GST = performance.now(); } }, V: V, S: S, inject: function (topic, msg) { var d = HANDLERS[topic]; if (d) d[3](msg); }, state: function () { return { rb: S.rb, vid: S.vid, tasks: Object.keys(DT).length, mods: DMODS.length, V: V, pad: S.pad, mode: S.robotMode, charging: S.charging, T: T }; } };
 requestAnimationFrame(frame);
 })();
 </script>
