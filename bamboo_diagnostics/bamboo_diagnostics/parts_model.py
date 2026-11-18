@@ -202,17 +202,23 @@ class Graph:
                 pile += self.aval.get(n, ())
         return out
 
-    def racines(self, en_defaut):
-        """Parmi les parts EN DEFAUT, celles dont aucune cause amont n'est elle-meme en defaut."""
-        bad = set(en_defaut)
-        return sorted(i for i in bad if not (set(self.causes(i)) & bad))
+    def _explique(self, bad, rang, i):
+        """Causes amont de `i` qui l'EXPLIQUENT : en defaut et, si `rang` est donne, au moins aussi graves que lui.
+        Un simple avertissement en amont n'explique pas une erreur en aval (batterie WARN / lidar debranche en ERROR) : c'est une autre panne."""
+        return {c for c in self.causes(i) if c in bad and (rang is None or rang.get(c, 0) >= rang.get(i, 0))}
 
-    def incidents(self, en_defaut):
-        """[(racine, [consequences en defaut], [impact total])], le plus critique d'abord (criticite 1 avant 3, puis plus d'impact)."""
+    def racines(self, en_defaut, rang=None):
+        """Parmi les parts EN DEFAUT, celles dont aucune cause amont n'est elle-meme en defaut (et, avec `rang`, au moins aussi grave)."""
+        bad = set(en_defaut)
+        return sorted(i for i in bad if not self._explique(bad, rang, i))
+
+    def incidents(self, en_defaut, rang=None):
+        """[(racine, [consequences en defaut], [impact total])], le plus critique d'abord (criticite 1 avant 3, puis plus d'impact).
+        rang : {part: gravite (entier croissant)} ; absent = tout defaut en explique un autre, comme avant."""
         bad = set(en_defaut)
         out = []
-        for r in self.racines(bad):
-            cons = [x for x in self.impact(r) if x in bad]
+        for r in self.racines(bad, rang):
+            cons = [x for x in self.impact(r) if x in bad and r in self._explique(bad, rang, x)]
             out.append((r, sorted(cons), sorted(self.impact(r))))
         out.sort(key=lambda t: (self.parts[t[0]].get("criticite", 3), -len(t[2])))
         return out

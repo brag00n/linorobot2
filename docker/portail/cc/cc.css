@@ -386,6 +386,10 @@
   .r3dc1{all:unset;cursor:pointer;color:var(--seg);padding:2px 5px;border:1px solid transparent} .r3dc1:hover:not(:disabled){border-color:var(--line-hi);color:var(--ink)} .r3dc1:focus-visible{outline:1px solid var(--cream)}
   .r3dc1.cur{color:var(--cream);cursor:default} .r3dsep{color:var(--mute)}
   .r3dback{all:unset;cursor:pointer;margin-left:auto;padding:2px 8px;border:1px solid var(--line-hi);color:var(--seg);font:11px/1.2 var(--mono)} .r3dback:hover{color:var(--ink);border-color:var(--seg)} .r3dback:focus-visible{outline:1px solid var(--cream)}
+  .inccons{list-style:none;margin:0;padding:0;display:grid;gap:2px}
+  .inccons li{display:flex;gap:10px;flex-wrap:wrap;align-items:baseline;padding:2px 8px;border-left:3px solid var(--amber);background:rgb(159 198 210/.04);cursor:pointer;font:12px/1.4 var(--mono)}
+  .inccons li[data-lv="2"]{border-left-color:var(--alert)} .inccons li:hover,.inccons li:focus-visible{background:rgb(159 198 210/.12);outline:none}
+  .inccn{color:var(--ink)} .incct{color:var(--mute)}
   .incgo{cursor:pointer} .incgo:hover{background:rgb(159 198 210/.09)}
   .incsum{font:13px/1.45 var(--mono);color:var(--cream);padding:6px 0}
   .inc{display:grid;gap:5px;padding:8px 10px;background:rgb(159 198 210/.04);border-left:3px solid var(--amber)} .inc[data-lv="2"]{border-left-color:var(--alert)}

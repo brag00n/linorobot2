@@ -1008,7 +1008,19 @@ function incRender(wrap) {
     c.classList.add("incgo"); c.title = "Cliquer : montrer cette pièce dans la vue 3D"; c.onclick = function (ev) { if (ev.target.closest && ev.target.closest("button")) return; if (R3D) R3D.reveal(x.racine); };
     c.appendChild(h("div", "inch", x.label + " — " + (x.type || "") + " · criticité " + x.criticite + (x.depuis_s != null ? " · depuis " + Math.round(x.depuis_s) + " s" : "")));
     if (x.taches && x.taches.length) c.appendChild(h("div", "kd", "Tâches en défaut : " + x.taches.join(" · ")));
-    if (x.consequences && x.consequences.length) c.appendChild(h("div", "kd", "Conséquences : " + x.consequences.join(", ")));
+    if (x.consequences && x.consequences.length) {                                   // une ligne par pièce touchée : celles que la vue 3D colore et étiquette
+      var det = x.consequences_detail && x.consequences_detail.length ? x.consequences_detail : x.consequences.map(function (id) { return { id: id, label: id, niveau: x.niveau, taches: [] }; });
+      c.appendChild(h("div", "kd", "Conséquences (" + det.length + ") :"));
+      var cl = h("ul", "inccons");
+      det.forEach(function (q) {
+        var li = h("li", "", ""), lv = incLv(q); li.dataset.lv = lv; li.tabIndex = 0; li.title = "Cliquer : montrer cette pièce dans la vue 3D";
+        li.appendChild(h("span", "inccn", shortPart(q.label || q.id))); if (q.taches && q.taches.length) li.appendChild(h("span", "incct", q.taches.join(" · ")));
+        var go = function (ev) { ev.stopPropagation(); if (R3D) R3D.reveal(q.id); };
+        li.onclick = go; li.onkeydown = function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); go(ev); } };
+        cl.appendChild(li);
+      });
+      c.appendChild(cl);
+    }
     if (x.impact && x.impact.length) c.appendChild(h("div", "kd", "Impact : " + x.impact.join(", ")));
     if (x.certitude && x.certitude !== "confirme") c.appendChild(h("div", "kd incnote", "Certitude de la nomenclature : " + x.certitude));
     if (x.resolution && x.resolution.length) {

@@ -15,6 +15,9 @@ import time
 OK, WARN, ERROR, STALE = 0, 1, 2, 3
 NIVEAU = {OK: "OK", WARN: "WARN", ERROR: "ERROR", STALE: "STALE"}
 
+# Gravite croissante d'un defaut, pour decider si une panne en amont en EXPLIQUE une en aval : WARN < STALE < ERROR.
+RANG = {OK: 0, WARN: 1, STALE: 2, ERROR: 3}
+
 # Tache publiee par incident_node lui-meme : jamais analysee.
 SELF_TASK = "incident_node: synthese"
 
@@ -111,8 +114,9 @@ class IncidentTracker:
         for i in bad:
             self._vu[i] = self._vu.get(i, 0) + 1
         confirmes = {i for i, n in self._vu.items() if n >= self.confirmations}
+        rang = {i: RANG[niveau_max(feuilles_, par_part.get(i, []))] for i in confirmes}
         incidents = {}
-        for racine, consequences, impact in self.g.incidents(confirmes):
+        for racine, consequences, impact in self.g.incidents(confirmes, rang):
             part = self.g.parts[racine]
             taches = sorted({t for i in [racine] + consequences for t in par_part.get(i, [])})
             prev = self._actifs.get(racine)
@@ -121,6 +125,8 @@ class IncidentTracker:
                 "niveau": NIVEAU[niveau_max(feuilles_, par_part.get(racine, []) or taches)],
                 "depuis": prev["depuis"] if prev else now, "taches": taches,
                 "consequences": consequences, "impact": impact, "certitude": part.get("certitude"),
+                "consequences_detail": [{"id": c, "label": self.g.parts[c].get("label", c), "niveau": NIVEAU[niveau_max(feuilles_, par_part.get(c, []))],
+                                         "taches": sorted(par_part.get(c, []))} for c in consequences],
                 "resolution": list(part.get("resolution") or []), "ref": part.get("ref"),
             }
         for racine, inc in self._actifs.items():                       # disparus : passent en « resolu »

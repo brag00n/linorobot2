@@ -232,3 +232,25 @@ def test_the_whole_chain_accepts_byte_levels(graph, idx):
     t = im.IncidentTracker(graph, confirmations=1)
     actifs, *_ = cycle(graph, idx, st, t)
     assert [a["racine"] for a in actifs] in (["laser"], ["cp2102_lidar"])
+
+
+def test_a_battery_warning_does_not_swallow_an_unplugged_lidar_and_a_switched_off_pad(graph, idx):
+    """Constate le 2026-11-19 : un simple avertissement de batterie devenait la « cause » du lidar debranche et de la manette eteinte."""
+    f = im.feuilles(arbre(**{"esp32_mavlink_driver: batterie": WARN, "scan_monitor: lidar": ERROR, "js0: peripherique": WARN}))
+    bad, par_part, _o, _i = im.parts_en_defaut(f, idx)
+    actifs, _ = im.IncidentTracker(graph, confirmations=1).update(bad, par_part, f)
+    racines = {a["racine"]: a for a in actifs}
+    assert "batterie" in racines, list(racines)
+    assert set(racines["batterie"]["consequences"]).isdisjoint({"cp2102_lidar", "laser"}), racines["batterie"]["consequences"]
+    assert any(r in racines for r in ("cp2102_lidar", "laser")), list(racines)          # le lidar a son propre incident
+
+
+def test_each_consequence_carries_its_own_label_level_and_tasks(graph, idx):
+    f = im.feuilles(arbre(**{"esp32_mavlink_driver: liaison serie": ERROR, "esp32_mavlink_driver: batterie": ERROR, "esp32_mavlink_driver: imu": ERROR}))
+    bad, par_part, _o, _i = im.parts_en_defaut(f, idx)
+    actifs, _ = im.IncidentTracker(graph, confirmations=1).update(bad, par_part, f)
+    assert any(a["consequences_detail"] for a in actifs), actifs
+    for a in actifs:
+        assert [c["id"] for c in a["consequences_detail"]] == a["consequences"]
+        for c in a["consequences_detail"]:
+            assert set(c) == {"id", "label", "niveau", "taches"} and c["niveau"] in ("WARN", "ERROR", "STALE") and c["label"]
