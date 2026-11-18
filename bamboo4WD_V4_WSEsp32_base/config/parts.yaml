@@ -299,7 +299,7 @@ parts:
     resolution:
       - "pile NAV arretee = lidar eteint (a la demande), pas une panne : le message est « arrete », pas « aucun scan recu »"
       - "« aucun scan recu » : verifier /dev/lidar (serie « 0001 ») et lsusb (deux 10c4:ea60 attendus), puis le cable USB"
-      - "apres un rebranchement le driver NE REPREND PAS SEUL (le noeud ldlidar est mort, restart: no) : restart driver.lidarD500 (incident INC-2026-11-18, docs/depannage_bambooWS.md)"
+      - "apres un rebranchement le driver NE REPREND PAS SEUL : le noeud ldlidar est mort alors que scan_monitor, lance par le meme launch, garde le conteneur en vie (un restart Docker ne se declencherait donc pas). Relancer : restart driver.lidarD500 (incident INC-2026-11-18 ; amelioration proposee : docs/depannage_bambooWS.md 5.1, respawn du noeud)"
       - "ensuite relocaliser (R long) : la localisation passe a « inconnue » quand le scan disparait"
 
   - id: cp2102_lidar

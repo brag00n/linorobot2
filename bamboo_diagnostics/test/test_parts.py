@@ -213,3 +213,21 @@ def test_the_lidar_resolution_says_the_driver_does_not_restart_by_itself(doc):
 def test_the_lidar_adapter_is_watched_by_the_scan_monitor(doc):
     by = {p["id"]: p for p in doc["parts"]}
     assert "scan_monitor: lidar" in by["cp2102_lidar"]["diag"] and "scan_monitor: lidar" in by["laser"]["diag"]
+
+
+def test_the_manual_proposes_improvements_and_marks_each_with_a_status():
+    """Le manuel porte une section « Améliorations proposées » ; chaque amélioration a un statut connu et un motif (un incident réel)."""
+    text = open(os.path.join(REPO, "docs", "depannage_bambooWS.md"), encoding="utf-8").read().replace("\r\n", "\n")
+    sect = text[text.index("## 5. Améliorations proposées"):text.index("## 6. Comment ajouter un incident")]
+    items = re.split(r"\n### ", sect)[1:]
+    assert len(items) >= 5
+    for it in items:
+        assert re.search(r"\*\*Statut\*\* \| (proposée|validée|faite|rejetée)", it), it.splitlines()[0]
+        assert "**Motif**" in it, it.splitlines()[0]
+
+
+def test_the_manual_does_not_claim_that_a_docker_restart_alone_fixes_the_lidar():
+    """Erreur evitee : `restart: on-failure` seul ne relance rien, scan_monitor garde le conteneur en vie. Le manuel doit le dire et proposer le respawn du noeud."""
+    text = open(os.path.join(REPO, "docs", "depannage_bambooWS.md"), encoding="utf-8").read().replace("\r\n", "\n")
+    assert "scan_monitor" in text and "respawn" in text
+    assert "ne suffirait pas" in text or "ne répare pas seule" in text
