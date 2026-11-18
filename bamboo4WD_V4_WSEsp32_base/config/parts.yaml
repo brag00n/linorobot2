@@ -22,6 +22,12 @@
 #   source      d'ou vient l'information (fichier, mesure, doc)
 #   diag        taches de diagnostic (nom tel que publie sur /diagnostics_agg) qui surveillent cette part
 #   criticite   1 = bloque le robot / sa securite ; 2 = degrade une fonction ; 3 = confort ou observabilite
+#   visuel      forme 3D de la part dans le panneau Incidents du CC (repere base_link, metres, x avant / y gauche / z haut). Facultatif : une part
+#               SANS visuel est rangee dans son parent a l'eclatement.
+#                 {urdf: <lien>}                                         forme lue dans l'URDF (/robot_description)
+#                 {forme: boite, pos: [x,y,z], taille: [l,L,h]}          bloc dessine a la main
+#                 {forme: cylindre, pos: [x,y,z], taille: [rayon,h], axe: x|y|z}
+#               `estime: true` (defaut pour un bloc dessine) : cotes NON mesurees, affichees comme telles. Les retirer apres mesure.
 #   resolution  pistes de depannage, DANS L'ORDRE (du plus simple au plus invasif), tirees de pannes reellement rencontrees quand c'est le cas
 #
 # ETAT DU ROBOT : la panne de l'attache moteur M1 (2026-09-23) est REPAREE depuis le 2026-10-03 (bamboo_base/bench/JOURNAL.md).
@@ -45,6 +51,7 @@ parts:
     type: physique
     label: "Chassis (caisse)"
     parent: robot
+    visuel: {urdf: base_link}
     ref: null
     certitude: a_renseigner
     source: "URDF : boite 0,245 x 0,230 x 0,080 m, masse 2,78 kg [estime]"
@@ -55,6 +62,7 @@ parts:
     type: physique
     label: "Pack batterie Li-ion 3S1P (UPS 3 x 18650)"
     parent: robot
+    visuel: {forme: boite, pos: [0.0, 0.0, -0.022], taille: [0.110, 0.062, 0.024], estime: true}
     ref: {type: "esp32_ups_3s1p", cellules: "3 x 18650", capacite_ideale_ah: 2.6, capacite_mesuree_ah: 0.88, resistance_ideale_ohm: 0.15}
     certitude: confirme
     source: "bamboo4WD_V4_WSEsp32.yaml (battery_type), docs 9.7, battery_energy_node (0,88 Ah mesure le 2026-10-22)"
@@ -69,6 +77,7 @@ parts:
     type: electronique
     label: "Capteur tension/courant INA219"
     parent: esp32_board
+    visuel: {forme: boite, pos: [0.060, -0.014, 0.014], taille: [0.020, 0.016, 0.004], estime: true}
     depends_on: [batterie]
     ref: {modele: "INA219"}
     certitude: confirme
@@ -81,6 +90,7 @@ parts:
     type: electronique
     label: "Carte de controle WaveShare General Driver"
     parent: robot
+    visuel: {forme: boite, pos: [0.045, 0.0, 0.004], taille: [0.085, 0.060, 0.012], estime: true}
     depends_on: [batterie]
     ref: {fabricant: "Waveshare", modele: "General Driver for Robots", revision: "Rev1.2", mcu: "ESP32-WROOM-32", alimentation: "XH2.54 7-13 V"}
     certitude: confirme
@@ -96,6 +106,7 @@ parts:
     type: electronique
     label: "Double pont en H TB6612FNG (2 canaux, 4 moteurs)"
     parent: esp32_board
+    visuel: {forme: boite, pos: [0.030, 0.014, 0.014], taille: [0.020, 0.016, 0.004], estime: true}
     depends_on: [batterie]
     ref: {modele: "TB6612FNG"}
     certitude: confirme
@@ -106,6 +117,7 @@ parts:
     type: electronique
     label: "IMU QMI8658C (6 axes)"
     parent: esp32_board
+    visuel: {urdf: imu_link}
     depends_on: [esp32_board]
     ref: {modele: "QMI8658C"}
     certitude: confirme
@@ -120,6 +132,7 @@ parts:
     type: electronique
     label: "Compas AK09918C (3 axes)"
     parent: esp32_board
+    visuel: {forme: boite, pos: [0.030, -0.014, 0.014], taille: [0.012, 0.012, 0.003], estime: true}
     depends_on: [esp32_board]
     ref: {modele: "AK09918C"}
     certitude: confirme
@@ -130,6 +143,7 @@ parts:
     type: electronique
     label: "Ecran OLED de la carte (ligne « Ready <MODE> »)"
     parent: esp32_board
+    visuel: {forme: boite, pos: [0.070, 0.0, 0.014], taille: [0.026, 0.014, 0.004], estime: true}
     depends_on: [esp32_board]
     ref: null
     certitude: a_renseigner
@@ -141,6 +155,7 @@ parts:
     type: physique
     label: "Moteur avant gauche (M1) AVEC encodeur"
     parent: robot
+    visuel: {forme: cylindre, pos: [0.0855, 0.040, -0.041], taille: [0.012, 0.050], axe: y, estime: true}
     depends_on: [tb6612fng, batterie]
     ref: {famille: "N20 a reducteur", tension_nominale_v: 6.0, vitesse_max_tr_min: 250}
     certitude: deduit
@@ -154,6 +169,7 @@ parts:
     type: physique
     label: "Moteur avant droit (M2)"
     parent: robot
+    visuel: {forme: cylindre, pos: [0.0855, -0.040, -0.041], taille: [0.012, 0.050], axe: y, estime: true}
     depends_on: [tb6612fng, batterie]
     ref: {famille: "N20 a reducteur"}
     certitude: deduit
@@ -164,6 +180,7 @@ parts:
     type: physique
     label: "Moteur arriere gauche (M3) SANS encodeur"
     parent: robot
+    visuel: {forme: cylindre, pos: [-0.0855, 0.040, -0.041], taille: [0.012, 0.050], axe: y, estime: true}
     depends_on: [tb6612fng, batterie]
     ref: {famille: "N20 a reducteur"}
     certitude: deduit
@@ -174,6 +191,7 @@ parts:
     type: physique
     label: "Moteur arriere droit (M4) SANS encodeur"
     parent: robot
+    visuel: {forme: cylindre, pos: [-0.0855, -0.040, -0.041], taille: [0.012, 0.050], axe: y, estime: true}
     depends_on: [tb6612fng, batterie]
     ref: {famille: "N20 a reducteur"}
     certitude: deduit
@@ -184,6 +202,7 @@ parts:
     type: physique
     label: "Roue avant gauche"
     parent: robot
+    visuel: {urdf: front_left_wheel_link}
     depends_on: [motor_fl]
     ref: {diametre_m: 0.08, largeur_m: 0.0425}
     certitude: confirme
@@ -194,6 +213,7 @@ parts:
     type: physique
     label: "Roue avant droite"
     parent: robot
+    visuel: {urdf: front_right_wheel_link}
     depends_on: [motor_fr]
     ref: {diametre_m: 0.08, largeur_m: 0.0425}
     certitude: confirme
@@ -204,6 +224,7 @@ parts:
     type: physique
     label: "Roue arriere gauche"
     parent: robot
+    visuel: {urdf: rear_left_wheel_link}
     depends_on: [motor_rl]
     ref: {diametre_m: 0.08, largeur_m: 0.0425}
     certitude: confirme
@@ -214,6 +235,7 @@ parts:
     type: physique
     label: "Roue arriere droite"
     parent: robot
+    visuel: {urdf: rear_right_wheel_link}
     depends_on: [motor_rr]
     ref: {diametre_m: 0.08, largeur_m: 0.0425}
     certitude: confirme
@@ -224,6 +246,7 @@ parts:
     type: electronique
     label: "Encodeur gauche (voie 0, 2100 tics/tour de roue)"
     parent: motor_fl
+    visuel: {forme: boite, pos: [0.0855, 0.012, -0.041], taille: [0.016, 0.012, 0.016], estime: true}
     depends_on: [esp32_board]
     ref: {cpr: 2100}
     certitude: confirme
@@ -235,6 +258,7 @@ parts:
     type: electronique
     label: "Encodeur droit (voie 1, 2100 tics/tour de roue)"
     parent: motor_fr
+    visuel: {forme: boite, pos: [0.0855, -0.012, -0.041], taille: [0.016, 0.012, 0.016], estime: true}
     depends_on: [esp32_board]
     ref: {cpr: 2100}
     certitude: confirme
@@ -247,6 +271,7 @@ parts:
     type: systeme
     label: "Raspberry Pi 4 Model B Rev 1.5 (8 Go) sous DietPi"
     parent: robot
+    visuel: {forme: boite, pos: [-0.040, 0.0, 0.026], taille: [0.085, 0.056, 0.018], estime: true}
     depends_on: [batterie]
     ref: {fabricant: "Raspberry Pi", modele: "4 Model B Rev 1.5", ram_go: 8}
     certitude: confirme
@@ -261,6 +286,7 @@ parts:
     type: electronique
     label: "Hub USB interne du RPi (webcam + 2 CP2102)"
     parent: rpi
+    visuel: {forme: boite, pos: [-0.040, 0.0, 0.040], taille: [0.040, 0.030, 0.010], estime: true}
     depends_on: [rpi]
     ref: null
     certitude: a_renseigner
@@ -274,6 +300,7 @@ parts:
     type: electronique
     label: "Pont USB-serie CP2102N de la carte ESP32 (/dev/esp32)"
     parent: esp32_board
+    visuel: {forme: boite, pos: [0.016, 0.0, 0.014], taille: [0.020, 0.012, 0.004], estime: true}
     depends_on: [hub_usb]
     ref: {modele: "CP2102N", vid_pid: "10c4:ea60", serie: "d6607067ef3fed11996190b80a86e0b4"}
     certitude: confirme
@@ -290,6 +317,7 @@ parts:
     type: physique
     label: "Lidar LDROBOT STL-19P (LD19, Waveshare D500)"
     parent: robot
+    visuel: {urdf: laser}
     depends_on: [cp2102_lidar]
     ref: {fabricant: "LDROBOT", modele: "STL-19P (famille LD19)", vendeur: "Waveshare D500", baud: 230400, portee_m: 12.0}
     certitude: confirme
@@ -306,6 +334,7 @@ parts:
     type: electronique
     label: "Adaptateur USB-serie CP2102 du lidar (/dev/lidar)"
     parent: laser
+    visuel: {forme: boite, pos: [0.040, 0.0, 0.045], taille: [0.020, 0.012, 0.005], estime: true}
     depends_on: [hub_usb]
     ref: {modele: "CP2102", vid_pid: "10c4:ea60", serie: "0001"}
     certitude: confirme
@@ -320,6 +349,7 @@ parts:
     type: physique
     label: "Webcam USB ARC International HD Web Camera (05a3:9331)"
     parent: robot
+    visuel: {urdf: camera_link}
     depends_on: [hub_usb]
     ref: {fabricant: "ARC International", modele: "HD Web Camera", vid_pid: "05a3:9331", serie_usb: "Ucamera001", resolution: "640x480", cadence_mjpg_fps: 30}
     certitude: confirme
@@ -349,6 +379,7 @@ parts:
     type: electronique
     label: "Adaptateur Bluetooth du RPi (hci0)"
     parent: rpi
+    visuel: {forme: boite, pos: [-0.075, 0.020, 0.040], taille: [0.016, 0.008, 0.006], estime: true}
     depends_on: [rpi]
     ref: null
     certitude: a_renseigner

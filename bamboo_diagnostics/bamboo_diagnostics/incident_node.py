@@ -3,6 +3,7 @@
 Trois topics, trois roles, jamais de doublon :
   /diagnostics        les FAITS (standard ROS). Ce noeud n'y ajoute qu'UNE tache, `incident_node: synthese`, pour que Foxglove ou n'importe quel outil ROS voie aussi l'interpretation.
   /diagnostics_agg    les memes faits, ranges en arbre. C'est l'ENTREE de ce noeud.
+  /bamboo/parts       la NOMENCLATURE (arbre des parts, formes 3D) pour le CC : statique, latche, republiee quand le fichier change.
   /bamboo/incidents   l'INTERPRETATION : racines, consequences, impact, pistes de resolution (JSON dans un std_msgs/String, latche, publie seulement quand le contenu change).
 
 Aucun service appele, aucune ecriture hors de ces deux sorties. Le calcul vit dans incident_model.py (Python pur, teste hors ROS).
@@ -45,11 +46,35 @@ class IncidentNode(Node):
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self._pubInc = self.create_publisher(String, "/bamboo/incidents", latched)
         self._pubDiag = self.create_publisher(DiagnosticArray, "/diagnostics", 10)
+        self._pubParts = self.create_publisher(String, "/bamboo/parts", latched)
+        self._partsPath = parts_path
+        self._partsMtime = None
+        self._publishParts()
+        self.create_timer(10.0, self._publishParts)             # relecture : un parts.yaml corrige est pris sans redemarrer
         self.create_subscription(DiagnosticArray, "/diagnostics_agg", self._onAgg, 10)
         self._synth = (im.OK, "en attente du premier arbre", [])
         self.create_timer(1.0, self._publishSynthese)
         self.get_logger().info("incident_node pret : %d parts, %d taches rattachees, confirmation sur %d releves"
                                % (len(self._doc["parts"]), len(self._idx), self._tracker.confirmations))
+
+    def _publishParts(self):
+        """Publie l'arbre de la nomenclature, seulement quand le fichier a change (latche : un CC qui arrive plus tard le recoit)."""
+        try:
+            mt = os.path.getmtime(self._partsPath)
+            if mt == self._partsMtime:
+                return
+            doc = pm.load(self._partsPath)
+            errs = pm.validate(doc)
+            if errs:
+                self.get_logger().error("parts.yaml invalide, arbre non republie : " + "; ".join(errs[:3]))
+                self._partsMtime = mt
+                return
+            m = String()
+            m.data = json.dumps(pm.arbre(doc), ensure_ascii=False, separators=(",", ":"))
+            self._pubParts.publish(m)
+            self._partsMtime = mt
+        except Exception as e:                                      # lecture seule : une erreur ici ne doit pas arreter l'analyse d'incident
+            self.get_logger().error("publication de /bamboo/parts : %s" % e)
 
     def _hostTracking(self):
         """(etat, anciennete s) du groupe `tracking` cote hote, comme le fait le teleop. (None, None) si illisible."""

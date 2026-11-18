@@ -231,3 +231,66 @@ def test_the_manual_does_not_claim_that_a_docker_restart_alone_fixes_the_lidar()
     text = open(os.path.join(REPO, "docs", "depannage_bambooWS.md"), encoding="utf-8").read().replace("\r\n", "\n")
     assert "scan_monitor" in text and "respawn" in text
     assert "ne suffirait pas" in text or "ne répare pas seule" in text
+
+
+# ------------------------------------------------------------------ visuel : forme 3D des parts (panneau Incidents du CC)
+
+def _with_visuel(doc, pid, visuel):
+    d = copy.deepcopy(doc)
+    for p in d["parts"]:
+        if p["id"] == pid:
+            p["visuel"] = visuel
+    return d
+
+
+def test_the_real_nomenclature_has_valid_visuals_and_every_urdf_one_exists(doc):
+    assert pm.validate(doc, urdf_names=_urdf_names()) == []
+    assert sum(1 for p in doc["parts"] if p.get("visuel")) >= 20
+
+
+def test_an_urdf_visual_must_name_a_real_link(doc):
+    errs = pm.validate(_with_visuel(doc, "laser", {"urdf": "lidar_fantome"}), urdf_names=_urdf_names())
+    assert any("lien URDF" in e and "lidar_fantome" in e for e in errs)
+
+
+@pytest.mark.parametrize("v,frag", [
+    ({"forme": "sphere", "pos": [0, 0, 0], "taille": [1]}, "forme"),
+    ({"forme": "boite", "pos": [0, 0], "taille": [1, 1, 1]}, "pos"),
+    ({"forme": "boite", "pos": [0, 0, 0], "taille": [1, 1]}, "taille"),
+    ({"forme": "boite", "pos": [0, 0, 0], "taille": [1, 0, 1]}, "taille"),
+    ({"forme": "cylindre", "pos": [0, 0, 0], "taille": [0.01, 0.05], "axe": "w"}, "axe"),
+    ({"forme": "boite", "pos": [0, 0, 0], "taille": [1, 1, 1], "couleur": "rouge"}, "cle inconnue"),
+    ({"urdf": "laser", "pos": [0, 0, 0]}, "ne se combine pas"),
+    ("boite", "dictionnaire"),
+])
+def test_a_malformed_visual_is_reported(doc, v, frag):
+    assert any(frag in e for e in pm.validate(_with_visuel(doc, "oled", v)))
+
+
+def test_the_tree_for_the_cc_carries_hierarchy_shapes_and_the_estimated_flag(doc):
+    t = pm.arbre(doc)
+    assert t["version"] == 1 and t["n"] == len(doc["parts"]) == len(t["parts"])
+    par = {p["id"]: p for p in t["parts"]}
+    assert par["robot"]["parent"] is None and par["esp32_board"]["parent"] == "robot"
+    assert par["laser"]["visuel"] == {"urdf": "laser"}
+    assert par["batterie"]["visuel"]["estime"] is True            # bloc dessine a la main : cotes jamais mesurees
+    assert "resolution" not in par["laser"] and "source" not in par["laser"]     # l'arbre ne porte que ce que la page dessine
+
+
+def test_a_hand_drawn_block_can_declare_itself_measured(doc):
+    d = _with_visuel(doc, "oled", {"forme": "boite", "pos": [0, 0, 0], "taille": [1, 1, 1], "estime": False})
+    assert next(p for p in pm.arbre(d)["parts"] if p["id"] == "oled")["visuel"]["estime"] is False
+
+
+def test_the_tree_is_json_serialisable_and_small(doc):
+    import json
+    assert len(json.dumps(pm.arbre(doc))) < 20000          # un message latche : reste leger pour rosbridge
+
+
+def test_every_visual_sits_inside_or_near_the_chassis(doc):
+    """Garde-fou d'ordre de grandeur : un bloc dessine a la main a 2 m du robot est une faute de frappe (metres vs millimetres)."""
+    for p in doc["parts"]:
+        v = p.get("visuel") or {}
+        if "pos" in v:
+            assert all(abs(c) < 0.3 for c in v["pos"]), (p["id"], v["pos"])
+            assert all(0 < t < 0.3 for t in v["taille"]), (p["id"], v["taille"])

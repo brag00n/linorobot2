@@ -15,6 +15,8 @@ from collections import defaultdict
 TYPES = ("physique", "electronique", "logiciel", "infrastructure", "systeme")
 CERTITUDES = ("confirme", "deduit", "a_renseigner")
 ID_RE = re.compile(r"^[a-z0-9_]+$")
+FORMES = ("boite", "cylindre")
+VISUEL_CLES = {"urdf", "forme", "pos", "taille", "axe", "estime"}
 
 
 class PartsError(ValueError):
@@ -76,6 +78,7 @@ def validate(doc, urdf_names=None, diag_names=None):
             errs.append("%s : physique confirme sans reference" % i)
         if urdf_names is not None and p.get("type") == "physique" and re.search(r"(_link|_joint)$|^laser$", str(i)) and i not in urdf_names:
             errs.append("%s : nom de lien/joint absent de l'URDF" % i)
+        errs += _visuel(p, urdf_names)
         if diag_names is not None:
             for t in p.get("diag") or []:
                 if t not in diag_names:
@@ -83,6 +86,60 @@ def validate(doc, urdf_names=None, diag_names=None):
     errs += _cycles(parts, "parent")
     errs += _cycles(parts, "depends_on")
     return errs
+
+
+def _visuel(p, urdf_names):
+    """Controle la cle facultative `visuel:` (forme 3D de la part dans le CC). Repere base_link, metres, x avant / y gauche / z haut.
+       visuel: {urdf: <lien>}                                             forme reprise de l'URDF (la page la lit dans /robot_description)
+       visuel: {forme: boite,    pos: [x,y,z], taille: [l,L,h], estime: true}
+       visuel: {forme: cylindre, pos: [x,y,z], taille: [rayon,h], axe: x|y|z, estime: true}
+       Une part SANS visuel n'a pas de place connue : la page la range dans son parent a l'eclatement."""
+    v = p.get("visuel")
+    if v is None:
+        return []
+    i, errs = p.get("id"), []
+    if not isinstance(v, dict):
+        return ["%s : visuel doit etre un dictionnaire" % i]
+    for k in v:
+        if k not in VISUEL_CLES:
+            errs.append("%s : visuel : cle inconnue %r" % (i, k))
+    if "urdf" in v:
+        if len(v) > 1 and set(v) - {"urdf", "estime"}:
+            errs.append("%s : visuel : `urdf` ne se combine pas avec forme/pos/taille" % i)
+        if urdf_names is not None and v["urdf"] not in urdf_names:
+            errs.append("%s : visuel : lien URDF %r absent de l'URDF" % (i, v["urdf"]))
+        return errs
+    if v.get("forme") not in FORMES:
+        errs.append("%s : visuel : forme %r inconnue (attendu : %s)" % (i, v.get("forme"), ", ".join(FORMES)))
+        return errs
+    nums = lambda x, n: isinstance(x, (list, tuple)) and len(x) == n and all(isinstance(t, (int, float)) and not isinstance(t, bool) for t in x)
+    if not nums(v.get("pos"), 3):
+        errs.append("%s : visuel : pos doit etre [x, y, z] en metres" % i)
+    n = 3 if v["forme"] == "boite" else 2
+    if not nums(v.get("taille"), n) or any(t <= 0 for t in v.get("taille") or []):
+        errs.append("%s : visuel : taille doit etre %d nombres > 0 (%s)" % (i, n, "[l, L, h]" if n == 3 else "[rayon, hauteur]"))
+    if v["forme"] == "cylindre" and v.get("axe", "z") not in ("x", "y", "z"):
+        errs.append("%s : visuel : axe %r invalide (x, y ou z)" % (i, v.get("axe")))
+    if "estime" in v and not isinstance(v["estime"], bool):
+        errs.append("%s : visuel : estime doit etre vrai ou faux" % i)
+    return errs
+
+
+def arbre(doc):
+    """La charge de /bamboo/parts : l'arbre de la nomenclature pour le CC (JSON, version 1). Aucun champ interne (source, resolution) : la page
+       n'a besoin que de la hierarchie, des libelles, de la forme et de la dependance. `estime` vaut vrai par defaut pour une forme dessinee a la main."""
+    out = []
+    for p in doc["parts"]:
+        e = {"id": p["id"], "label": p["label"], "type": p["type"], "parent": p.get("parent"), "criticite": p["criticite"],
+             "certitude": p["certitude"], "depends_on": list(p.get("depends_on") or [])}
+        v = p.get("visuel")
+        if v:
+            v = dict(v)
+            if "urdf" not in v:
+                v.setdefault("estime", True)
+            e["visuel"] = v
+        out.append(e)
+    return {"version": 1, "robot": doc.get("robot"), "urdf": doc.get("urdf"), "n": len(out), "parts": out}
 
 
 def _cycles(parts, key):
