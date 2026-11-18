@@ -935,6 +935,7 @@ var KEYS = [
     [["1", "2", "3", "4"], "Changer de mode : Mission, Vitaux, Config, Calib."],
     ["J", "Ouvrir / fermer le journal du robot."],
     ["I", "Ouvrir / fermer les incidents : cause racine, conséquences, pistes de résolution."],
+    ["Retour arrière", "Dans les incidents : remonter d'un niveau de la vue 3D (aussi : clic dans le vide)."],
     ["H", "Ouvrir / fermer cette liste des touches."],
     ["S", "Afficher / masquer la source de chaque donnée (topic ROS)."],
     ["M", "Mode Mission : échange la carte de navigation et la vidéo de la scène centrale."]]],
@@ -982,6 +983,7 @@ $("#dlg").addEventListener("close", function () { if (!this.open) { JL = null; S
 var INC = null, INCT = 0, INCFILL = null, INC_STALE_MS = 90000, PARTS = null, URDF_XML = "", R3D = null;
 /* Vue 3D : la nomenclature (/bamboo/parts) et l'URDF reel (/robot_description) arrivent par deux topics latches ; la scene se construit des que la nomenclature est la
    (sans URDF, seuls les blocs dessines a la main apparaissent). */
+function shortPart(s) { s = String(s || "").replace(/\s*[(«].*$/, ""); return s.length > 26 ? s.slice(0, 25) + "…" : s; }
 function r3dFeed() { if (R3D && PARTS) R3D.setModel(PARTS, URDF_XML); }
 function incLv(x) { return x.niveau === "ERROR" || x.niveau === "STALE" || x.niveau >= 2 ? 2 : 1; }
 function incFresh() { return INC && performance.now() - INCT < INC_STALE_MS; }
@@ -1003,6 +1005,7 @@ function incRender(wrap) {
   wrap.appendChild(h("div", "incsum", old ? "Données anciennes : le nœud d'analyse ne publie plus." : (INC.n_incidents ? INC.n_incidents + " incident(s) actif(s) sur " + INC.n_taches_analysees + " tâches analysées" : "Aucun incident : " + INC.n_taches_analysees + " tâches analysées, tout est cohérent.")));
   (INC.incidents || []).forEach(function (x) {
     var c = h("div", "inc"); c.dataset.lv = incLv(x);
+    c.classList.add("incgo"); c.title = "Cliquer : montrer cette pièce dans la vue 3D"; c.onclick = function (ev) { if (ev.target.closest && ev.target.closest("button")) return; if (R3D) R3D.reveal(x.racine); };
     c.appendChild(h("div", "inch", x.label + " — " + (x.type || "") + " · criticité " + x.criticite + (x.depuis_s != null ? " · depuis " + Math.round(x.depuis_s) + " s" : "")));
     if (x.taches && x.taches.length) c.appendChild(h("div", "kd", "Tâches en défaut : " + x.taches.join(" · ")));
     if (x.consequences && x.consequences.length) c.appendChild(h("div", "kd", "Conséquences : " + x.consequences.join(", ")));
@@ -1015,7 +1018,7 @@ function incRender(wrap) {
         ol.appendChild(li); });
       c.appendChild(ol);
     }
-    if (x.ref) c.appendChild(h("div", "kd incnote", "Référence : " + x.ref));
+    if (x.ref) c.appendChild(h("div", "kd incnote", "Référence : " + (typeof x.ref === "object" ? Object.keys(x.ref).map(function (k) { return k + " : " + x.ref[k]; }).join(" · ") : x.ref)));
     wrap.appendChild(c);
   });
   if ((INC.resolus_recents || []).length) { wrap.appendChild(h("div", "kg", "Résolus récemment")); INC.resolus_recents.forEach(function (x) { wrap.appendChild(h("div", "kd", x.label + " — résolu il y a " + Math.round(x.resolu_il_y_a_s || 0) + " s")); }); }
@@ -1026,9 +1029,18 @@ function openIncidents() {
   SLIDE = "incidents";
   var wrap = h("div", "kbd"); INCFILL = function () { incRender(wrap); }; INCFILL();
   if (R3D) { R3D.destroy(); R3D = null; }
-  var box = h("div", "r3d"), cv = h("canvas", "r3dc"); cv.setAttribute("role", "img"); cv.setAttribute("aria-label", "Vue 3D filaire du robot, parts en incident colorées"); box.appendChild(cv);
+  var box = h("div", "r3d"), cv = h("canvas", "r3dc"), crumb = h("div", "r3dbar"); cv.setAttribute("role", "img"); cv.setAttribute("aria-label", "Vue 3D filaire du robot, parts en incident colorées. Clic sur une pièce : zoom sur ses sous-composants.");
+  box.appendChild(cv); box.appendChild(crumb);
+  var crumbFill = function (path, model) {
+    crumb.replaceChildren(); if (!path || !model) return;
+    path.forEach(function (id, i) {
+      var last = i === path.length - 1, b = h("button", "r3dc1" + (last ? " cur" : ""), shortPart((model.byId[id] || {}).label || id)); b.type = "button"; b.title = id;
+      if (!last) b.onclick = function () { R3D.goPath(i); }; else b.disabled = true; crumb.appendChild(b); if (!last) crumb.appendChild(h("span", "r3dsep", "›"));
+    });
+    if (path.length > 1) { var back = h("button", "r3dback", "← Retour"); back.type = "button"; back.title = "Remonter d'un niveau (Retour arrière, ou clic dans le vide)"; back.onclick = function () { R3D.back(); }; crumb.appendChild(back); }
+  };
   dlgShow({ tag: "Maintenance // incidents", title: "Incidents du robot", slide: true, body: [box, wrap, h("div", "srcnote", "/bamboo/incidents (incident_node, lecture seule) · nomenclature parts.yaml")], foot: [dbtn("Fermer", "pri", dlgClose)] });
-  R3D = Robot3D.create(cv, { lvFn: incLv }); R3D.setIncidents(INC); r3dFeed();
+  R3D = Robot3D.create(cv, { lvFn: incLv, onChange: crumbFill }); R3D.setIncidents(INC); r3dFeed();
 }
 
 var mdiv = $("#modes"); MODES.forEach(function (m) { var b = h("button", "mode"); b.type = "button"; b.dataset.mode = m[0]; b.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + ICON[m[0]] + '</svg><b>' + m[1] + '</b><small>' + m[2] + '</small>'; b.onclick = function () { setMode(m[0]); }; mdiv.appendChild(b); });
@@ -1203,7 +1215,7 @@ $("#kbtn").onclick = function () { toggleSlide("keys", openKeys); };
 $("#ibtn").onclick = function () { toggleSlide("incidents", openIncidents); };
 document.addEventListener("keydown", function (e) {
   if (e.ctrlKey || e.metaKey || e.altKey || document.querySelector("dialog[open]:not(.slide)")) return; if (e.target.closest && e.target.closest("input,textarea")) return;
-  var k = e.key.toLowerCase(); if (k >= "1" && k <= "4") setMode(MODES[+k - 1][0]); else if (k === "s") toggleSrc(!document.body.classList.contains("srcs")); else if (k === "j") toggleSlide("journal", openJournal); else if (k === "h") toggleSlide("keys", openKeys); else if (k === "i") toggleSlide("incidents", openIncidents); else if (k === "m" && S.mode === "mission") toggleMapStage();
+  var k = e.key.toLowerCase(); if (k >= "1" && k <= "4") setMode(MODES[+k - 1][0]); else if (k === "s") toggleSrc(!document.body.classList.contains("srcs")); else if (k === "j") toggleSlide("journal", openJournal); else if (k === "h") toggleSlide("keys", openKeys); else if (k === "i") toggleSlide("incidents", openIncidents); else if (e.key === "Backspace" && SLIDE === "incidents" && R3D && R3D.back()) e.preventDefault(); else if (k === "m" && S.mode === "mission") toggleMapStage();
 });
 
 /* pastilles de santé du pied de page : uniquement ce qui n'est pas vert, comme la carte santé du HUD */

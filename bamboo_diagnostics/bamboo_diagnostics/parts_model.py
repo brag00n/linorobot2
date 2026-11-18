@@ -16,7 +16,7 @@ TYPES = ("physique", "electronique", "logiciel", "infrastructure", "systeme")
 CERTITUDES = ("confirme", "deduit", "a_renseigner")
 ID_RE = re.compile(r"^[a-z0-9_]+$")
 FORMES = ("boite", "cylindre")
-VISUEL_CLES = {"urdf", "forme", "pos", "taille", "axe", "estime"}
+VISUEL_CLES = {"urdf", "forme", "pos", "taille", "axe", "estime", "via"}
 
 
 class PartsError(ValueError):
@@ -78,7 +78,7 @@ def validate(doc, urdf_names=None, diag_names=None):
             errs.append("%s : physique confirme sans reference" % i)
         if urdf_names is not None and p.get("type") == "physique" and re.search(r"(_link|_joint)$|^laser$", str(i)) and i not in urdf_names:
             errs.append("%s : nom de lien/joint absent de l'URDF" % i)
-        errs += _visuel(p, urdf_names)
+        errs += _visuel(p, urdf_names, idset)
         if diag_names is not None:
             for t in p.get("diag") or []:
                 if t not in diag_names:
@@ -88,11 +88,12 @@ def validate(doc, urdf_names=None, diag_names=None):
     return errs
 
 
-def _visuel(p, urdf_names):
+def _visuel(p, urdf_names, idset=None):
     """Controle la cle facultative `visuel:` (forme 3D de la part dans le CC). Repere base_link, metres, x avant / y gauche / z haut.
        visuel: {urdf: <lien>}                                             forme reprise de l'URDF (la page la lit dans /robot_description)
        visuel: {forme: boite,    pos: [x,y,z], taille: [l,L,h], estime: true}
        visuel: {forme: cylindre, pos: [x,y,z], taille: [rayon,h], axe: x|y|z, estime: true}
+       visuel: {via: <part>}                                              pas de forme propre : son etat s'affiche SUR la part indiquee (la manette sur l'adaptateur Bluetooth)
        Une part SANS visuel n'a pas de place connue : la page la range dans son parent a l'eclatement."""
     v = p.get("visuel")
     if v is None:
@@ -103,6 +104,14 @@ def _visuel(p, urdf_names):
     for k in v:
         if k not in VISUEL_CLES:
             errs.append("%s : visuel : cle inconnue %r" % (i, k))
+    if "via" in v:
+        if set(v) - {"via"}:
+            errs.append("%s : visuel : `via` ne se combine avec rien d'autre" % i)
+        if v["via"] == i:
+            errs.append("%s : visuel : via : une part ne peut pas s'afficher sur elle-meme" % i)
+        elif idset is not None and v["via"] not in idset:
+            errs.append("%s : visuel : via : part inconnue %r" % (i, v["via"]))
+        return errs
     if "urdf" in v:
         if len(v) > 1 and set(v) - {"urdf", "estime"}:
             errs.append("%s : visuel : `urdf` ne se combine pas avec forme/pos/taille" % i)
@@ -135,7 +144,7 @@ def arbre(doc):
         v = p.get("visuel")
         if v:
             v = dict(v)
-            if "urdf" not in v:
+            if "urdf" not in v and "via" not in v:
                 v.setdefault("estime", True)
             e["visuel"] = v
         out.append(e)

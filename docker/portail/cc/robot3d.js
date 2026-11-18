@@ -11,7 +11,8 @@
    Couleurs d'incident : racine = couleur pleine ; consequence = plus pale ; impact = trait fin. L'incident d'un SOUS-COMPOSANT remonte a son bloc visible
    (la carte ESP32 s'allume si le TB6612 est en defaut) ; l'impact (ce qui tombe avec la panne) ne remonte pas : un logiciel ne colore pas le RPi.
 
-   Etape 2 (ce fichier) : scene statique. Les fonctions pures (algebre, formes, etats) sont exportees dans Robot3D._t pour un test hors navigateur. */
+   Etape 3 : animation (oscillation lente, scan lumineux, pulsation des incidents), saisie a la souris, survol, clic = zoom + eclatement en sous-composants,
+   clic dans le vide = retour. Les fonctions pures (algebre, formes, etats) sont exportees dans Robot3D._t pour un test hors navigateur. */
 (function (root) {
   "use strict";
 
@@ -122,8 +123,11 @@
   var RANK = { root: 6, cons: 4, impact: 2 };
   function rankOf(role, lv) { return RANK[role] - (lv === 2 ? 0 : 1); }
   /* direct : {id: {role, lv}} ; une part touchee par plusieurs incidents garde le pire (racine > consequence > impact). */
-  function directStates(inc, lvFn) {
-    var d = {}, put = function (id, role, lv) { if (!d[id] || rankOf(role, lv) > rankOf(d[id].role, d[id].lv)) d[id] = { role: role, lv: lv }; };
+  function directStates(inc, lvFn, via) {
+    var d = {}, put = function (id, role, lv) {
+      if (!d[id] || rankOf(role, lv) > rankOf(d[id].role, d[id].lv)) d[id] = { role: role, lv: lv };
+      if (via && via[id] && via[id] !== id && (!d[via[id]] || rankOf(role, lv) > rankOf(d[via[id]].role, d[via[id]].lv))) d[via[id]] = { role: role, lv: lv };     // pas de forme propre : l'etat s'affiche sur la part `via`
+    };
     ((inc && inc.incidents) || []).forEach(function (x) {
       var lv = lvFn(x);
       (x.impact || []).forEach(function (i) { put(i, "impact", lv); });
@@ -146,14 +150,29 @@
   /* ---------------------------------------------------------------- modele : arbre + formes */
   function buildModel(partsDoc, urdfXml) {
     if (!partsDoc || !partsDoc.parts) return null;
-    var urdf = urdfXml ? parseUrdf(urdfXml) : null, byId = {}, kids = {}, shapes = {}, missing = [], rootId = null;
+    var urdf = urdfXml ? parseUrdf(urdfXml) : null, byId = {}, kids = {}, shapes = {}, missing = [], rootId = null, via = {};
     partsDoc.parts.forEach(function (p) { byId[p.id] = p; (kids[p.parent || ""] = kids[p.parent || ""] || []).push(p.id); if (!p.parent) rootId = p.id; });
     partsDoc.parts.forEach(function (p) {
       var v = p.visuel; if (!v) return;
+      if (v.via) { if (partsDoc.parts.some(function (q) { return q.id === v.via; })) via[p.id] = v.via; return; }          // pas de forme : affichee sur la part `via`
       var sh = v.urdf ? (urdf && urdf[v.urdf]) : shapeFromVisuel(v);
       if (sh) shapes[p.id] = sh; else missing.push(p.id);
     });
-    return { byId: byId, kids: kids, shapes: shapes, missing: missing, root: rootId, hasUrdf: !!urdf };
+    /* Parts LOGICIELLES et d'infrastructure sans forme : modules schematiques poses en rangee au-dessus de leur parent s'il a une boite (le RPi), pour que
+       l'eclatement du RPi montre les services. Position purement conventionnelle : marquee `virtuel`, jamais confondue avec une cote. */
+    var virtual = {};
+    Object.keys(kids).forEach(function (pid) {
+      var par = shapes[pid]; if (!par || par.kind !== "box") return;
+      var sw = (kids[pid] || []).filter(function (id) { var t = byId[id].type; return !shapes[id] && (t === "logiciel" || t === "infrastructure"); });
+      var cols = Math.min(5, Math.max(1, sw.length)), step = 0.016;
+      sw.forEach(function (id, n) {
+        var cx = n % cols, cy = Math.floor(n / cols), nr = Math.ceil(sw.length / cols);
+        shapes[id] = { kind: "box", size: [0.012, 0.012, 0.005], R: I3,
+          t: [par.t[0] + (cx - (cols - 1) / 2) * step, par.t[1] + (cy - (nr - 1) / 2) * step, par.t[2] + par.size[2] / 2 + 0.012], estime: true, virtuel: true };
+        virtual[id] = true;
+      });
+    });
+    return { byId: byId, kids: kids, shapes: shapes, missing: missing, root: rootId, hasUrdf: !!urdf, virtual: virtual, edges: {}, via: via };
   }
   function parentOf(model, id) { var p = model.byId[id]; return p && p.parent; }
   /* l'ancetre (ou la part elle-meme) qui est un ENFANT DIRECT de `focus` : le bloc de ce niveau qui contient `id`. null si `id` n'est pas sous `focus`. */
@@ -164,132 +183,307 @@
   }
 
   /* ---------------------------------------------------------------- rendu */
-  var CYAN = [86, 200, 222], AMBER = [231, 162, 74], ALERT = [229, 96, 74], CREAM = [241, 232, 180];
-  var rgba = function (c, a) { return "rgba(" + c[0] + "," + c[1] + "," + c[2] + "," + Math.max(0, Math.min(1, a)) + ")"; };
+  var CYAN = [86, 200, 222], AMBER = [231, 162, 74], ALERT = [229, 96, 74], CREAM = [241, 232, 180], WHITE = [236, 250, 255];
+  var rgba = function (c, a) { return "rgba(" + Math.round(c[0]) + "," + Math.round(c[1]) + "," + Math.round(c[2]) + "," + Math.max(0, Math.min(1, a)) + ")"; };
+  var lighten = function (c, a) { return [c[0] + (WHITE[0] - c[0]) * a, c[1] + (WHITE[1] - c[1]) * a, c[2] + (WHITE[2] - c[2]) * a]; };
   function cssRgb(name, dflt) {
     try { var v = getComputedStyle(document.documentElement).getPropertyValue(name).trim(), m = /^#([0-9a-f]{6})$/i.exec(v); if (m) return [parseInt(m[1].slice(0, 2), 16), parseInt(m[1].slice(2, 4), 16), parseInt(m[1].slice(4, 6), 16)]; } catch (e) { }
     return dflt;
   }
   var shortLabel = function (s) { s = String(s || "").replace(/\s*[(«].*$/, ""); return s.length > 30 ? s.slice(0, 29) + "…" : s; };
+  var ease = function (u) { u = Math.max(0, Math.min(1, u)); return u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2; };
+  var lerp3 = function (a, b, e) { return [a[0] + (b[0] - a[0]) * e, a[1] + (b[1] - a[1]) * e, a[2] + (b[2] - a[2]) * e]; };
+
+  function pointInPoly(pt, poly) {                                     // lancer de rayon : vrai si le point est dans le polygone
+    var inside = false, i, j;
+    for (i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      var xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+      if ((yi > pt[1]) !== (yj > pt[1]) && pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  }
+  /* « Coque » : grande boite qui en contient d'autres (le chassis). Dessinee translucide et en premier. */
+  function isShell(sh) { return sh.kind === "box" && Math.max(sh.size[0], sh.size[1], sh.size[2]) > 0.15; }
+  function polyArea(poly) { var a = 0, i, j; for (i = 0, j = poly.length - 1; i < poly.length; j = i++) a += poly[j][0] * poly[i][1] - poly[i][0] * poly[j][1]; return Math.abs(a) / 2; }
+  /* Pièce visée : parmi celles dont la silhouette contient le point (ou dont le centre en est proche), la PLUS PETITE. Le chassis recouvre en projection tout
+     ce qu'il contient : sans cette regle, la carte ou le RPi ne seraient jamais atteignables a la souris. */
+  function pickHit(hits, p) {
+    var best = null;
+    hits.forEach(function (h) {
+      var d = Math.hypot(p[0] - h.cx, p[1] - h.cy), inside = pointInPoly(p, h.poly);
+      if (!inside && d >= 9) return;
+      var score = inside ? h.area : 40 + d;                                 // un centre tout proche mais hors silhouette passe apres une vraie inclusion
+      if (!best || score < best.score) best = { h: h, score: score };
+    });
+    return best && best.h;
+  }
+  /* Eclatement : chaque centre s'ecarte du centre moyen (facteur E*k), plus une legere elevation (lift*k) pour decoller les enfants du fantome du parent. */
+  function explodeOffsets(centers, E, k, lift) {
+    var n = centers.length, c0 = [0, 0, 0], i;
+    centers.forEach(function (c) { for (i = 0; i < 3; i++) c0[i] += c[i] / n; });
+    return centers.map(function (c) { return [(c[0] - c0[0]) * E * k, (c[1] - c0[1]) * E * k, (c[2] - c0[2]) * E * k + lift * k]; });
+  }
 
   function create(canvas, opts) {
     opts = opts || {};
+    var reduce = false; try { reduce = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches); } catch (e) { }
     var self = {
-      focus: null, az: opts.az != null ? opts.az : 38, el: opts.el != null ? opts.el : 24,        // degres : camera en avant-gauche, un peu en hauteur (3/4 gauche)
+      az: opts.az != null ? opts.az : 38, el: opts.el != null ? opts.el : 24, zoom: 1,                       // degres : camera en avant-gauche, un peu en hauteur (3/4 gauche)
       model: null, inc: null, lvFn: opts.lvFn || function (x) { return x.niveau === "ERROR" || x.niveau === "STALE" || x.niveau >= 2 ? 2 : 1; },
-      info: { drawn: [], unplaced: [], labels: [] }, w: 0, h: 0
+      info: { drawn: [], unplaced: [], labels: [], path: [], hover: null }, w: 0, h: 0
     };
-    var ctx = canvas.getContext("2d"), amber = cssRgb("--amber", AMBER), alert = cssRgb("--alert", ALERT), ro = null, dead = false;
+    var ctx = canvas.getContext("2d"), amber = cssRgb("--amber", AMBER), alert = cssRgb("--alert", ALERT), ro = null, dead = false, raf = 0, lastT = 0;
+    var labelHits = [], path = [], cam = { c: [0, 0, 0], rad: 0.2 }, k = 0, anim = null, sel = null, hov = null, hits = [], pdown = null, ptr = null, idleUntil = 0, oscAmp = 0, groundZ = -0.085;
+    var now0 = function () { return (typeof performance !== "undefined" ? performance.now() : Date.now()); };
 
-    self.setModel = function (partsDoc, urdfXml) { self.model = buildModel(partsDoc, urdfXml); if (self.model && !self.focus) self.focus = self.model.root; self.draw(); };
+    var focus = function () { return path[path.length - 1]; };
+    var restK = function (f) { return self.model && f === self.model.root ? 0 : 1; };
+    var shapedKids = function (f) { var m = self.model; return ((m && m.kids[f]) || []).filter(function (id) { return m.shapes[id]; }); };
+    var edges = function (id) { var m = self.model; return m.edges[id] || (m.edges[id] = edgesOf(m.shapes[id])); };
+    var offsetsFor = function (f, ids, kk) { var root = f === self.model.root; return explodeOffsets(ids.map(function (id) { return self.model.shapes[id].t; }), root ? 1.5 : 2.4, kk, root ? 0 : 0.025); };
+    function frameOf(f, kk) {                                         // centre et rayon de la boite englobante du niveau `f` (blocs eclates a `kk`, fantome du parent compris)
+      var ids = shapedKids(f), offs = offsetsFor(f, ids, kk), lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9], add = function (p, o) { for (var i = 0; i < 3; i++) { var v = p[i] + (o ? o[i] : 0); lo[i] = Math.min(lo[i], v); hi[i] = Math.max(hi[i], v); } };
+      ids.forEach(function (id, i) { edges(id).pts.forEach(function (p) { add(p, offs[i]); }); });
+      if (f !== self.model.root && self.model.shapes[f]) edges(f).pts.forEach(function (p) { add(p, null); });
+      if (lo[0] > hi[0]) return { c: [0, 0, 0], rad: 0.2 };
+      return { c: [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2], rad: Math.max(0.03, 0.9 * Math.sqrt(Math.pow(hi[0] - lo[0], 2) + Math.pow(hi[1] - lo[1], 2) + Math.pow(hi[2] - lo[2], 2)) / 2) };
+    }
+    var changed = function () { if (opts.onChange) opts.onChange(path.slice(), self.model); };
+    function startAnim(k0, k1, instant) {
+      var to = frameOf(focus(), restK(focus())), now = now0();
+      anim = { t0: now, dur: (reduce || instant) ? 0 : 650, from: { c: cam.c.slice(), rad: cam.rad }, to: to, k0: k0, k1: k1 };
+      changed(); self.draw(now);
+    }
+
+    self.path = function () { return path.slice(); };
+    self.setModel = function (partsDoc, urdfXml) {
+      self.model = buildModel(partsDoc, urdfXml); var m = self.model;
+      if (!m) { self.draw(); return; }
+      if (!path.length || path.some(function (id) { return !m.byId[id]; })) path = [m.root];
+      var lo = 1e9; Object.keys(m.shapes).forEach(function (id) { if (!m.virtual[id]) edges(id).pts.forEach(function (p) { lo = Math.min(lo, p[2]); }); }); if (lo < 1e8) groundZ = lo;
+      var f = frameOf(focus(), restK(focus())); cam = { c: f.c, rad: f.rad }; k = restK(focus()); anim = null; changed(); self.draw();
+    };
     self.setIncidents = function (inc) { self.inc = inc; self.draw(); };
+    self.zoomable = function (id) { return !!self.model && shapedKids(id).length > 0; };
+    self.zoomTo = function (id) {
+      if (!self.zoomable(id) || id === focus()) return false;
+      path.push(id); sel = null; startAnim(0, 1); return true;
+    };
+    self.back = function () { if (path.length < 2) return false; path.pop(); sel = null; startAnim(k, restK(focus())); return true; };
+    self.goPath = function (i) { if (i < 0 || i >= path.length - 1) return false; path = path.slice(0, i + 1); sel = null; startAnim(k, restK(focus())); return true; };
+    self.reveal = function (id) {                                     // amene la vue au niveau ou `id` est un bloc, et le met en evidence
+      var m = self.model; if (m && m.via && m.via[id]) id = m.via[id];
+      if (!m || !m.byId[id]) return false;
+      var chain = [], cur = m.byId[id].parent, g = 0; while (cur && g++ < 64) { chain.unshift(cur); cur = m.byId[cur].parent; }
+      path = chain.length ? chain : [m.root];
+      while (path.length > 1 && !shapedKids(path[path.length - 1]).length) path.pop();
+      sel = id; startAnim(0, restK(focus())); return true;
+    };
     self.resize = function () {
       var z = 1; try { z = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--z")) || 1; } catch (e) { }
       var w = canvas.clientWidth, h = canvas.clientHeight, d = (window.devicePixelRatio || 1) * z;
       if (!w || !h) return;
       self.w = w; self.h = h; canvas.width = Math.round(w * d); canvas.height = Math.round(h * d); ctx.setTransform(d, 0, 0, d, 0, 0); self.draw();
     };
-    self.destroy = function () { dead = true; if (ro) ro.disconnect(); };
+    self.destroy = function () { dead = true; if (raf) cancelAnimationFrame(raf); if (ro) ro.disconnect(); };
 
     function message(txt) {
-      ctx.clearRect(0, 0, self.w, self.h); ctx.fillStyle = rgba(CYAN, 0.7); ctx.font = "12px ui-monospace,Consolas,monospace"; ctx.textAlign = "center"; ctx.fillText(txt, self.w / 2, self.h / 2); ctx.textAlign = "left";
+      ctx.clearRect(0, 0, self.w, self.h); ctx.fillStyle = rgba(CYAN, 0.7); ctx.font = "13px ui-monospace,Consolas,monospace"; ctx.textAlign = "center"; ctx.fillText(txt, self.w / 2, self.h / 2); ctx.textAlign = "left";
     }
 
-    self.draw = function () {
+    self.draw = function (ts) {
       if (dead || !self.w || !self.h) return;
-      var m = self.model, W = self.w, H = self.h, i;
+      var m = self.model, W = self.w, H = self.h, i, now = ts || now0();
       if (!m) { message("Modèle 3D indisponible : en attente de /bamboo/parts et /robot_description"); return; }
-      var levelIds = (m.kids[self.focus] || []).filter(function (id) { return m.shapes[id]; });
-      if (!levelIds.length) { message("Aucune forme à dessiner à ce niveau"); return; }
+      var f0 = focus(), ids = shapedKids(f0);
+      if (!ids.length) { message("Aucune forme à dessiner à ce niveau"); return; }
+
+      /* ---- animations : transition de niveau (camera + eclatement), oscillation lente, pause pendant la saisie ---- */
+      if (anim) {
+        var u = anim.dur > 0 ? (now - anim.t0) / anim.dur : 1, e = ease(u);
+        cam = { c: lerp3(anim.from.c, anim.to.c, e), rad: anim.from.rad + (anim.to.rad - anim.from.rad) * e }; k = anim.k0 + (anim.k1 - anim.k0) * e;
+        if (u >= 1) { cam = { c: anim.to.c.slice(), rad: anim.to.rad }; k = anim.k1; anim = null; }
+      }
+      var dragging = !!(pdown && pdown.moved);
+      oscAmp += (((reduce || dragging || now < idleUntil) ? 0 : 1) - oscAmp) * 0.06;
+      var osc = oscAmp * 13 * Math.sin(now / 1000 * Math.PI * 2 / 20), pu = reduce ? 1 : 0.5 + 0.5 * Math.sin(now * 0.0075), pulse = reduce ? 1 : 0.6 + 0.4 * pu;
 
       /* ---- etats d'incident (par bloc du niveau) et parts sans forme ---- */
-      var direct = directStates(self.inc, self.lvFn), state = {}, unplaced = [];
-      levelIds.forEach(function (id) { var s = levelState(id, m.kids, direct); if (s) state[id] = s; });
+      var direct = directStates(self.inc, self.lvFn, m.via), state = {}, unplaced = [];
+      ids.forEach(function (id) { var s = levelState(id, m.kids, direct); if (s) state[id] = s; });
+      var fstate = f0 !== m.root ? levelState(f0, m.kids, direct) : null;
       ((self.inc && self.inc.incidents) || []).forEach(function (x) {
         [x.racine].concat(x.consequences || []).forEach(function (pid) {
-          var la = levelAncestor(m, pid, self.focus);
-          if (la && !m.shapes[la] && !unplaced.some(function (u) { return u.id === pid; })) unplaced.push({ id: pid, label: (m.byId[pid] || {}).label || pid, lv: self.lvFn(x) });
+          var la = levelAncestor(m, pid, f0);
+          if (la && !m.shapes[la] && !m.via[pid] && !unplaced.some(function (q) { return q.id === pid; })) unplaced.push({ id: pid, label: (m.byId[pid] || {}).label || pid, lv: self.lvFn(x) });
         });
       });
 
-      /* ---- geometrie de chaque bloc ---- */
-      var blocks = levelIds.map(function (id) { var e = edgesOf(m.shapes[id]); return { id: id, sh: m.shapes[id], lines: e.lines, pts: e.pts }; });
-      var all = []; blocks.forEach(function (b) { b.pts.forEach(function (p) { all.push(p); }); });
-      var lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9]; all.forEach(function (p) { for (i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], p[i]); hi[i] = Math.max(hi[i], p[i]); } });
-      var tgt = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2], rad = Math.sqrt(Math.pow(hi[0] - lo[0], 2) + Math.pow(hi[1] - lo[1], 2) + Math.pow(hi[2] - lo[2], 2)) / 2;
+      /* ---- camera : sphere autour du centre anime ; l'echelle est FIXE (le zoom vient du rayon, pas d'un recadrage) ---- */
+      var offs = offsetsFor(f0, ids, k), tgt = cam.c, mx = Math.max(110, W * 0.17), my = 34;
+      var basis = function (azDeg) {
+        var az = azDeg * Math.PI / 180, el = self.el * Math.PI / 180, D = cam.rad * 3.4 * self.zoom;
+        var C = [tgt[0] + D * Math.cos(el) * Math.cos(az), tgt[1] + D * Math.cos(el) * Math.sin(az), tgt[2] + D * Math.sin(el)];
+        var fv = [tgt[0] - C[0], tgt[1] - C[1], tgt[2] - C[2]], fl = Math.hypot(fv[0], fv[1], fv[2]); fv = fv.map(function (v) { return v / fl; });
+        var rr = [fv[1], -fv[0], 0], rl = Math.hypot(rr[0], rr[1]) || 1; rr = rr.map(function (v) { return v / rl; });
+        var uu = [rr[1] * fv[2] - rr[2] * fv[1], rr[2] * fv[0] - rr[0] * fv[2], rr[0] * fv[1] - rr[1] * fv[0]]; if (uu[2] < 0) uu = [-uu[0], -uu[1], -uu[2]];
+        return { C: C, f: fv, r: rr, u: uu, D: D };
+      };
+      var B = basis(self.az + osc), B0 = basis(self.az), sc = Math.min(W / 2 - mx, H / 2 - my) * 0.95 / 0.238;
+      var proj = function (b, p) { var d = [p[0] - b.C[0], p[1] - b.C[1], p[2] - b.C[2]], dep = d[0] * b.f[0] + d[1] * b.f[1] + d[2] * b.f[2]; return [(d[0] * b.r[0] + d[1] * b.r[1] + d[2] * b.r[2]) / dep, (d[0] * b.u[0] + d[1] * b.u[1] + d[2] * b.u[2]) / dep, dep]; };
+      var P = function (p) { var q = proj(B, p); return [W / 2 + q[0] * sc, H / 2 - q[1] * sc, q[2]]; };
+      var near = B.D * 0.05;
 
-      /* ---- camera : position sur une sphere autour de la cible (az depuis +x vers +y, el au-dessus de l'horizon), projection en perspective douce ---- */
-      var az = self.az * Math.PI / 180, el = self.el * Math.PI / 180, D = rad * 4.2;
-      var C = [tgt[0] + D * Math.cos(el) * Math.cos(az), tgt[1] + D * Math.cos(el) * Math.sin(az), tgt[2] + D * Math.sin(el)];
-      var f = [tgt[0] - C[0], tgt[1] - C[1], tgt[2] - C[2]], fl = Math.hypot(f[0], f[1], f[2]); f = f.map(function (v) { return v / fl; });
-      var rr = [f[1], -f[0], 0], rl = Math.hypot(rr[0], rr[1]); rr = rr.map(function (v) { return v / rl; });              // droite = f × z
-      var uu = [rr[1] * f[2] - rr[2] * f[1], rr[2] * f[0] - rr[0] * f[2], rr[0] * f[1] - rr[1] * f[0]];
-      uu = [-uu[0], -uu[1], -uu[2]]; if (uu[2] < 0) uu = [-uu[0], -uu[1], -uu[2]];                                           // haut de l'ecran : z positif
-      var proj0 = function (p) { var d = [p[0] - C[0], p[1] - C[1], p[2] - C[2]], dep = d[0] * f[0] + d[1] * f[1] + d[2] * f[2]; return [(d[0] * rr[0] + d[1] * rr[1] + d[2] * rr[2]) / dep, (d[0] * uu[0] + d[1] * uu[1] + d[2] * uu[2]) / dep, dep]; };
-      var xs = all.map(proj0), x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, dmin = 1e9, dmax = -1e9;
-      xs.forEach(function (q) { x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); y0 = Math.min(y0, q[1]); y1 = Math.max(y1, q[1]); dmin = Math.min(dmin, q[2]); dmax = Math.max(dmax, q[2]); });
-      var mx = Math.max(110, W * 0.17), my = 34, sc = Math.min((W - 2 * mx) / (x1 - x0), (H - 2 * my) / (y1 - y0)), ox = W / 2 - (x0 + x1) / 2 * sc, oy = H / 2 + (y0 + y1) / 2 * sc;
-      var P = function (p) { var q = proj0(p); return [ox + q[0] * sc, oy - q[1] * sc, q[2]]; };
-
-      /* ---- fond : points + sol quadrille ---- */
+      /* ---- fond : points, sol quadrille ---- */
       ctx.clearRect(0, 0, W, H); ctx.shadowBlur = 0; ctx.setLineDash([]);
       ctx.fillStyle = rgba(CYAN, 0.16); for (var gx = 8; gx < W; gx += 18) for (var gy = 8; gy < H; gy += 18) ctx.fillRect(gx, gy, 1, 1);
-      var zf = lo[2], g = 0.05, gxm = 0.30, gym = 0.25;
-      ctx.strokeStyle = rgba(CYAN, 0.16); ctx.lineWidth = 1; ctx.beginPath();
-      for (var gi = -gxm; gi <= gxm + 1e-9; gi += g) { var a1 = P([gi, -gym, zf]), a2 = P([gi, gym, zf]); ctx.moveTo(a1[0], a1[1]); ctx.lineTo(a2[0], a2[1]); }
-      for (var gj = -gym; gj <= gym + 1e-9; gj += g) { var b1 = P([-gxm, gj, zf]), b2 = P([gxm, gj, zf]); ctx.moveTo(b1[0], b1[1]); ctx.lineTo(b2[0], b2[1]); }
+      ctx.strokeStyle = rgba(CYAN, 0.15); ctx.lineWidth = 1; ctx.beginPath();
+      var gline = function (a, b) { var p1 = P(a), p2 = P(b); if (p1[2] > near && p2[2] > near) { ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); } };
+      for (var gi = -0.30; gi <= 0.30 + 1e-9; gi += 0.05) gline([gi, -0.25, groundZ], [gi, 0.25, groundZ]);
+      for (var gj = -0.25; gj <= 0.25 + 1e-9; gj += 0.05) gline([-0.30, gj, groundZ], [0.30, gj, groundZ]);
       ctx.stroke();
 
-      /* ---- blocs, du plus loin au plus proche ---- */
-      blocks.forEach(function (b) { var c = P(b.sh.t); b.dep = c[2]; b.cx = c[0]; b.cy = c[1]; });
-      blocks.sort(function (u, v) { return v.dep - u.dep; });
-      var drawn = [];
+      /* ---- fantome du parent (niveau eclate) : contour pointille, couleur de son etat ---- */
+      if (f0 !== m.root && m.shapes[f0]) {
+        var gc = fstate ? (fstate.lv === 2 ? alert : amber) : CYAN;
+        ctx.strokeStyle = rgba(gc, fstate ? 0.5 : 0.28); ctx.lineWidth = 1; ctx.setLineDash([2, 4]); ctx.beginPath();
+        edges(f0).lines.forEach(function (l) { l.forEach(function (p, q) { var s = P(p); q ? ctx.lineTo(s[0], s[1]) : ctx.moveTo(s[0], s[1]); }); }); ctx.stroke(); ctx.setLineDash([]);
+      }
+
+      /* ---- blocs : geometrie decalee par l'eclatement, du plus loin au plus proche ---- */
+      var blocks = ids.map(function (id, n) {
+        var e = edges(id), o = offs[n], sh = m.shapes[id], c = P([sh.t[0] + o[0], sh.t[1] + o[1], sh.t[2] + o[2]]);
+        return { id: id, sh: sh, off: o, e: e, cx: c[0], cy: c[1], dep: c[2], home: P(sh.t), shell: isShell(sh) };
+      });
+      blocks.sort(function (a, b) { return (b.shell - a.shell) || (b.dep - a.dep); });                 // la coque d'abord (au fond), puis du plus loin au plus proche
+      var dmin = 1e9, dmax = -1e9; blocks.forEach(function (b) { dmin = Math.min(dmin, b.dep); dmax = Math.max(dmax, b.dep); });
+      var zlo = 1e9, zhi = -1e9; blocks.forEach(function (b) { b.e.pts.forEach(function (p) { zlo = Math.min(zlo, p[2] + b.off[2]); zhi = Math.max(zhi, p[2] + b.off[2]); }); });
+      var scanOn = !reduce, zs = zhi - (zhi - zlo) * ((now / 4500) % 1), band = Math.max(0.008, (zhi - zlo) * 0.07), glow = [], drawn = [];
+      hits = [];
       blocks.forEach(function (b) {
-        var st = state[b.id], col = st ? (st.lv === 2 ? alert : amber) : CYAN, role = st && st.role;
-        var near = dmax > dmin ? 1 - (b.dep - dmin) / (dmax - dmin) : 1, al = 0.55 + 0.45 * near;
-        var scr = b.lines.map(function (l) { return l.map(P); }), hp = hull2(b.pts.map(P));
+        var st = state[b.id], role = st && st.role, isHov = hov === b.id, isSel = sel === b.id;
+        var col = st ? (st.lv === 2 ? alert : amber) : CYAN; if (isHov || isSel) col = lighten(col, isSel ? 0.7 : 0.55);
+        var nearK = dmax > dmin ? 1 - (b.dep - dmin) / (dmax - dmin) : 1, al = (0.55 + 0.45 * nearK) * ((role === "root" || role === "cons") ? pulse : 1);
+        var ghost = b.shell && !role && !isHov && !isSel;                                  // coque saine : translucide, pour laisser voir ce qu'elle contient
+        if (ghost) al *= 0.38;
+        var o = b.off, tp = function (p) { return P([p[0] + o[0], p[1] + o[1], p[2] + o[2]]); }, scr = b.e.lines.map(function (l) { return l.map(tp); }), hp = hull2(b.e.pts.map(tp));
         if (hp.length > 2) {
-          ctx.beginPath(); hp.forEach(function (q, k) { k ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }); ctx.closePath();
-          ctx.fillStyle = rgba(col, role === "root" ? 0.26 : role === "cons" ? 0.15 : role === "impact" ? 0.08 : 0.05); ctx.fill();
+          ctx.beginPath(); hp.forEach(function (q, n) { n ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }); ctx.closePath();
+          ctx.fillStyle = rgba(col, ((role === "root" ? 0.30 : role === "cons" ? 0.17 : role === "impact" ? 0.08 : ghost ? 0.012 : 0.05) * ((role === "root" || role === "cons") ? 0.45 + 1.1 * pu : 1)) + (isHov ? 0.14 : 0)); ctx.fill();
         }
-        ctx.shadowColor = rgba(col, 0.9); ctx.shadowBlur = role === "root" ? 12 : role ? 8 : 5;
-        ctx.strokeStyle = rgba(col, al * (role === "impact" ? 0.6 : 1)); ctx.lineWidth = role === "root" ? 2 : role === "cons" ? 1.5 : 1.1;
+        if (k > 0.02 && (o[0] || o[1] || o[2])) {                                       // trait de rappel : de la piece eclatee vers sa place d'origine
+          ctx.strokeStyle = rgba(CYAN, 0.28 * Math.min(1, k)); ctx.lineWidth = 1; ctx.setLineDash([1, 3]); ctx.beginPath(); ctx.moveTo(b.home[0], b.home[1]); ctx.lineTo(b.cx, b.cy); ctx.stroke(); ctx.setLineDash([]);
+        }
+        ctx.shadowColor = rgba(col, 0.9); ctx.shadowBlur = isHov ? 14 : role === "root" ? 12 : role ? 8 : ghost ? 2 : 5;
+        ctx.strokeStyle = rgba(col, Math.min(1, (isHov || isSel ? 1 : al) * (role === "impact" ? 0.6 : 1))); ctx.lineWidth = (role === "root" ? 2 : role === "cons" ? 1.5 : 1.1) + (isHov ? 0.6 : 0);
         ctx.setLineDash(b.sh.estime ? [3, 3] : []);
-        ctx.beginPath(); scr.forEach(function (l) { l.forEach(function (q, k) { k ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }); }); ctx.stroke();
+        ctx.beginPath(); scr.forEach(function (l) { l.forEach(function (q, n) { n ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }); }); ctx.stroke();
         ctx.shadowBlur = 0; ctx.setLineDash([]);
-        drawn.push({ id: b.id, x: b.cx, y: b.cy, role: role || null, lv: st ? st.lv : 0, via: st ? st.via : null, estime: !!b.sh.estime });
+        if (scanOn && !b.shell) {                                                          // scan (sauf la coque) : la PIECE ENTIERE s'allume d'un coup, arêtes et surface, pas segment par segment
+          var pz0 = 1e9, pz1 = -1e9; b.e.pts.forEach(function (q) { pz0 = Math.min(pz0, q[2] + o[2]); pz1 = Math.max(pz1, q[2] + o[2]); });
+          var dz = zs < pz0 ? pz0 - zs : zs > pz1 ? zs - pz1 : 0, bo = Math.exp(-Math.pow(dz / band, 2));         // 1 tant que le plan traverse la piece, puis decroit vite
+          if (bo > 0.1) glow.push({ lines: scr, hull: hp, bo: bo });
+        }
+        if (self.zoomable(b.id)) {                                                       // marque « + » : ce bloc s'eclate
+          ctx.strokeStyle = rgba(isHov ? WHITE : col, isHov ? 1 : 0.7); ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(b.cx - 4, b.cy); ctx.lineTo(b.cx + 4, b.cy); ctx.moveTo(b.cx, b.cy - 4); ctx.lineTo(b.cx, b.cy + 4); ctx.stroke();
+        }
+        hits.push({ id: b.id, poly: hp, cx: b.cx, cy: b.cy, dep: b.dep, area: polyArea(hp), zoom: self.zoomable(b.id) });
+        drawn.push({ id: b.id, x: b.cx, y: b.cy, role: role || null, lv: st ? st.lv : 0, via: st ? st.via : null, estime: !!b.sh.estime, zoom: self.zoomable(b.id) });
       });
+      if (scanOn) {
+        ctx.shadowColor = rgba(CREAM, 0.9); ctx.shadowBlur = 10; ctx.lineWidth = 1.7;
+        glow.forEach(function (g) {
+          if (g.hull.length > 2) { ctx.beginPath(); g.hull.forEach(function (q, n) { n ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }); ctx.closePath(); ctx.fillStyle = rgba(CREAM, 0.22 * g.bo); ctx.fill(); }
+          ctx.strokeStyle = rgba(CREAM, 0.9 * g.bo); ctx.beginPath(); g.lines.forEach(function (l) { l.forEach(function (q, n) { n ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }); }); ctx.stroke();
+        });
+        ctx.shadowBlur = 0;
+        // le plan du scan n'est volontairement PAS dessine : seul son effet sur les pieces reste visible
+      }
 
-      /* ---- etiquettes des racines en incident : trait fin du bloc vers la marge, comme sur un ecran de film ---- */
+      /* ---- etiquettes : marges gauche/droite, traits fins vers le bloc. Niveau racine : seulement les incidents ; niveau eclate : toutes les pieces. ---- */
       ctx.font = "13px ui-monospace,Consolas,monospace"; ctx.textBaseline = "middle";
-      var roots = drawn.filter(function (d) { return d.role === "root"; }).sort(function (u, v) { return u.y - v.y; }), labels = [], slotL = 0, slotR = 0;
-      roots.forEach(function (d) {
-        var left = d.x < W / 2, ly = 28 + (left ? slotL++ : slotR++) * 38, col = d.lv === 2 ? alert : amber, via = m.byId[d.via] || {}, txt = shortLabel(via.label || d.via), tag = d.lv === 2 ? "ERREUR" : "AVERT.";
-        var ex = left ? 12 + ctx.measureText(txt).width : W - 12 - ctx.measureText(txt).width;
-        ctx.strokeStyle = rgba(col, 0.8); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(d.x, d.y); ctx.lineTo(left ? mx - 10 : W - mx + 10, ly + 6); ctx.lineTo(ex + (left ? 0 : 0), ly + 6); ctx.stroke();
-        ctx.fillStyle = rgba(col, 1); ctx.beginPath(); ctx.arc(d.x, d.y, 2.5, 0, Math.PI * 2); ctx.fill();
-        ctx.textAlign = left ? "left" : "right"; var tx = left ? 12 : W - 12;
-        ctx.fillStyle = rgba(col, 1); ctx.fillText(txt, tx, ly - 4); ctx.fillStyle = rgba(col, 0.75); ctx.font = "11px ui-monospace,Consolas,monospace"; ctx.fillText(tag + " · " + d.via, tx, ly + 9); ctx.font = "11px ui-monospace,Consolas,monospace";
-        labels.push({ id: d.via, text: txt, side: left ? "L" : "R" });
+      var rootLevel = f0 === m.root, cand = drawn.filter(function (d) { return rootLevel ? (d.role === "root" || d.role === "cons") : true; }).map(function (d) {
+        var b0 = proj(B0, blocks.filter(function (b) { return b.id === d.id; })[0].sh.t.map(function (v, n) { return v + blocks.filter(function (b) { return b.id === d.id; })[0].off[n]; }));
+        return { d: d, side: b0[0] < 0 ? "L" : "R", key: b0[1] };         // cote et rang calcules sur la vue de BASE (sans oscillation) : pas de saut d'etiquette
+      }).sort(function (a, b) { return b.key - a.key; });
+      var labels = [], slot = { L: 44, R: 44 }; labelHits = [];
+      cand.forEach(function (c) {
+        var d = c.d, left = c.side === "L", inc = !!d.role, col = d.lv === 2 ? alert : d.lv === 1 ? amber : CYAN, id = d.id, part = m.byId[id] || {}, txt = shortLabel(part.label || id), cause = inc && d.via && d.via !== d.id ? shortLabel((m.byId[d.via] || {}).label || d.via) : "";
+        var ly = slot[c.side]; slot[c.side] += inc ? 38 : 22; if (ly > H - 30) return;
+        var tx = left ? 12 : W - 12, hot = d.id === hov || d.id === sel;
+        ctx.strokeStyle = rgba(hot ? WHITE : col, inc ? 0.8 : 0.4); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(d.x, d.y); ctx.lineTo(left ? mx - 10 : W - mx + 10, ly + 6); ctx.lineTo(left ? 12 + ctx.measureText(txt).width : W - 12 - ctx.measureText(txt).width, ly + 6); ctx.stroke();
+        ctx.fillStyle = rgba(col, inc ? 1 : 0.8); ctx.beginPath(); ctx.arc(d.x, d.y, inc ? 2.5 : 1.8, 0, Math.PI * 2); ctx.fill();
+        ctx.textAlign = left ? "left" : "right"; ctx.fillStyle = rgba(hot ? WHITE : col, inc ? 1 : 0.85); ctx.fillText(txt, tx, ly - 4);
+        if (inc) { ctx.font = "11px ui-monospace,Consolas,monospace"; ctx.fillStyle = rgba(col, 0.75); ctx.fillText(cause || id, tx, ly + 9); ctx.font = "13px ui-monospace,Consolas,monospace"; }
+        var lw = Math.max(ctx.measureText(txt).width, inc ? 118 : 0) + 6, lx0 = left ? tx - 3 : tx - lw + 3, rect = { x0: lx0, y0: ly - 13, x1: lx0 + lw, y1: ly + (inc ? 16 : 5) };
+        labelHits.push({ id: id, rect: rect });                                            // l'etiquette est cliquable comme le bloc (zoom) et l'eclaire au survol
+        labels.push({ id: id, text: txt, side: c.side, rect: rect });
       });
 
-      /* ---- bandeau : titre, parts sans forme, legende ---- */
+      /* ---- infobulle de survol ---- */
+      if (hov && ptr && !dragging) {
+        var hp2 = m.byId[hov] || {}, kn = shapedKids(hov).length, lines = [shortLabel(hp2.label || hov), kn ? kn + " sous-composant" + (kn > 1 ? "s" : "") + " · clic pour zoomer" : "pièce terminale", m.shapes[hov] && m.shapes[hov].virtuel ? "module logiciel (position schématique)" : (m.shapes[hov] && m.shapes[hov].estime ? "cotes estimées" : "cotes de l'URDF")];
+        ctx.font = "12px ui-monospace,Consolas,monospace"; ctx.textAlign = "left";
+        var tw = Math.max.apply(null, lines.map(function (s) { return ctx.measureText(s).width; })) + 14, th = lines.length * 16 + 8, bx = Math.min(W - tw - 4, ptr[0] + 14), by = Math.min(H - th - 4, ptr[1] + 14);
+        ctx.fillStyle = "rgba(4,8,11,0.88)"; ctx.fillRect(bx, by, tw, th); ctx.strokeStyle = rgba(CYAN, 0.7); ctx.lineWidth = 1; ctx.strokeRect(bx + 0.5, by + 0.5, tw, th);
+        lines.forEach(function (s, n) { ctx.fillStyle = rgba(n ? CYAN : WHITE, n ? 0.85 : 1); ctx.fillText(s, bx + 7, by + 12 + n * 16); });
+      }
+
+      /* ---- bandeau bas ---- */
       ctx.textAlign = "left"; ctx.font = "11px ui-monospace,Consolas,monospace"; ctx.fillStyle = rgba(CYAN, 0.75);
-      ctx.fillText("BAMBOO // VUE 3/4 // NIVEAU " + String((m.byId[self.focus] || {}).label || self.focus).toUpperCase().slice(0, 28), 10, H - 10);
+      ctx.fillText("BAMBOO // VUE 3/4 // " + String((m.byId[f0] || {}).label || f0).toUpperCase().slice(0, 30), 10, H - 10);
       if (unplaced.length) {
-        ctx.textAlign = "right"; unplaced.forEach(function (u, k) { var col = u.lv === 2 ? alert : amber; ctx.fillStyle = rgba(col, 1); ctx.fillText("▲ " + shortLabel(u.label) + " · hors modèle 3D", W - 10, H - 10 - k * 13); });
+        ctx.textAlign = "right"; unplaced.forEach(function (q, n) { ctx.fillStyle = rgba(q.lv === 2 ? alert : amber, 1); ctx.fillText("▲ " + shortLabel(q.label) + " · hors modèle 3D", W - 10, H - 10 - n * 13); });
         ctx.textAlign = "left";
       }
-      var est = drawn.some(function (d) { return d.estime; });
-      if (est) { ctx.setLineDash([3, 3]); ctx.strokeStyle = rgba(CYAN, 0.8); ctx.strokeRect(10, H - 32, 14, 8); ctx.setLineDash([]); ctx.fillStyle = rgba(CYAN, 0.75); ctx.fillText("cotes estimées (non mesurées)", 30, H - 27); }
-      self.info = { drawn: drawn, unplaced: unplaced, labels: labels, states: state, focus: self.focus, missing: m.missing };
+      if (drawn.some(function (q) { return q.estime; })) { ctx.setLineDash([3, 3]); ctx.strokeStyle = rgba(CYAN, 0.8); ctx.strokeRect(10, H - 32, 14, 8); ctx.setLineDash([]); ctx.fillStyle = rgba(CYAN, 0.75); ctx.fillText("cotes estimées (non mesurées)", 30, H - 27); }
+      self.info = { drawn: drawn, unplaced: unplaced, labels: labels, states: state, focus: f0, path: path.slice(), hover: hov, selected: sel, k: k, animating: !!anim, osc: osc, missing: m.missing, w: W, h: H };
     };
 
+    /* ---------------------------------------------------------------- souris / tactile */
+    var local = function (e) { var r = canvas.getBoundingClientRect(); return [(e.clientX - r.left) * (self.w / (r.width || 1)), (e.clientY - r.top) * (self.h / (r.height || 1))]; };
+    var hitAt = function (p) {
+      var lab = null; labelHits.forEach(function (l) { if (p[0] >= l.rect.x0 && p[0] <= l.rect.x1 && p[1] >= l.rect.y0 && p[1] <= l.rect.y1) lab = l; });
+      if (lab) return { id: lab.id, zoom: self.zoomable(lab.id), label: true };
+      return pickHit(hits, p);
+    };
+    canvas.addEventListener("pointerdown", function (e) {
+      var p = local(e); pdown = { x: p[0], y: p[1], az: self.az, el: self.el, moved: false };
+      try { canvas.setPointerCapture(e.pointerId); } catch (er) { }
+    });
+    canvas.addEventListener("pointermove", function (e) {
+      var p = local(e); ptr = p;
+      if (pdown) {
+        if (Math.hypot(p[0] - pdown.x, p[1] - pdown.y) > 4) pdown.moved = true;
+        if (pdown.moved) { self.az = pdown.az - (p[0] - pdown.x) * 0.4; self.el = Math.max(-5, Math.min(80, pdown.el + (p[1] - pdown.y) * 0.3)); canvas.style.cursor = "grabbing"; }
+      } else { var h = hitAt(p); hov = h ? h.id : null; canvas.style.cursor = h ? (h.zoom ? "zoom-in" : "pointer") : "grab"; }
+      if (reduce) self.draw();
+    });
+    var release = function (e) {
+      if (!pdown) return; var wasMoved = pdown.moved; pdown = null; idleUntil = now0() + 2500;
+      try { canvas.releasePointerCapture(e.pointerId); } catch (er) { }
+      if (wasMoved) { canvas.style.cursor = "grab"; self.draw(); return; }
+      var h = hitAt(local(e));
+      if (h) { if (h.zoom) self.zoomTo(h.id); else { sel = h.id; if (opts.onPick) opts.onPick(h.id); self.draw(); } }
+      else self.back();                                                                // clic dans le vide : un niveau en arriere
+    };
+    canvas.addEventListener("pointerup", release);
+    canvas.addEventListener("pointercancel", function () { pdown = null; });
+    canvas.addEventListener("pointerleave", function () { hov = null; ptr = null; if (reduce) self.draw(); });
+    canvas.addEventListener("wheel", function (e) { e.preventDefault(); self.zoom = Math.max(0.55, Math.min(1.8, self.zoom * (e.deltaY > 0 ? 1.08 : 0.92))); idleUntil = now0() + 2500; if (reduce) self.draw(); }, { passive: false });
+    canvas.style.touchAction = "none"; canvas.style.cursor = "grab";
+
+    var tick = function (ts) {
+      if (dead) return; raf = requestAnimationFrame(tick);
+      if (document.hidden || ts - lastT < 33) return;                                  // ~30 images/s, et rien quand l'onglet est masque
+      lastT = ts; self.draw(ts);
+    };
     if (typeof ResizeObserver !== "undefined") { ro = new ResizeObserver(function () { self.resize(); }); ro.observe(canvas); }
     self.resize();
+    if (!reduce && typeof requestAnimationFrame !== "undefined") raf = requestAnimationFrame(tick);
     return self;
   }
 
-  root.Robot3D = { create: create, _t: { rotRpy: rotRpy, mmul: mmul, apply: apply, compose: compose, edgesOf: edgesOf, hull2: hull2, shapeFromVisuel: shapeFromVisuel, directStates: directStates, levelState: levelState, levelAncestor: levelAncestor, buildModel: buildModel, parseUrdf: parseUrdf } };
+  root.Robot3D = { create: create, _t: { rotRpy: rotRpy, mmul: mmul, apply: apply, compose: compose, edgesOf: edgesOf, hull2: hull2, shapeFromVisuel: shapeFromVisuel, directStates: directStates, levelState: levelState, levelAncestor: levelAncestor, buildModel: buildModel, explodeOffsets: explodeOffsets, pointInPoly: pointInPoly, pickHit: pickHit, polyArea: polyArea, isShell: isShell, parseUrdf: parseUrdf } };
   if (typeof module !== "undefined" && module.exports) module.exports = root.Robot3D;
 })(typeof window !== "undefined" ? window : this);

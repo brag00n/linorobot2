@@ -29,11 +29,13 @@
   <xacro:arg name="laser_y" default="0.0"/>           <!-- [mesure] lidar.pose_y -->
   <xacro:arg name="laser_z" default="0.089"/>         <!-- [mesure] lidar.pose_z : 0,17 m au sol - 0,081 m -->
   <xacro:arg name="laser_yaw" default="1.5708"/>      <!-- [mesure] lidar.pose_yaw : +90 deg (rotation du capteur) -->
-  <!-- Pose de la webcam : [estime] heritee de la camera de profondeur de l'amont (-0,065 ; 0 ; 0,255). La webcam reelle n'a PAS ete mesuree.
-       Aucun noeud n'utilise cette pose aujourd'hui (pas de profondeur, pas de projection image -> monde) : a mesurer avant d'en dependre. -->
-  <xacro:arg name="camera_x" default="-0.065"/>
+  <!-- Pose de la webcam : [estime] 2026-11-18, d'apres l'indication du proprietaire : posee sur le HAUT du chassis (a la hauteur du lidar), DEVANT lui.
+       Haut du chassis = +0,04 m dans base_link ; cube de 3 cm -> centre a 0,055 m. x = 0,095 : le cube (0,08 a 0,11) reste entre le lidar (jusqu'a 0,0775)
+       et l'avant du chassis (0,1225). Remplace l'ancienne valeur heritee de la camera de profondeur de l'amont (-0,065 ; 0 ; 0,255), qui la faisait
+       flotter 21 cm au-dessus du robot. Aucun noeud n'utilise cette pose aujourd'hui (pas de projection image -> monde) : a MESURER avant d'en dependre. -->
+  <xacro:arg name="camera_x" default="0.095"/>
   <xacro:arg name="camera_y" default="0.0"/>
-  <xacro:arg name="camera_z" default="0.255"/>
+  <xacro:arg name="camera_z" default="0.055"/>
 
   <xacro:property name="wheel_radius" value="$(arg wheel_radius)"/>
   <xacro:property name="wheel_pos_y" value="$(arg wheel_pos_y)"/>

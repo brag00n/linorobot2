@@ -294,3 +294,24 @@ def test_every_visual_sits_inside_or_near_the_chassis(doc):
         if "pos" in v:
             assert all(abs(c) < 0.3 for c in v["pos"]), (p["id"], v["pos"])
             assert all(0 < t < 0.3 for t in v["taille"]), (p["id"], v["taille"])
+
+
+# ------------------------------------------------------------------ visuel.via : une part sans forme s'affiche sur une autre
+
+def test_the_gamepad_is_shown_on_the_bluetooth_adapter(doc):
+    assert next(p for p in doc["parts"] if p["id"] == "manette")["visuel"] == {"via": "adaptateur_bluetooth"}
+    assert pm.validate(doc, urdf_names=_urdf_names()) == []
+
+
+@pytest.mark.parametrize("v,frag", [
+    ({"via": "fantome"}, "part inconnue"),
+    ({"via": "manette"}, "elle-meme"),
+    ({"via": "adaptateur_bluetooth", "pos": [0, 0, 0]}, "ne se combine"),
+])
+def test_a_bad_via_is_reported(doc, v, frag):
+    assert any(frag in e for e in pm.validate(_with_visuel(doc, "manette", v)))
+
+
+def test_the_tree_keeps_via_without_inventing_an_estimated_flag(doc):
+    v = next(p for p in pm.arbre(doc)["parts"] if p["id"] == "manette")["visuel"]
+    assert v == {"via": "adaptateur_bluetooth"}

@@ -32,7 +32,8 @@ t("un visuel dessine a la main devient une forme, estimee par defaut ; un lien u
 });
 t("modele reel sans URDF : seuls les blocs dessines existent, les liens URDF sont signales manquants", () => {
   const m = R.buildModel(parts, ""); assert.strictEqual(m.root, "robot"); assert.strictEqual(m.hasUrdf, false);
-  assert.strictEqual(Object.keys(m.shapes).length, 17); assert.strictEqual(m.missing.length, 8);
+  const reels = Object.keys(m.shapes).filter((id) => !m.virtual[id]);
+  assert.strictEqual(reels.length, 17); assert.strictEqual(m.missing.length, 8);
 });
 const m = R.buildModel(parts, "");
 const lv = (x) => (x.niveau === "ERROR" ? 2 : 1);
@@ -54,5 +55,56 @@ t("un logiciel en defaut remonte au RPi, pas a la carte ESP32", () => {
 t("ancetre de niveau : le bloc du niveau qui contient la part", () => {
   assert.strictEqual(R.levelAncestor(m, "tb6612fng", "robot"), "esp32_board"); assert.strictEqual(R.levelAncestor(m, "tb6612fng", "esp32_board"), "tb6612fng");
   assert.strictEqual(R.levelAncestor(m, "rpi", "esp32_board"), null);
+});
+t("les services logiciels n'ont pas de cote : modules virtuels ranges AU-DESSUS du RPi, marques estimes", () => {
+  const sw = Object.keys(m.virtual); assert.ok(sw.includes("driver_esp32") && sw.includes("rosbridge") && sw.includes("navigation"));
+  const rpi = m.shapes.rpi;
+  sw.forEach((id) => { const s = m.shapes[id]; assert.strictEqual(s.virtuel, true); assert.strictEqual(s.estime, true); assert.ok(s.t[2] > rpi.t[2] + rpi.size[2] / 2, id); assert.strictEqual(m.byId[id].parent, "rpi"); });
+  assert.ok(!m.virtual.manette && !m.shapes.manette);                       // la manette n'est pas logicielle : toujours « hors modele 3D »
+});
+t("eclatement : nul au repos, proportionnel a k, ecarte du centre moyen, souleve en niveau profond", () => {
+  const c = [[0, 0, 0], [2, 0, 0], [0, 2, 0]];
+  assert.deepStrictEqual(R.explodeOffsets(c, 2, 0, 0.1).map((o) => o.map((v) => Math.abs(v))), [[0, 0, 0], [0, 0, 0], [0, 0, 0]]);
+  const full = R.explodeOffsets(c, 2, 1, 0.1), half = R.explodeOffsets(c, 2, 0.5, 0.1);
+  full.forEach((o, i) => o.forEach((v, j) => near(half[i][j], v / 2)));
+  assert.ok(full[1][0] > 0 && full[0][0] < 0);                                // le bloc de droite part a droite, celui de gauche a gauche
+  assert.ok(full.every((o) => o[2] >= 0.1 - 1e-9 - Math.abs((c[0][2] - 0) )));
+});
+t("point dans un polygone (selection a la souris)", () => {
+  const sq = [[0, 0], [4, 0], [4, 4], [0, 4]];
+  assert.ok(R.pointInPoly([2, 2], sq)); assert.ok(!R.pointInPoly([5, 2], sq)); assert.ok(!R.pointInPoly([2, -1], sq));
+});
+
+t("selection a la souris : la plus petite piece sous le curseur gagne (le chassis recouvre ce qu'il contient)", () => {
+  const big = { id: "base_link", poly: [[0, 0], [100, 0], [100, 100], [0, 100]], cx: 50, cy: 50, area: 10000 };
+  const small = { id: "rpi", poly: [[40, 40], [60, 40], [60, 60], [40, 60]], cx: 50, cy: 50, area: 400 };
+  assert.strictEqual(R.pickHit([big, small], [50, 50]).id, "rpi");
+  assert.strictEqual(R.pickHit([small, big], [50, 50]).id, "rpi");
+  assert.strictEqual(R.pickHit([big, small], [10, 10]).id, "base_link");           // hors de la petite piece : le chassis
+  assert.strictEqual(R.pickHit([big, small], [200, 200]), null);                    // dans le vide
+  assert.strictEqual(R.polyArea([[0, 0], [4, 0], [4, 3], [0, 3]]), 12);
+});
+t("coque : seul le chassis (grande boite) est translucide, pas une carte ni une roue", () => {
+  assert.strictEqual(R.isShell({ kind: "box", size: [0.245, 0.23, 0.08] }), true);
+  assert.strictEqual(R.isShell({ kind: "box", size: [0.085, 0.06, 0.012] }), false);
+  assert.strictEqual(R.isShell({ kind: "cyl", r: 0.04, h: 0.04 }), false);
+});
+t("webcam : posee sur le haut du chassis (pas flottante), devant le lidar et dans l'emprise du chassis", () => {
+  const sh = R.parseUrdf ? null : null;                                     // parseUrdf exige DOMParser : la pose est verifiee dans le test navigateur (r3d_int)
+  const x = fx("robot_description.xml"), m = /<link name="camera_link">[\s\S]*?<origin rpy="0 0 0" xyz="([-\d. ]+)"\/>\s*<\/joint>/.exec(x.replace(/<link name="camera_link">/, '<link name="camera_link">'));
+  const j = /<joint name="camera_to_base_link"[\s\S]*?<origin rpy="[^"]*" xyz="([-\d. ]+)"/.exec(x);
+  assert.ok(j, "joint camera");
+  const [cx, cy, cz] = j[1].trim().split(/\s+/).map(Number);
+  assert.ok(cz <= 0.04 + 0.015 + 1e-9 && cz >= 0.04, "la webcam doit reposer sur le haut du chassis (z = 0,04 + demi-cube), pas flotter : z=" + cz);
+  assert.ok(cx > 0.0775 && cx + 0.015 <= 0.1225 + 1e-9, "devant le lidar et dans l'emprise du chassis : x=" + cx);
+});
+t("via : la manette (sans forme) allume l'adaptateur Bluetooth, donc le RPi ; pas la carte ESP32", () => {
+  const mv = R.buildModel(parts, "");
+  assert.strictEqual(mv.via.manette, "adaptateur_bluetooth");
+  const d = R.directStates(inc([mk("manette", "WARN", [], ["bamboo_control"])]), lv, mv.via);
+  assert.strictEqual(d.manette.role, "root"); assert.strictEqual(d.adaptateur_bluetooth.role, "root");
+  const s = R.levelState("rpi", mv.kids, d); assert.strictEqual(s.role, "root"); assert.strictEqual(s.via, "adaptateur_bluetooth");
+  assert.strictEqual(R.levelState("esp32_board", mv.kids, d), null);
+  assert.strictEqual(R.directStates(inc([mk("manette", "WARN")]), lv).adaptateur_bluetooth, undefined);       // sans via : inchange
 });
 console.log(n + " tests passes");

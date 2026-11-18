@@ -27,6 +27,7 @@
 #                 {urdf: <lien>}                                         forme lue dans l'URDF (/robot_description)
 #                 {forme: boite, pos: [x,y,z], taille: [l,L,h]}          bloc dessine a la main
 #                 {forme: cylindre, pos: [x,y,z], taille: [rayon,h], axe: x|y|z}
+#                 {via: <part>}                                          pas de forme propre : son incident s'affiche SUR cette part (liaison physique)
 #               `estime: true` (defaut pour un bloc dessine) : cotes NON mesurees, affichees comme telles. Les retirer apres mesure.
 #   resolution  pistes de depannage, DANS L'ORDRE (du plus simple au plus invasif), tirees de pannes reellement rencontrees quand c'est le cas
 #
@@ -366,6 +367,7 @@ parts:
     type: physique
     label: "Manette Bluetooth Under Control 2919 (mode XInput)"
     parent: robot
+    visuel: {via: adaptateur_bluetooth}
     depends_on: [adaptateur_bluetooth]
     ref: {modele: "Under Control 2919", mode: "XInput (Home+X)"}
     certitude: confirme
