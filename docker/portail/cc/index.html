@@ -977,10 +977,11 @@ $("#dlg").addEventListener("close", function () { if (!this.open) { JL = null; S
 /* ---------- INCIDENTS (2026-11-18) : lecture de /bamboo/incidents (noeud incident_node, JSON v1). LECTURE SEULE : aucun bouton n'agit sur le robot.
    Les pistes de resolution sont du texte ; quand une etape contient une commande, un bouton la COPIE (presse-papiers) sans l'executer. ---------- */
 var INC = null, INCT = 0, INCFILL = null, INC_STALE_MS = 90000;
+function incLv(x) { return x.niveau === "ERROR" || x.niveau === "STALE" || x.niveau >= 2 ? 2 : 1; }
 function incFresh() { return INC && performance.now() - INCT < INC_STALE_MS; }
 function incBadge() {
   var b = $("#icount"); if (!b) return; var n = incFresh() ? (INC.n_incidents || 0) : 0, worst = 0;
-  if (n) INC.incidents.forEach(function (x) { worst = Math.max(worst, x.niveau >= 2 ? 2 : 1); });
+  if (n) INC.incidents.forEach(function (x) { worst = Math.max(worst, incLv(x)); });
   b.textContent = n; b.dataset.lv = worst; b.style.display = n ? "" : "none";
 }
 setInterval(incBadge, 5000);
@@ -995,7 +996,7 @@ function incRender(wrap) {
   var old = !incFresh();
   wrap.appendChild(h("div", "incsum", old ? "Données anciennes : le nœud d'analyse ne publie plus." : (INC.n_incidents ? INC.n_incidents + " incident(s) actif(s) sur " + INC.n_taches_analysees + " tâches analysées" : "Aucun incident : " + INC.n_taches_analysees + " tâches analysées, tout est cohérent.")));
   (INC.incidents || []).forEach(function (x) {
-    var c = h("div", "inc"); c.dataset.lv = x.niveau >= 2 ? 2 : 1;
+    var c = h("div", "inc"); c.dataset.lv = incLv(x);
     c.appendChild(h("div", "inch", x.label + " — " + (x.type || "") + " · criticité " + x.criticite + (x.depuis_s != null ? " · depuis " + Math.round(x.depuis_s) + " s" : "")));
     if (x.taches && x.taches.length) c.appendChild(h("div", "kd", "Tâches en défaut : " + x.taches.join(" · ")));
     if (x.consequences && x.consequences.length) c.appendChild(h("div", "kd", "Conséquences : " + x.consequences.join(", ")));
