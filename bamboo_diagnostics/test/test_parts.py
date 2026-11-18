@@ -186,3 +186,30 @@ def test_every_diagnostic_task_named_in_the_nomenclature_follows_the_published_n
     for p in doc["parts"]:
         for t in p.get("diag") or []:
             assert forme.match(t), "%s : %r" % (p["id"], t)
+
+
+def test_the_unplugged_lidar_of_2026_11_18_has_one_root_cause(graph):
+    """INC-2026-11-18 : lidar debranche. Deux erreurs de diagnostic (scan_monitor, nav_supervisor), UNE seule racine : l'adaptateur du lidar."""
+    en_defaut = ["cp2102_lidar", "laser", "navigation"]
+    assert graph.racines(en_defaut) == ["cp2102_lidar"]
+    racine, consequences, impact = graph.incidents(en_defaut)[0]
+    assert racine == "cp2102_lidar" and set(consequences) == {"laser", "navigation"}
+
+
+def test_the_lidar_incident_left_the_esp32_untouched(graph):
+    """Le lidar et l'ESP32 partagent le hub USB mais le retrait du premier n'est PAS une panne du second : aucune dependance de l'un vers l'autre."""
+    assert "driver_esp32" not in graph.impact("cp2102_lidar")
+    assert "cp2102_esp32" not in graph.impact("cp2102_lidar")
+    assert "cp2102_lidar" not in graph.causes("driver_esp32")
+
+
+def test_the_lidar_resolution_says_the_driver_does_not_restart_by_itself(doc):
+    """La piste de resolution doit contenir le piege decouvert : pas de reprise automatique apres un rebranchement."""
+    texte = " ".join(p for part in doc["parts"] if part["id"] in ("laser", "cp2102_lidar") for p in part.get("resolution", []))
+    assert "NE REPREND PAS SEUL" in texte or "ne reprend pas seul" in texte
+    assert "restart driver.lidarD500" in texte
+
+
+def test_the_lidar_adapter_is_watched_by_the_scan_monitor(doc):
+    by = {p["id"]: p for p in doc["parts"]}
+    assert "scan_monitor: lidar" in by["cp2102_lidar"]["diag"] and "scan_monitor: lidar" in by["laser"]["diag"]

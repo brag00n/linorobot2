@@ -297,8 +297,10 @@ parts:
     diag: ["scan_monitor: lidar"]
     criticite: 2
     resolution:
-      - "pile NAV arretee = lidar eteint (a la demande), pas une panne"
-      - "pas de /scan : verifier /dev/lidar (serie « 0001 »), puis le cable USB"
+      - "pile NAV arretee = lidar eteint (a la demande), pas une panne : le message est « arrete », pas « aucun scan recu »"
+      - "« aucun scan recu » : verifier /dev/lidar (serie « 0001 ») et lsusb (deux 10c4:ea60 attendus), puis le cable USB"
+      - "apres un rebranchement le driver NE REPREND PAS SEUL (le noeud ldlidar est mort, restart: no) : restart driver.lidarD500 (incident INC-2026-11-18, docs/depannage_bambooWS.md)"
+      - "ensuite relocaliser (R long) : la localisation passe a « inconnue » quand le scan disparait"
 
   - id: cp2102_lidar
     type: electronique
@@ -307,8 +309,12 @@ parts:
     depends_on: [hub_usb]
     ref: {modele: "CP2102", vid_pid: "10c4:ea60", serie: "0001"}
     certitude: confirme
-    source: "docker/udev/99-bambooWS.rules (serie generique « 0001 » des CP2102 bon marche)"
+    source: "docker/udev/99-bambooWS.rules (serie generique « 0001 » des CP2102 bon marche) ; incident du 2026-11-18 : lidar debranche, /dev/lidar disparait puis revient en quelques secondes au rebranchement"
+    diag: ["scan_monitor: lidar"]
     criticite: 2
+    resolution:
+      - "/dev/lidar absent ou un seul 10c4:ea60 sur le bus : brancher / rebrancher le lidar a la main (JAMAIS de reset logiciel du hub : partage avec l'ESP32)"
+      - "puis restart driver.lidarD500 : il ne reprend pas seul"
 
   - id: camera_link
     type: physique
