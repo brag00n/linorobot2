@@ -60,7 +60,10 @@
     # --- identite cinematique -------------------------------------------
     # 4 roues fixes, entrainement differentiel par cote (skid steer).
     robot_base: "4wd"
-    # urdf: "bamboo_ws.urdf.xacro"   # DESACTIVE le 2026-11-18 : robotdesc ne demarrait plus avec (voir docs 6.15). Decommenter apres correction.
+    # Description du robot REEL (sans simulation ni camera de profondeur) : fichier de linorobot2_description/urdf/robots/. Cle lue par
+    # description.launch.py uniquement. ACTIVE le 2026-11-18, apres correction du lanceur (robot_description est une chaine, cf. docs 6.15).
+    # Retirer cette ligne ramene a 4wd.urdf.xacro.
+    urdf: "bamboo_ws.urdf.xacro"
     # Type de chassis attendu par la carte (FOURWHEEL). Enumere cote firmware :
     # 1 MECANUM, 2 MECANUM_MAX, 3 MECANUM_MINI, 4 FOURWHEEL, 5 ACKERMAN, 6 SUNRISE.
     car_type: 4.0
