@@ -742,6 +742,37 @@ Non testé : la combinaison robot armé.
 
 **Pour appliquer sur un robot déjà installé** : `sudo bash docker/robot.sh use esp32 --yes` repose l'unité `bamboo4wd.service` avec la nouvelle liste de boot.
 
+### 6.15 Nomenclature des parts, URDF BambooWS et analyse d'incident (2026-11-18)
+
+**Trois fichiers, un seul vocabulaire.**
+
+| Fichier | Rôle |
+|---|---|
+| `linorobot2_description/urdf/robots/bamboo_ws.urdf.xacro` | description du robot RÉEL (liens, articulations, poses) ; remplace `4wd.urdf.xacro` pour BambooWS (celui-ci reste utilisé par l'autre robot et par Gazebo) |
+| `bamboo4WD_V4_WSEsp32_base/config/parts.yaml` | **nomenclature** de toutes les parts : physiques, électroniques, logicielles, infrastructure, système |
+| `bamboo_diagnostics/bamboo_diagnostics/parts_model.py` | modèle Python pur : validation, causes amont, impact aval, racines d'incident |
+
+**Deux relations à ne pas confondre.** `parent` = hiérarchie d'appartenance (arbre, un seul parent). `depends_on` = dépendance de fonctionnement (graphe orienté sans cycle,
+traverse la hiérarchie) : c'est elle qui permet de remonter à la **cause racine** et de calculer l'**impact**. Chaque part porte un identifiant, un type, une référence
+(`null` tant qu'elle n'est pas CONNUE : on n'invente jamais une référence), une **certitude** (`confirme` avec sa source, `deduit`, `a_renseigner`), une **criticité**
+(1 bloque le robot ou sa sécurité, 2 dégrade une fonction, 3 confort), les **tâches de diagnostic** qui la surveillent, et des pistes de **résolution** ordonnées.
+
+**État de la version 1** : 36 parts (14 physiques, 12 électroniques, 6 logicielles, 3 infrastructure, 1 système) ; 27 confirmées, 5 déduites, 4 à renseigner (`base_link`,
+`oled`, `hub_usb`, `adaptateur_bluetooth`) ; les 37 tâches de l'arbre de diagnostic en direct sont toutes rattachées à une part. Références encore inconnues : modèle exact des
+moteurs N20, du hub USB, de l'écran OLED, du châssis.
+
+**URDF nettoyé** : retrait de `camera_depth_link` (il n'y a pas de caméra de profondeur), du laser Hokuyo simulé, de tous les blocs et plugins Gazebo, et du nom
+`linorobot2_2wd`. Les neuf noms utilisés par le pilote, Nav2, le lidar et la vidéo sont conservés et leurs poses sont identiques (comparaison automatique : 0 écart sur les
+8 articulations communes). Les valeurs sont annotées `[mesure]`, `[constr.]` ou `[estime]` ; **la pose de la webcam et les masses du lidar et de la webcam ne sont pas mesurées**.
+**Il n'est pas encore activé** : `robotdesc` utilise toujours `4wd.urdf.xacro` ; pour basculer, passer `urdf:=…/bamboo_ws.urdf.xacro` à `description.launch.py`.
+
+**Analyse d'incident** (`parts_model.Graph`) : `causes(id)`, `impact(id)`, `racines(en_defaut)`, `incidents(en_defaut)`. Rejoué sur des pannes réelles dans
+`bamboo_diagnostics/test/test_parts.py` (19 tests) : la webcam gelée du 2026-11-14 donne **une seule racine** (`camera_link`) pour quatre services en erreur ; une perte de liaison
+ESP32 remonte à `cp2102_esp32` ; une batterie défaillante a 31 parts en aval. **Ce n'est pas encore branché au diagnostic en direct** : le modèle existe et est testé, la lecture de
+`/diagnostics_agg` pour produire des incidents regroupés reste à faire.
+
+**Panne de l'attache moteur M1** : réparée le 2026-10-03 ; les annotations « cassée / en pause » ont été corrigées, le journal de banc garde l'histoire.
+
 ## 7. État d'avancement
 
 - **L0** — protocole hôte (`mav/bamboo.py` généré, `tools/pyproject.toml`) : **fait** (banc).

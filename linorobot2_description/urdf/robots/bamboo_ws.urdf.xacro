@@ -1,0 +1,146 @@
+<?xml version="1.0"?>
+<!-- =====================================================================================================================================
+     bamboo_ws.urdf.xacro : description de BambooWS (bamboo4WD_V4_WSEsp32), version 1 (2026-11-18)
+
+     POURQUOI UN FICHIER A PART. 4wd.urdf.xacro est partage avec le robot bambooSTM32YB (robot_base: "4wd" dans les deux profils) et garde le bloc
+     de simulation Gazebo de l'amont linorobot2 : le nettoyer aurait change l'autre robot. Celui-ci ne decrit QUE ce qui existe sur BambooWS.
+
+     CE QUI A ETE RETIRE par rapport a 4wd.urdf.xacro :
+       - camera_depth_link et le capteur de profondeur : il n'y a PAS de camera de profondeur, seulement une webcam USB couleur ;
+       - le laser Hokuyo simule (360 echantillons, 12 m) : le lidar reel est un LDROBOT STL-19P (famille LD19) ;
+       - tous les blocs <gazebo> et plugins (diff_drive, ray, camera, imu) : le robot reel n'a pas de simulateur ; la simulation
+         (linorobot2_gazebo) continue d'utiliser 4wd.urdf.xacro ;
+       - le nom « linorobot2_2wd » : c'est celui d'un robot generique de l'amont, pas de celui-ci.
+
+     NOMS CONSERVES (le pilote, Nav2, le lidar et la video les utilisent) : base_footprint, base_link, <cote>_wheel_link / _wheel_joint
+     (ordre M1..M4 du pilote ESP32 : front_left, front_right, rear_left, rear_right), imu_link, laser, camera_link.
+
+     PROVENANCE DES VALEURS : chaque nombre porte sa certitude.
+       [mesure]   releve sur le robot ou dans son fichier canonique (bamboo_base/config/robots ou bamboo4WD_V4_WSEsp32_base/config)
+       [constr.]  cote du constructeur (depot waveshareteam/ugv_ws, ugv_rover.urdf) : reprise telle quelle, kit PEUT-ETRE different (voir plus bas)
+       [estime]   heritage de l'amont linorobot2, jamais mesure sur ce robot : a REMPLACER par une mesure
+     ===================================================================================================================================== -->
+<robot name="bamboo4WD_V4_WSEsp32" xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <!-- Arguments pousses par description.launch.py depuis le fichier canonique du robot (memes noms que 4wd.urdf.xacro). -->
+  <xacro:arg name="wheel_radius" default="0.04"/>     <!-- [mesure] wheel_diameter_m / 2 (0,08 m) -->
+  <xacro:arg name="wheel_pos_y" default="0.0625"/>    <!-- [mesure] wheel_separation_m / 2 (0,125 m) -->
+  <xacro:arg name="laser_x" default="0.04"/>          <!-- [mesure] lidar.pose_x : 4 cm en avant -->
+  <xacro:arg name="laser_y" default="0.0"/>           <!-- [mesure] lidar.pose_y -->
+  <xacro:arg name="laser_z" default="0.089"/>         <!-- [mesure] lidar.pose_z : 0,17 m au sol - 0,081 m -->
+  <xacro:arg name="laser_yaw" default="1.5708"/>      <!-- [mesure] lidar.pose_yaw : +90 deg (rotation du capteur) -->
+  <!-- Pose de la webcam : [estime] heritee de la camera de profondeur de l'amont (-0,065 ; 0 ; 0,255). La webcam reelle n'a PAS ete mesuree.
+       Aucun noeud n'utilise cette pose aujourd'hui (pas de profondeur, pas de projection image -> monde) : a mesurer avant d'en dependre. -->
+  <xacro:arg name="camera_x" default="-0.065"/>
+  <xacro:arg name="camera_y" default="0.0"/>
+  <xacro:arg name="camera_z" default="0.255"/>
+
+  <xacro:property name="wheel_radius" value="$(arg wheel_radius)"/>
+  <xacro:property name="wheel_pos_y" value="$(arg wheel_pos_y)"/>
+  <xacro:property name="wheel_width" value="0.0425"/>      <!-- [constr.] -->
+  <xacro:property name="wheel_pos_x" value="0.0855"/>      <!-- [constr.] demi-empattement ; kit identifie RaspRover (voie 0,125) : a re-mesurer -->
+  <xacro:property name="wheel_pos_z" value="-0.041212"/>   <!-- [constr.] hauteur d'axe sous base_link -->
+  <xacro:property name="wheel_mass" value="0.21"/>         <!-- [estime] -->
+  <xacro:property name="base_length" value="0.245"/>       <!-- [constr.] maillage de caisse 0,2452 m -->
+  <xacro:property name="base_width" value="0.230"/>        <!-- [constr.] 0,2304 m, garde-boue compris -->
+  <xacro:property name="base_height" value="0.080"/>       <!-- [constr.] hauteur utile au-dessus de l'axe des roues -->
+  <xacro:property name="base_mass" value="2.78"/>          <!-- [estime] -->
+
+  <!-- ================================ chassis ================================ -->
+  <link name="base_footprint"/>
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="${base_length} ${base_width} ${base_height}"/></geometry>
+      <material name="chassis"><color rgba="0.8784 0.6627 0.6627 1.0"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="${base_length} ${base_width} ${base_height}"/></geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="${base_mass}"/>
+      <inertia ixx="${(1/12) * base_mass * (base_width * base_width + base_height * base_height)}" ixy="0" ixz="0"
+               iyy="${(1/12) * base_mass * (base_length * base_length + base_height * base_height)}" iyz="0"
+               izz="${(1/12) * base_mass * (base_length * base_length + base_width * base_width)}"/>
+    </inertial>
+  </link>
+  <joint name="base_to_footprint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 ${wheel_radius - wheel_pos_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ================================= roues ================================= -->
+  <!-- Axe de rotation = Y du lien. Inertie d'un cylindre plein dont l'axe est Y (le visuel est tourne de pi/2 autour de X). -->
+  <xacro:macro name="wheel" params="side x y">
+    <link name="${side}_wheel_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+        <material name="roue"><color rgba="0.1764 0.4588 0.8509 1.0"/></material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+      </collision>
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="${wheel_mass}"/>
+        <inertia ixx="${(1/12) * wheel_mass * (3 * wheel_radius * wheel_radius + wheel_width * wheel_width)}" ixy="0" ixz="0"
+                 iyy="${0.5 * wheel_mass * wheel_radius * wheel_radius}" iyz="0"
+                 izz="${(1/12) * wheel_mass * (3 * wheel_radius * wheel_radius + wheel_width * wheel_width)}"/>
+      </inertial>
+    </link>
+    <joint name="${side}_wheel_joint" type="continuous">
+      <axis xyz="0 1 0"/>
+      <parent link="base_link"/>
+      <child link="${side}_wheel_link"/>
+      <origin xyz="${x} ${y} ${wheel_pos_z}" rpy="0 0 0"/>
+    </joint>
+  </xacro:macro>
+  <xacro:wheel side="front_left"  x="${wheel_pos_x}"  y="${wheel_pos_y}"/>    <!-- M1 -->
+  <xacro:wheel side="front_right" x="${wheel_pos_x}"  y="${-wheel_pos_y}"/>   <!-- M2 -->
+  <xacro:wheel side="rear_left"   x="${-wheel_pos_x}" y="${wheel_pos_y}"/>    <!-- M3 -->
+  <xacro:wheel side="rear_right"  x="${-wheel_pos_x}" y="${-wheel_pos_y}"/>   <!-- M4 -->
+
+  <!-- ============================ capteurs (reperes) ============================ -->
+  <!-- IMU QMI8658C de la carte WaveShare. Pose [estime] a l'origine de base_link : la position reelle de la carte n'a pas ete mesuree ;
+       l'orientation est corrigee cote logiciel (imu_gz_sign du fichier canonique). Ni masse ni forme : un repere, comme dans l'amont. -->
+  <link name="imu_link"/>
+  <joint name="imu_to_base_link" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Lidar LDROBOT STL-19P (LD19, kit Waveshare D500). Pose [mesure]. Forme [estime] : cylindre schematique, ni masse ni cotes constructeur verifiees. -->
+  <link name="laser">
+    <visual>
+      <origin xyz="0 0 -0.025" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.0375" length="0.05"/></geometry>
+      <material name="lidar"><color rgba="0.003 0.639 0.223 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="laser_to_base_link" type="fixed">
+    <parent link="base_link"/>
+    <child link="laser"/>
+    <origin xyz="$(arg laser_x) $(arg laser_y) $(arg laser_z)" rpy="0 0 $(arg laser_yaw)"/>
+  </joint>
+
+  <!-- Webcam USB (ARC International 05a3:9331). Pose [estime], forme [estime] (cube schematique de 3 cm). -->
+  <link name="camera_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.03 0.03 0.03"/></geometry>
+      <material name="webcam"><color rgba="0.416 0.051 0.047 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="camera_to_base_link" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <origin xyz="$(arg camera_x) $(arg camera_y) $(arg camera_z)" rpy="0 0 0"/>
+  </joint>
+
+</robot>

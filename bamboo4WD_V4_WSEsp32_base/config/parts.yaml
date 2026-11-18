@@ -1,0 +1,464 @@
+# =====================================================================================================================================
+# parts.yaml : NOMENCLATURE des parts de BambooWS (bamboo4WD_V4_WSEsp32), version 1 (2026-11-18)
+#
+# Une PART est tout composant qu'on peut vouloir remplacer, redemarrer ou incriminer : piece physique, carte electronique, bus, service logiciel.
+# Ce fichier donne a chacune : un identifiant stable, un type, une reference, un PARENT (hierarchie) et ses DEPENDANCES (graphe causal).
+#
+# DEUX RELATIONS DIFFERENTES, a ne pas confondre :
+#   parent      HIERARCHIE d'appartenance : « est un sous-ensemble de » (la carte ESP32 fait partie du chassis ; le pilote fait partie du service
+#               docker driver.esp32). Chaque part a UN parent, sauf la racine. Sert a ranger et a replier l'arbre.
+#   depends_on  DEPENDANCE de fonctionnement : « ne marche pas si ... ne marche pas » (le pilote depend de la liaison serie). Plusieurs possibles,
+#               peut traverser la hierarchie. Sert a remonter a la CAUSE RACINE et a calculer l'IMPACT.
+#
+# CHAMPS
+#   id          identifiant unique, minuscules/chiffres/_. Pour une part physique qui a un lien dans l'URDF (bamboo_ws.urdf.xacro), c'est le NOM du lien
+#               (ou de l'articulation) : le test verifie qu'il existe.
+#   type        physique | electronique | logiciel | infrastructure | systeme
+#   label       nom lisible
+#   parent      id du parent (absent pour la racine)
+#   depends_on  liste d'id dont cette part a besoin pour fonctionner
+#   ref         reference : fabricant, modele, revision.  Vaut `null` tant qu'elle n'est pas CONNUE : on n'invente JAMAIS une reference
+#   certitude   confirme (vu dans le code, un fichier ou une mesure : `source` le dit) | deduit (coherent mais non verifie) | a_renseigner
+#   source      d'ou vient l'information (fichier, mesure, doc)
+#   diag        taches de diagnostic (nom tel que publie sur /diagnostics_agg) qui surveillent cette part
+#   criticite   1 = bloque le robot / sa securite ; 2 = degrade une fonction ; 3 = confort ou observabilite
+#   resolution  pistes de depannage, DANS L'ORDRE (du plus simple au plus invasif), tirees de pannes reellement rencontrees quand c'est le cas
+#
+# ETAT DU ROBOT : la panne de l'attache moteur M1 (2026-09-23) est REPAREE depuis le 2026-10-03 (bamboo_base/bench/JOURNAL.md).
+# =====================================================================================================================================
+robot: bamboo4WD_V4_WSEsp32
+urdf: linorobot2_description/urdf/robots/bamboo_ws.urdf.xacro
+version: 1
+
+parts:
+
+  # ------------------------------------------------------------- racine et chassis
+  - id: robot
+    type: physique
+    label: "Robot BambooWS"
+    ref: {modele: "kit WaveShare, identifie RaspRover (voie 0,125 m)", fabricant: "Waveshare"}
+    certitude: deduit
+    source: "memoire optical-wheel-rpm-rig : cpr 2100 mesure, voie 0,125 -> RaspRover et non UGV Rover"
+    criticite: 1
+
+  - id: base_link
+    type: physique
+    label: "Chassis (caisse)"
+    parent: robot
+    ref: null
+    certitude: a_renseigner
+    source: "URDF : boite 0,245 x 0,230 x 0,080 m, masse 2,78 kg [estime]"
+    criticite: 1
+
+  # ------------------------------------------------------------- energie
+  - id: batterie
+    type: physique
+    label: "Pack batterie Li-ion 3S1P (UPS 3 x 18650)"
+    parent: robot
+    ref: {type: "esp32_ups_3s1p", cellules: "3 x 18650", capacite_ideale_ah: 2.6, capacite_mesuree_ah: 0.88, resistance_ideale_ohm: 0.15}
+    certitude: confirme
+    source: "bamboo4WD_V4_WSEsp32.yaml (battery_type), docs 9.7, battery_energy_node (0,88 Ah mesure le 2026-10-22)"
+    diag: ["esp32_mavlink_driver: batterie"]
+    criticite: 1
+    resolution:
+      - "chargeur branche ? (la tache indique « en charge » et la tension de repos)"
+      - "capacite mesuree 0,88 Ah contre 2,6 Ah ideal : pack use, a remplacer si l'autonomie ne suffit plus"
+      - "tension sous 10,5 V (avertissement) ou 9 V (erreur) : recharger avant toute mission"
+
+  - id: ina219
+    type: electronique
+    label: "Capteur tension/courant INA219"
+    parent: esp32_board
+    depends_on: [batterie]
+    ref: {modele: "INA219"}
+    certitude: confirme
+    source: "bamboo4WD_V4_WSEsp32.yaml (sensors.battery), docs/bamboo4WD_V4_WSEsp32.md section 1"
+    diag: ["esp32_mavlink_driver: batterie"]
+    criticite: 2
+
+  # ------------------------------------------------------------- carte de controle
+  - id: esp32_board
+    type: electronique
+    label: "Carte de controle WaveShare General Driver"
+    parent: robot
+    depends_on: [batterie]
+    ref: {fabricant: "Waveshare", modele: "General Driver for Robots", revision: "Rev1.2", mcu: "ESP32-WROOM-32", alimentation: "XH2.54 7-13 V"}
+    certitude: confirme
+    source: "memoire waveshare-general-driver-board, docs section 1"
+    diag: ["esp32_mavlink_driver: configuration carte"]
+    criticite: 1
+    resolution:
+      - "relire la configuration poussee (tache « configuration carte » : cpr, circ_mm, apb_mm)"
+      - "redemarrer le driver (docker restart driver.esp32) : il repousse la configuration"
+      - "reflasher le firmware si la version est ancienne (docker/flash_esp32.sh)"
+
+  - id: tb6612fng
+    type: electronique
+    label: "Double pont en H TB6612FNG (2 canaux, 4 moteurs)"
+    parent: esp32_board
+    depends_on: [batterie]
+    ref: {modele: "TB6612FNG"}
+    certitude: confirme
+    source: "memoire waveshare-general-driver-board"
+    criticite: 1
+
+  - id: imu_link
+    type: electronique
+    label: "IMU QMI8658C (6 axes)"
+    parent: esp32_board
+    depends_on: [esp32_board]
+    ref: {modele: "QMI8658C"}
+    certitude: confirme
+    source: "bamboo4WD_V4_WSEsp32.yaml (sensors.imu: qmi8658), memoire waveshare-general-driver-board"
+    diag: ["esp32_mavlink_driver: imu"]
+    criticite: 2
+    resolution:
+      - "attitude figee ou en retard : verifier la liaison serie d'abord (meme cause)"
+      - "recalibrer le gyroscope (service recalibrate_imu)"
+
+  - id: magnetometre
+    type: electronique
+    label: "Compas AK09918C (3 axes)"
+    parent: esp32_board
+    depends_on: [esp32_board]
+    ref: {modele: "AK09918C"}
+    certitude: confirme
+    source: "memoire waveshare-general-driver-board"
+    criticite: 3
+
+  - id: oled
+    type: electronique
+    label: "Ecran OLED de la carte (ligne « Ready <MODE> »)"
+    parent: esp32_board
+    depends_on: [esp32_board]
+    ref: null
+    certitude: a_renseigner
+    source: "docs 9.3 : firmware >= 0.4.0, BAMBOO_HMI_TEXT ; modele de l'ecran non releve"
+    criticite: 3
+
+  # ------------------------------------------------------------- motorisation (4 moteurs, 2 encodeurs : un par cote)
+  - id: motor_fl
+    type: physique
+    label: "Moteur avant gauche (M1) AVEC encodeur"
+    parent: robot
+    depends_on: [tb6612fng, batterie]
+    ref: {famille: "N20 a reducteur", tension_nominale_v: 6.0, vitesse_max_tr_min: 250}
+    certitude: deduit
+    source: "yaml : motor_operating_voltage 6.0, motor_max_rpm 250 ; JOURNAL.md (attache moteur N20). Modele exact non releve."
+    criticite: 1
+    resolution:
+      - "attache de fixation M1 REPAREE le 2026-10-03 : si l'encodeur M1 redevient muet, controler d'abord le jeu entre disque d'odometrie et carcasse (c'etait la cause)"
+      - "tourner la roue a la main : l'encodeur doit compter (essai T21)"
+
+  - id: motor_fr
+    type: physique
+    label: "Moteur avant droit (M2)"
+    parent: robot
+    depends_on: [tb6612fng, batterie]
+    ref: {famille: "N20 a reducteur"}
+    certitude: deduit
+    source: "idem motor_fl"
+    criticite: 1
+
+  - id: motor_rl
+    type: physique
+    label: "Moteur arriere gauche (M3) SANS encodeur"
+    parent: robot
+    depends_on: [tb6612fng, batterie]
+    ref: {famille: "N20 a reducteur"}
+    certitude: deduit
+    source: "memoire waveshare-general-driver-board : 4 moteurs, seulement 2 odometres ; les moteurs sans encodeur suivent leur voisin"
+    criticite: 2
+
+  - id: motor_rr
+    type: physique
+    label: "Moteur arriere droit (M4) SANS encodeur"
+    parent: robot
+    depends_on: [tb6612fng, batterie]
+    ref: {famille: "N20 a reducteur"}
+    certitude: deduit
+    source: "idem motor_rl"
+    criticite: 2
+
+  - id: front_left_wheel_joint
+    type: physique
+    label: "Roue avant gauche"
+    parent: robot
+    depends_on: [motor_fl]
+    ref: {diametre_m: 0.08, largeur_m: 0.0425}
+    certitude: confirme
+    source: "yaml wheel_diameter_m 0.08 ; URDF"
+    criticite: 1
+
+  - id: front_right_wheel_joint
+    type: physique
+    label: "Roue avant droite"
+    parent: robot
+    depends_on: [motor_fr]
+    ref: {diametre_m: 0.08, largeur_m: 0.0425}
+    certitude: confirme
+    source: "yaml wheel_diameter_m 0.08 ; URDF"
+    criticite: 1
+
+  - id: rear_left_wheel_joint
+    type: physique
+    label: "Roue arriere gauche"
+    parent: robot
+    depends_on: [motor_rl]
+    ref: {diametre_m: 0.08, largeur_m: 0.0425}
+    certitude: confirme
+    source: "yaml wheel_diameter_m 0.08 ; URDF"
+    criticite: 2
+
+  - id: rear_right_wheel_joint
+    type: physique
+    label: "Roue arriere droite"
+    parent: robot
+    depends_on: [motor_rr]
+    ref: {diametre_m: 0.08, largeur_m: 0.0425}
+    certitude: confirme
+    source: "yaml wheel_diameter_m 0.08 ; URDF"
+    criticite: 2
+
+  - id: encodeur_gauche
+    type: electronique
+    label: "Encodeur gauche (voie 0, 2100 tics/tour de roue)"
+    parent: motor_fl
+    depends_on: [esp32_board]
+    ref: {cpr: 2100}
+    certitude: confirme
+    source: "yaml counts_per_rev 2100, encoder_left_index 0 ; memoire bamboows-cpr-2100-derived"
+    diag: ["esp32_mavlink_driver: configuration carte"]
+    criticite: 1
+
+  - id: encodeur_droit
+    type: electronique
+    label: "Encodeur droit (voie 1, 2100 tics/tour de roue)"
+    parent: motor_fr
+    depends_on: [esp32_board]
+    ref: {cpr: 2100}
+    certitude: confirme
+    source: "yaml counts_per_rev 2100, encoder_right_index 1"
+    diag: ["esp32_mavlink_driver: configuration carte"]
+    criticite: 1
+
+  # ------------------------------------------------------------- calculateur et liaisons
+  - id: rpi
+    type: systeme
+    label: "Raspberry Pi 4 Model B Rev 1.5 (8 Go) sous DietPi"
+    parent: robot
+    depends_on: [batterie]
+    ref: {fabricant: "Raspberry Pi", modele: "4 Model B Rev 1.5", ram_go: 8}
+    certitude: confirme
+    source: "device-tree du RPi (/proc/device-tree/model), free -m"
+    diag: ["systeme: temperature CPU", "systeme: alimentation", "systeme: memoire", "systeme: disque", "systeme: occupation CPU"]
+    criticite: 1
+    resolution:
+      - "sous-tension : controler l'alimentation 5 V (tache « alimentation » : get_throttled)"
+      - "CPU saturee : couper le suivi video (ZL + ZR) ou la pile NAV, voir docs 6.14"
+
+  - id: hub_usb
+    type: electronique
+    label: "Hub USB interne du RPi (webcam + 2 CP2102)"
+    parent: rpi
+    depends_on: [rpi]
+    ref: null
+    certitude: a_renseigner
+    source: "lsusb -t : hub 1-1 a 4 ports (webcam port 1, ESP32 port 2, lidar port 4). Modele non releve. Hub PARTAGE : un reset logiciel de ce port coupe l'ESP32 et le lidar."
+    criticite: 1
+    resolution:
+      - "ne PAS reinitialiser un port par logiciel : le hub est partage (camwatch en tient compte)"
+      - "debrancher puis rebrancher le peripherique en cause (resolution de la webcam gelee du 2026-11-14)"
+
+  - id: cp2102_esp32
+    type: electronique
+    label: "Pont USB-serie CP2102N de la carte ESP32 (/dev/esp32)"
+    parent: esp32_board
+    depends_on: [hub_usb]
+    ref: {modele: "CP2102N", vid_pid: "10c4:ea60", serie: "d6607067ef3fed11996190b80a86e0b4"}
+    certitude: confirme
+    source: "docker/udev/99-bambooWS.rules"
+    diag: ["esp32_mavlink_driver: liaison serie"]
+    criticite: 1
+    resolution:
+      - "tache « liaison serie » : port ouvert ? trames recues ? (trames_bad_periode)"
+      - "controler le CABLE USB avant de condamner le CP2102 (memoire lidar-l2 : moteur qui tourne = VBUS seul, pas D+/D-)"
+      - "relever le numero de serie si l'adaptateur a ete change (udevadm info) et mettre a jour 99-bambooWS.rules"
+
+  # ------------------------------------------------------------- capteurs externes
+  - id: laser
+    type: physique
+    label: "Lidar LDROBOT STL-19P (LD19, Waveshare D500)"
+    parent: robot
+    depends_on: [cp2102_lidar]
+    ref: {fabricant: "LDROBOT", modele: "STL-19P (famille LD19)", vendeur: "Waveshare D500", baud: 230400, portee_m: 12.0}
+    certitude: confirme
+    source: "yaml lidar.model LDLiDAR_LD19 ; memoire lidar-d500-installed ; URDF pose 0,04 / 0 / 0,089 m, yaw +90 deg [mesure]"
+    diag: ["scan_monitor: lidar"]
+    criticite: 2
+    resolution:
+      - "pile NAV arretee = lidar eteint (a la demande), pas une panne"
+      - "pas de /scan : verifier /dev/lidar (serie « 0001 »), puis le cable USB"
+
+  - id: cp2102_lidar
+    type: electronique
+    label: "Adaptateur USB-serie CP2102 du lidar (/dev/lidar)"
+    parent: laser
+    depends_on: [hub_usb]
+    ref: {modele: "CP2102", vid_pid: "10c4:ea60", serie: "0001"}
+    certitude: confirme
+    source: "docker/udev/99-bambooWS.rules (serie generique « 0001 » des CP2102 bon marche)"
+    criticite: 2
+
+  - id: camera_link
+    type: physique
+    label: "Webcam USB ARC International HD Web Camera (05a3:9331)"
+    parent: robot
+    depends_on: [hub_usb]
+    ref: {fabricant: "ARC International", modele: "HD Web Camera", vid_pid: "05a3:9331", serie_usb: "Ucamera001", resolution: "640x480", cadence_mjpg_fps: 30}
+    certitude: confirme
+    source: "lsusb, dmesg, v4l2-ctl, docker/udev/99-bambooWS.rules"
+    diag: ["stream_mux_node: flux video", "web_video_server: cadence flux"]
+    criticite: 2
+    resolution:
+      - "gscam « Failed to pause stream » ou plus aucune image : la webcam est souvent GELEE (dmesg : « Failed to initialize the device (-5) », GET_DEF -32)"
+      - "debrancher puis rebrancher la webcam (ne pas reset le hub : partage avec l'ESP32 et le lidar)"
+      - "recreer bamboo_video apres rebranchement"
+
+  # ------------------------------------------------------------- peripheriques de commande
+  - id: manette
+    type: physique
+    label: "Manette Bluetooth Under Control 2919 (mode XInput)"
+    parent: robot
+    depends_on: [adaptateur_bluetooth]
+    ref: {modele: "Under Control 2919", mode: "XInput (Home+X)"}
+    certitude: confirme
+    source: "memoire gamepad-teleop-controller"
+    diag: ["js0: peripherique", "gamepad_state: sortie"]
+    criticite: 2
+    resolution:
+      - "manette absente : l'allumer, puis attendre la reconnexion (liee, elle se reattache seule)"
+
+  - id: adaptateur_bluetooth
+    type: electronique
+    label: "Adaptateur Bluetooth du RPi (hci0)"
+    parent: rpi
+    depends_on: [rpi]
+    ref: null
+    certitude: a_renseigner
+    source: "/sys/class/bluetooth/hci0 ; puce non relevee"
+    diag: ["bluetooth: adaptateur"]
+    criticite: 2
+
+  # ------------------------------------------------------------- services logiciels (un conteneur = un module de l'arbre de diagnostic)
+  - id: driver_esp32
+    type: logiciel
+    label: "Service driver.esp32 (esp32_mavlink_driver)"
+    parent: rpi
+    depends_on: [cp2102_esp32, esp32_board]
+    ref: {noeud: "esp32_mavlink_driver", conteneur: "driver.esp32", protocole: "MAVLink v2 sysid 2, 921600 bauds"}
+    certitude: confirme
+    source: "docker-compose.yaml, docs section 6"
+    diag: ["esp32_mavlink_driver: actuation", "esp32_mavlink_driver: compensation", "esp32_mavlink_driver: liaison serie", "esp32_mavlink_driver: batterie", "esp32_mavlink_driver: imu"]
+    criticite: 1
+    resolution:
+      - "docker restart bamboov4_humble-driver.esp32-1 (garde « traction armee » : desarmer d'abord)"
+
+  - id: bamboo_video
+    type: logiciel
+    label: "Service bamboo_video (gscam, stream_mux, web_video_server, camera_fps)"
+    parent: rpi
+    depends_on: [camera_link]
+    ref: {noeuds: ["gscam_node", "stream_mux_node", "web_video_server", "camera_fps"]}
+    certitude: confirme
+    source: "docker-compose.yaml, bamboo_video/launch/video.launch.py"
+    diag: ["stream_mux_node: flux video", "web_video_server: cadence flux", "web_video_server: presence", "gscam_node: presence", "camera_fps: presence"]
+    criticite: 2
+    resolution:
+      - "recreer le conteneur : restart bamboo_video avec recreate=true"
+
+  - id: camera_h264
+    type: infrastructure
+    label: "Service camera.h264 (MediaMTX + ffmpeg)"
+    parent: rpi
+    depends_on: [bamboo_video]
+    ref: {noeud: "mediamtx", chemins: ["raw", "hud", "cam"]}
+    certitude: confirme
+    source: "docker/mediamtx.yml"
+    diag: ["mediamtx: flux H.264"]
+    criticite: 2
+
+  - id: bamboo_videotracking
+    type: logiciel
+    label: "Service bamboo_videotracking (suivi, HUD) : A LA DEMANDE"
+    parent: rpi
+    depends_on: [bamboo_video]
+    ref: {noeuds: ["tracking_node", "facerecog_node", "overlay_node", "face_train_node"], demarrage: "ZL + ZR long"}
+    certitude: confirme
+    source: "docs 6.14"
+    diag: ["tracking_node: detection", "facerecog_node: reconnaissance", "overlay_node: incrustation", "overlay_node: enregistrement mux", "face_train_node: apprentissage"]
+    criticite: 3
+    resolution:
+      - "arrete = etat normal par defaut : le lancer par ZL + ZR long (le HUD revient en moins de 60 s)"
+
+  - id: bamboo_control
+    type: logiciel
+    label: "Service bamboo_control (teleop, modes, cc_guard, missions, mux)"
+    parent: rpi
+    depends_on: [driver_esp32, manette, rosbridge]
+    ref: {noeuds: ["bamboo_teleop", "bamboo_mode_manager", "cc_guard", "bamboo_mission_manager", "cmd_vel_mux", "joy_linux_node"]}
+    certitude: confirme
+    source: "docker-compose.yaml, bamboo_control/launch"
+    diag: ["bamboo_teleop: traction", "bamboo_teleop: manette", "bamboo_teleop: modes", "bamboo_teleop: chemin servo", "bamboo_mode_manager: modes du robot", "cmd_vel_mux: multiplexeur", "joy_linux_node: presence"]
+    criticite: 1
+
+  - id: rosbridge
+    type: infrastructure
+    label: "Service rosbridge (WebSocket vers le CC et les outils)"
+    parent: rpi
+    depends_on: [rpi]
+    ref: {version: "2.0.8", port: 9090}
+    certitude: confirme
+    source: "docker/rosbridge/start.sh"
+    diag: ["rosbridge_websocket: presence"]
+    criticite: 2
+
+  - id: robotdesc
+    type: infrastructure
+    label: "Service robotdesc (robot_state_publisher : /robot_description et TF)"
+    parent: rpi
+    depends_on: [rpi]
+    ref: {noeud: "robot_state_publisher", description: "linorobot2_description (URDF)"}
+    certitude: confirme
+    source: "docker-compose.yaml (robotdesc), linorobot2_description/launch/description.launch.py"
+    diag: ["robot_state_publisher: presence"]
+    criticite: 2
+    resolution:
+      - "sans /robot_description, plus de TF : la navigation et les costmaps s'arretent. Redemarrer le service robotdesc."
+
+  - id: bamboo_diagnostics
+    type: logiciel
+    label: "Service bamboo_diagnostics (agregateur + bamboo_health) : l'observateur lui-meme"
+    parent: rpi
+    depends_on: [rpi]
+    ref: {noeuds: ["diagnostic_aggregator", "bamboo_health"]}
+    certitude: confirme
+    source: "bamboo_diagnostics/launch/diagnostics.launch.py"
+    diag: ["bamboo_health: observateur"]
+    criticite: 3
+    resolution:
+      - "si l'observateur est muet, tout l'arbre devient STALE : verifier ce service avant de croire a plusieurs pannes"
+
+  - id: navigation
+    type: logiciel
+    label: "Pile de navigation (slam_toolbox, Nav2, nav_supervisor) : A LA DEMANDE"
+    parent: rpi
+    depends_on: [laser, driver_esp32, imu_link]
+    ref: {noeuds: ["nav_supervisor", "slam_toolbox", "bt_navigator", "controller_server"]}
+    certitude: confirme
+    source: "docs section 10"
+    diag: ["nav_supervisor: navigation"]
+    criticite: 2
+    resolution:
+      - "arretee = etat normal (lidar et navigation eteints au repos)"
+      - "accord scan/carte < 0,15 : relocaliser (R long) ou nouvelle carte"
