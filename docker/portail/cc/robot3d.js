@@ -358,7 +358,7 @@
       blocks.sort(function (a, b) { return (b.shell - a.shell) || (b.dep - a.dep); });                 // la coque d'abord (au fond), puis du plus loin au plus proche
       var dmin = 1e9, dmax = -1e9; blocks.forEach(function (b) { dmin = Math.min(dmin, b.dep); dmax = Math.max(dmax, b.dep); });
       var zlo = 1e9, zhi = -1e9; blocks.forEach(function (b) { b.e.pts.forEach(function (p) { zlo = Math.min(zlo, p[2] + b.off[2]); zhi = Math.max(zhi, p[2] + b.off[2]); }); });
-      var scanOn = !reduce, zs = zhi - (zhi - zlo) * ((now / 4500) % 1), band = Math.max(0.008, (zhi - zlo) * 0.07), glow = [], drawn = [];
+      var scanOn = !reduce, zs = zhi - (zhi - zlo) * ((now / 9000) % 1), band = Math.max(0.008, (zhi - zlo) * 0.07), glow = [], drawn = [];
       hits = [];
       blocks.forEach(function (b) {
         var st = state[b.id], role = st && st.role, isHov = hov === b.id, isSel = sel === b.id;
@@ -406,19 +406,30 @@
         var b0 = proj(B0, blocks.filter(function (b) { return b.id === d.id; })[0].sh.t.map(function (v, n) { return v + blocks.filter(function (b) { return b.id === d.id; })[0].off[n]; }));
         return { d: d, side: b0[0] < 0 ? "L" : "R", key: b0[1] };         // cote et rang calcules sur la vue de BASE (sans oscillation) : pas de saut d'etiquette
       }).sort(function (a, b) { return b.key - a.key; });
-      var labels = [], slot = { L: 44, R: 44 }; labelHits = [];
-      cand.forEach(function (c) {
-        var d = c.d, left = c.side === "L", inc = !!d.role, col = d.lv === 2 ? alert : d.lv === 1 ? amber : CYAN, id = d.id, part = m.byId[id] || {}, txt = shortLabel(part.label || id), cause = inc && d.via && d.via !== d.id ? shortLabel((m.byId[d.via] || {}).label || d.via) : "";
+      var labels = [], slot = { L: 44, R: 44 }, entries = []; labelHits = [];
+      var F13 = "13px ui-monospace,Consolas,monospace", F11 = "11px ui-monospace,Consolas,monospace";
+      cand.forEach(function (c) {                                                           // 1re passe : texte, rang, largeur (pour aligner les traits de depart en colonne)
+        var d = c.d, inc = !!d.role, id = d.id, part = m.byId[id] || {}, txt = shortLabel(part.label || id), cause = inc ? (d.via && d.via !== d.id ? shortLabel((m.byId[d.via] || {}).label || d.via) : id) : "";
         var ly = slot[c.side]; slot[c.side] += inc ? 38 : 22; if (ly > H - 30) return;
-        var tx = left ? 12 : W - 12, hot = d.id === hov || d.id === sel;
-        ctx.strokeStyle = rgba(hot ? WHITE : col, inc ? 0.8 : 0.4); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(d.x, d.y); ctx.lineTo(left ? mx - 10 : W - mx + 10, ly + 6); ctx.lineTo(left ? 12 + ctx.measureText(txt).width : W - 12 - ctx.measureText(txt).width, ly + 6); ctx.stroke();
-        ctx.fillStyle = rgba(col, inc ? 1 : 0.8); ctx.beginPath(); ctx.arc(d.x, d.y, inc ? 2.5 : 1.8, 0, Math.PI * 2); ctx.fill();
-        ctx.textAlign = left ? "left" : "right"; ctx.fillStyle = rgba(hot ? WHITE : col, inc ? 1 : 0.85); ctx.fillText(txt, tx, ly - 4);
-        if (inc) { ctx.font = "11px ui-monospace,Consolas,monospace"; ctx.fillStyle = rgba(col, 0.75); ctx.fillText(cause || id, tx, ly + 9); ctx.font = "13px ui-monospace,Consolas,monospace"; }
-        var lw = Math.max(ctx.measureText(txt).width, inc ? 118 : 0) + 6, lx0 = left ? tx - 3 : tx - lw + 3, rect = { x0: lx0, y0: ly - 13, x1: lx0 + lw, y1: ly + (inc ? 16 : 5) };
-        labelHits.push({ id: id, rect: rect });                                            // l'etiquette est cliquable comme le bloc (zoom) et l'eclaire au survol
-        labels.push({ id: id, text: txt, side: c.side, rect: rect });
+        ctx.font = F13; var w = ctx.measureText(txt).width; if (inc) { ctx.font = F11; w = Math.max(w, ctx.measureText(cause).width); }
+        entries.push({ c: c, d: d, inc: inc, id: id, txt: txt, cause: cause, ly: ly, w: w });
       });
+      var colW = { L: 0, R: 0 }; entries.forEach(function (e) { colW[e.c.side] = Math.max(colW[e.c.side], e.w); });
+      entries.forEach(function (e) {                                                         // 2e passe : trait de depart (vertical, epais), texte colle a lui, lien depuis son milieu
+        var d = e.d, left = e.c.side === "L", col = d.lv === 2 ? alert : d.lv === 1 ? amber : CYAN, hot = d.id === hov || d.id === sel, ink = hot ? WHITE : col;
+        var barX = left ? 12 + colW.L + 10 : W - 12 - colW.R - 10, y0 = e.ly - 12, y1 = e.ly + (e.inc ? 15 : 4), ym = (y0 + y1) / 2;
+        ctx.strokeStyle = rgba(ink, e.inc ? 0.85 : 0.45); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(barX, ym); ctx.lineTo(d.x, d.y); ctx.stroke();       // Lien_composant
+        ctx.strokeStyle = rgba(ink, e.inc ? 1 : 0.7); ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(barX, y0); ctx.lineTo(barX, y1); ctx.stroke();            // Trait_DepartLien
+        ctx.fillStyle = rgba(col, e.inc ? 1 : 0.8); ctx.beginPath(); ctx.arc(d.x, d.y, e.inc ? 2.5 : 1.8, 0, Math.PI * 2); ctx.fill();
+        var tx = left ? barX - 7 : barX + 7;                                                  // etiquette a gauche : texte justifie a droite, contre la barre ; a droite : justifie a gauche
+        ctx.textAlign = left ? "right" : "left"; ctx.font = F13; ctx.fillStyle = rgba(ink, e.inc ? 1 : 0.85); ctx.fillText(e.txt, tx, e.ly - 4);
+        if (e.inc) { ctx.font = F11; ctx.fillStyle = rgba(col, 0.75); ctx.fillText(e.cause, tx, e.ly + 9); }
+        ctx.font = F13;
+        var rect = left ? { x0: barX - 7 - e.w - 3, y0: y0 - 1, x1: barX + 3, y1: y1 + 1 } : { x0: barX - 3, y0: y0 - 1, x1: barX + 7 + e.w + 3, y1: y1 + 1 };
+        labelHits.push({ id: e.id, rect: rect });                                            // l'etiquette (texte + barre) est cliquable comme le bloc (zoom) et l'eclaire au survol
+        labels.push({ id: e.id, text: e.txt, side: e.c.side, rect: rect, bar: { x: barX, y0: y0, y1: y1 } });
+      });
+      ctx.font = F13;
 
       /* ---- infobulle de survol ---- */
       if (hov && ptr && !dragging) {
