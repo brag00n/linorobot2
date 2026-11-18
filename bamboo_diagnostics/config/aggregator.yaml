@@ -197,6 +197,8 @@ analyzers:
     diagnostics:
       type: diagnostic_aggregator/GenericAnalyzer
       path: bamboo_diagnostics
-      startswith: [ 'bamboo_health:' ]
+      # incident_node: synthese = l'interpretation (racines d'incident) publiee comme TACHE STANDARD de /diagnostics. Pas dans `expected` : sur un robot sans
+      # parts.yaml le noeud ne tourne pas, et son absence n'est pas une panne.
+      startswith: [ 'bamboo_health:', 'incident_node:' ]
       expected: [ 'bamboo_health: observateur' ]
       timeout: 5.0

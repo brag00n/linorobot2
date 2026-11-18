@@ -26,6 +26,7 @@ setup(
     entry_points={
         "console_scripts": [
             "health_node = bamboo_diagnostics.health_node:main",
+            "incident_node = bamboo_diagnostics.incident_node:main",
         ],
     },
 )

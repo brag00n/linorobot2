@@ -15,7 +15,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, LogInfo, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -34,6 +34,20 @@ def _launchSetup(context, *args, **kwargs):
                 f[len("aggregator_"):-len(".yaml")]
                 for f in os.listdir(os.path.dirname(own))
                 if f.startswith("aggregator_") and f.endswith(".yaml")))))
+    # Nomenclature des parts du robot : <robot>_base/config/parts.yaml. Optionnelle : un robot qui n'en a pas (encore) n'a simplement pas d'analyse d'incident.
+    parts = None
+    for base in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", robot + "_base", "config", "parts.yaml"),
+                 os.path.join("/root/linorobot2_ws/src/linorobot2", robot + "_base", "config", "parts.yaml")):
+        if os.path.isfile(base):
+            parts = os.path.realpath(base)
+            break
+    # LANCE PAR `python3 -m` ET NON PAR `Node(executable=...)` (2026-11-18) : l'IMAGE `diagnostics` est dediee et minimale, `colcon build` y echoue (« Could not find a primary
+    # shell extension for creating an environment hook ») et la reconstruire coute des heures. Le point d'entree `incident_node` declare dans setup.py n'y est donc jamais
+    # genere. Le paquet est installe en mode developpement (egg-link vers les sources) : le MODULE, lui, est importable. Meme procede que camera_fps_node dans bamboo_video.
+    incident = ([ExecuteProcess(
+        cmd=["python3", "-m", "bamboo_diagnostics.incident_node", "--ros-args", "-r", "__node:=incident_node", "-p", "parts_file:=" + parts],
+        output="screen")] if parts else
+                [LogInfo(msg="diagnostics : pas de parts.yaml pour %s -> pas d'analyse d'incident" % robot)])
     return [
         LogInfo(msg="diagnostics : arbre de %s (commun + %s)" % (robot, os.path.basename(own))),
         # Le nom `analyzers` n'est pas un choix : c'est celui sous lequel l'agregateur lit ses
@@ -52,7 +66,7 @@ def _launchSetup(context, *args, **kwargs):
             output="screen",
             parameters=[os.path.join(share, "config", "health.yaml")],
         ),
-    ]
+    ] + incident
 
 
 def generate_launch_description():
