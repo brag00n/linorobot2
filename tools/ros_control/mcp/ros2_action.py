@@ -19,9 +19,10 @@ Outils :
 GARDE-FOUS, dans l'ordre ou ils s'appliquent :
   1. `cmd_vel` est DESARME par defaut : il refuse tant que ROS2_ACTION_ALLOW_CMD_VEL != "1".
      Motif materiel, pas ceremonial : sur les deux robots du projet les moteurs sont
-     interdits (BambooWS a une attache moteur cassee ; bambooSTM32YB recoit 12,6 V bruts sur
-     des moteurs 7,4 V nominaux). L'armement se fait dans `.mcp.json`, donc explicitement et
-     de facon tracee -- jamais au detour d'un appel d'outil.
+     interdits par DEFAUT (BambooWS : attache moteur M1 reparee le 2026-10-03, l'interdit est devenu
+     une precaution d'operateur ; bambooSTM32YB recoit 12,6 V bruts sur des moteurs 7,4 V nominaux).
+     L'armement se fait dans `.mcp.json`, donc explicitement et de facon tracee -- jamais au detour
+     d'un appel d'outil.
   2. Bornes DURES, mais jamais un refus : la consigne est ECRETEE et l'ecretage est DIT dans
      la reponse. Une valeur hors borne est presque toujours une faute de frappe, et un refus
      sec pousse a re-essayer plus fort.
@@ -89,7 +90,7 @@ def _call(service, args=None):
 def t_cmd_vel(args):
     if not CMD_VEL_ARMED:
         return ("REFUSE : l'actuation moteur est desarmee cote MCP. Les deux robots du "
-                "projet ont leurs moteurs interdits (attache M1 cassee sur BambooWS ; PWM "
+                "projet ont leurs moteurs interdits par defaut (BambooWS : precaution, attache M1 reparee ; PWM "
                 "non mis a l'echelle sur bambooSTM32YB, pack 12,6 V sur moteurs 7,4 V). "
                 "Pour armer : ROS2_ACTION_ALLOW_CMD_VEL=1 dans l'entree `ros2-action` du "
                 ".mcp.json, puis relancer le client MCP. Et cote robot le driver a son "

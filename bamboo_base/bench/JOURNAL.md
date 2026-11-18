@@ -162,3 +162,12 @@ l'encodeur lu en demi-quadrature ([encoder.h:56](../../../linorobot2_hardware/fi
    `wheel_diameter_m`, qui alimente aussi l'URDF/TF et la cinématique de la carte.
 7. Reste ouvert et indépendant : la seconde moitié du lot 4.4, la validation de
    `wheel_separation_m` (0,125 m, toujours `<< A CONFIRMER >>`) par un 360°.
+
+---
+
+## 2026-10-03 : attache moteur M1 REPAREE (note ajoutee le 2026-11-18)
+
+L'attache N20 de M1 (cassee, voir l'entree du 2026-09-23) a ete remplacee. Le robot est de nouveau utilisable au sol ; la traction est armee en permanence
+(`enable_cmd_vel: true`, `armed_nominal: true`), le seul verrou etant l'appui long sur B de la manette. Les mesures T11, T14 et T15, declarees suspectes plus haut,
+ne sont pas rejouables telles quelles (voir l'entree de pause). Une calibration de la compensation de rotation a ete faite sur le robot repare le 2026-10-05
+(variante `caoutchouc_parquet`, fichier canonique). Les entrees precedentes sont conservees telles quelles : elles disent ce que l'on savait alors.

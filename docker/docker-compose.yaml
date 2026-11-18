@@ -386,7 +386,7 @@ services:
     # (`drive.real`, manette) est pour la meme raison sous son propre profil `drive`.
     # Profil DEDIE et NON `boot`, revu le 2026-09-29 : ce service est le driver de BambooWS
     # (defaut `robot:=bamboo4WD_V4_WSEsp32` de bamboo_base/launch/driver.launch.py), robot dont
-    # le chantier est EN PAUSE et dont la carte ESP32 n est pas sur ce montage. Il tournait donc
+    # le chantier etait EN PAUSE (attache M1 depuis reparee, 2026-10-03) et dont la carte ESP32 n etait pas sur ce montage. Il tournait donc
     # au boot en parlant a un port absent : 35 pour cent d un coeur brules pour rien, mesures a
     # T17 de bambooSTM32YB -- soit 40 pour cent de la cadence de suivi et un tiers de la latence
     # du groupe videotracking, sur une machine a 4 coeurs deja saturee. Rien de fautif dans le
@@ -429,9 +429,10 @@ services:
 #    HORS DU PROFIL `boot`, et ce n'est pas un oubli (cf. le commentaire de driver.real et le
 #    lot 6.3) : un robot qui demarre seul avec un chemin d'actuation ouvert n'est acceptable
 #    qu'apres validation du deadman -- Verification 5, robot au sol, main sur la manette.
-#    A CE JOUR L'ESSAI EST IMPOSSIBLE : l'attache moteur N20 de M1 est cassee sur BambooWS.
-#    Le service est donc ecrit et lancable en LECTURE SEULE (enable_cmd_vel:=false, defaut),
-#    ce qui suffit a verifier le mapping des index au jstest sans qu'une roue bouge.
+#    Cet essai etait impossible tant que l'attache moteur N20 de M1 etait cassee (reparee le 2026-10-03) ;
+#    ce service n'a pas ete remis au gout du jour depuis : il reste ecrit et lancable en LECTURE SEULE
+#    (enable_cmd_vel:=false, defaut), ce qui suffit a verifier le mapping des index au jstest sans qu'une roue bouge.
+#    L'actuation de BambooWS passe aujourd'hui par driver.esp32 (arme en permanence).
   drive.real:
     extends: base
     # Profil DEDIE, et ce n'est pas de la decoration : sans cle `profiles:` un service tombe

@@ -17,9 +17,10 @@ reellement rencontre dans le bringup de bambooSTM32YB).
 L'ARMEMENT RESTE SEPARE DU DEADMAN, deliberement. `enable_cmd_vel` garde son defaut **false** :
 lancer le pilotage ne doit pas armer les moteurs. Le deadman est un garde-fou d'OPERATEUR (il
 borne ce qui est publie) ; `enable_cmd_vel` est un garde-fou de MACHINE (il decide si la
-souscription /cmd_vel existe cote driver). Sur BambooWS l'attache moteur de M1 est cassee :
-`drive.launch.py` peut se lancer et publier, aucune roue ne doit bouger tant que l'armement
-n'est pas demande explicitement -- et il est commutable a chaud par parametre, donc rien
+souscription /cmd_vel existe cote driver). Historique : l'attache moteur de M1 de BambooWS etait cassee
+(reparee le 2026-10-03) ; la separation reste voulue, car le pilotage ne doit pas armer les moteurs a
+l'insu de l'operateur : `drive.launch.py` peut se lancer et publier, aucune roue ne doit bouger tant que
+l'armement n'est pas demande explicitement -- et il est commutable a chaud par parametre, donc rien
 n'oblige a le poser ici.
 
 Perimetre : robot **BambooWS** (`bamboo4WD_V4_WSEsp32`). Le robot bambooSTM32YB a sa propre
