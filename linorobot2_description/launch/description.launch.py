@@ -35,6 +35,7 @@ from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration, Command, PathJoinSubstitution, EnvironmentVariable
 from launch.conditions import IfCondition
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -141,10 +142,16 @@ def _describe(context, *args, **kwargs):
         if key in lidar:
             xacro_args += [' %s:=' % arg, str(float(lidar[key]))]
 
-    # L'argument `urdf` garde le dernier mot ; vide (le defaut), il est deduit de la famille.
-    urdf = LaunchConfiguration('urdf').perform(context) or PathJoinSubstitution(
-        [FindPackageShare('linorobot2_description'),
-         'urdf/robots', robot_base + '.urdf.xacro'])
+    # Ordre de priorite du fichier URDF : (1) l'argument `urdf` du lancement, qui garde le dernier mot ; (2) la cle FACULTATIVE `urdf:` du fichier
+    # canonique du robot (nom d'un fichier de linorobot2_description/urdf/robots/, ex. bamboo_ws.urdf.xacro) : un robot dont la description diverge de sa
+    # famille cinematique (BambooWS : pas de simulation, pas de camera de profondeur) la declare ici sans toucher a `robot_base`, que le pilote lit aussi ;
+    # (3) la convention <famille>.urdf.xacro. Sans la cle, comportement inchange.
+    urdf = LaunchConfiguration('urdf').perform(context)
+    if not urdf:
+        own = str(params.get('urdf') or '').strip()
+        if own and (os.sep in own or '/' in own or '..' in own):
+            raise RuntimeError("cle urdf: du fichier canonique invalide (%r) : un NOM de fichier de urdf/robots/, sans chemin." % own)
+        urdf = PathJoinSubstitution([FindPackageShare('linorobot2_description'), 'urdf/robots', own or (robot_base + '.urdf.xacro')])
 
     return [
         Node(
@@ -165,7 +172,11 @@ def _describe(context, *args, **kwargs):
             parameters=[
                 {
                     'use_sim_time': LaunchConfiguration('use_sim_time'),
-                    'robot_description': Command(['xacro ', urdf] + xacro_args)
+                    # ParameterValue(value_type=str) et NON un Command nu : launch_ros tente d'abord d'interpreter la sortie de xacro comme du YAML. Un
+                    # commentaire XML contenant « : » (« [mesure] lidar.pose_x : 4 cm ») ressemble a une ligne `cle: valeur` et fait refuser le lancement
+                    # (« Unable to parse the value of parameter robot_description as yaml »), sans dire ou. Constate le 2026-11-18 avec bamboo_ws.urdf.xacro.
+                    # La valeur est une CHAINE, on le dit : plus aucun commentaire de plus aucun URDF ne peut casser robotdesc.
+                    'robot_description': ParameterValue(Command(['xacro ', urdf] + xacro_args), value_type=str)
                 }
             ]
         ),

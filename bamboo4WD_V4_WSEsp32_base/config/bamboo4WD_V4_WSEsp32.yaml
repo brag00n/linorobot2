@@ -60,6 +60,7 @@
     # --- identite cinematique -------------------------------------------
     # 4 roues fixes, entrainement differentiel par cote (skid steer).
     robot_base: "4wd"
+    # urdf: "bamboo_ws.urdf.xacro"   # DESACTIVE le 2026-11-18 : robotdesc ne demarrait plus avec (voir docs 6.15). Decommenter apres correction.
     # Type de chassis attendu par la carte (FOURWHEEL). Enumere cote firmware :
     # 1 MECANUM, 2 MECANUM_MAX, 3 MECANUM_MINI, 4 FOURWHEEL, 5 ACKERMAN, 6 SUNRISE.
     car_type: 4.0
