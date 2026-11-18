@@ -123,6 +123,26 @@ _FALLBACK_KEYMAP = {
 }
 
 
+def trackingModesVerdict(keymapError, train, hostState, stateAge, topic):
+    """Verdict de la tache de sante « modes » : (niveau DiagnosticStatus, message). Fonction PURE, testee sans ROS.
+
+    Le service bamboo_videotracking ne demarre plus au boot (2026-11-14) : sans lui il n'y a pas de serveur d'action d'apprentissage, et c'est l'etat
+    voulu, pas une panne. Le NOMBRE D'ABONNES a /videotracking/mode_cmd ne dit RIEN du suivi : le gestionnaire de modes y est abonne lui aussi (il est
+    2 meme suivi eteint, mesure du 2026-11-18). Seul fait fiable : le serveur d'action `train` (face_train_node), plus l'etat du groupe cote hote
+    (`running` / `starting` / `stopping` / `stopped`, fichier tracking.state, `stateAge` en secondes ; None si inconnu).
+    Une alerte n'est levee que si l'hote dit `running` depuis plus de 60 s alors que le serveur d'action ne repond pas."""
+    if keymapError:
+        return DiagnosticStatus.ERROR, "carte des touches REFUSEE (repli conduite) : %s" % keymapError
+    if train:
+        return DiagnosticStatus.OK, "suivi actif, apprentissage pret"
+    if hostState == "running" and stateAge is not None and stateAge > 60.0:
+        return DiagnosticStatus.WARN, "suivi lance depuis %d s mais action d'apprentissage absente (face_train_node ?)" % int(stateAge)
+    if hostState in ("starting", "running"):
+        return DiagnosticStatus.OK, "suivi en cours de demarrage"
+    if hostState == "stopping":
+        return DiagnosticStatus.OK, "suivi en cours d'arret"
+    return DiagnosticStatus.OK, "suivi arrete (demarrage : ZL + ZR long)"
+
 class TeleopNode(Node):
     """Traducteur /joy -> ModeCmd + Nudge. Aucune connaissance de carte, aucun moteur."""
 
@@ -580,17 +600,20 @@ class TeleopNode(Node):
         stat.add("mode_robot", self._mode)
         stat.add("groupe", self._groupName() or "-")
         stat.add("gestionnaire_modes", str(self._modeCli.service_is_ready()))
-        if self._keymapError:
-            stat.summary(DiagnosticStatus.ERROR,
-                         "carte des touches REFUSEE (repli conduite) : %s" % self._keymapError)
-        elif subs == 0:
-            stat.summary(DiagnosticStatus.WARN,
-                         "aucun abonne a %s : groupe suivi arrete ?" % self._modePub.topic_name)
-        elif not train:
-            stat.summary(DiagnosticStatus.WARN, "action d'apprentissage absente")
-        else:
-            stat.summary(DiagnosticStatus.OK, "%d abonne(s), apprentissage pret" % subs)
+        hs, age = self._trackingHostState()
+        stat.add("suivi_hote", "%s%s" % (hs or "inconnu", "" if age is None else " (%d s)" % int(age)))
+        level, msg = trackingModesVerdict(self._keymapError, train, hs, age, self._modePub.topic_name)
+        stat.summary(level, msg)
         return stat
+
+    def _trackingHostState(self):
+        """(etat, anciennete en s) du groupe `tracking` cote hote, lu dans le fichier que l'hote ecrit (cf. _actToggleTracking). (None, None) si illisible."""
+        try:
+            with open(os.path.join(self._odDir, "tracking.state")) as fh:
+                st = fh.read().split()
+            return (st[0], max(0.0, time.time() - float(st[-1]))) if len(st) >= 2 else (st[0] if st else None, None)
+        except (OSError, ValueError, IndexError):
+            return None, None
 
     # ---------------------------------------------------------------- entrees
     def _axisRaw(self, msg, idx):

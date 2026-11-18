@@ -112,3 +112,55 @@ def test_every_arming_path_records_its_origin():
     assert text.count('self._armOrigin = "manette"') + text.count('"manette"') >= 2        # B long simple et verrouille
     assert '"cc"' in text and 'self._armOrigin = ""' in text                             # armement CC et desarmement
     assert text.count("self._armOrigin") >= 8
+
+
+# ---- tache de sante « modes » : un suivi ARRETE n'est pas une panne (2026-11-18) ----
+def _verdict():
+    text = open(SRC, encoding="utf-8").read().replace("\r\n", "\n")
+    m = re.search(r"\ndef trackingModesVerdict\(.*?(?=\n\nclass )", text, re.S)
+    assert m, "trackingModesVerdict introuvable dans teleop_node.py"
+    ns = {"DiagnosticStatus": types.SimpleNamespace(OK=0, WARN=1, ERROR=2)}
+    exec(m.group(0), ns)                                                   # noqa: S102 - code du depot, extrait tel quel
+    return ns["trackingModesVerdict"], ns["DiagnosticStatus"]
+
+
+T = "/videotracking/mode_cmd"
+
+
+def test_a_stopped_tracking_service_is_not_a_warning():
+    verdict, D = _verdict()
+    for host in ("stopped", None):                         # arrete, ou fichier d'etat absent (jamais lance depuis le boot)
+        lvl, msg = verdict("", False, host, None, T)
+        assert lvl == D.OK and "ZL + ZR" in msg, host
+
+
+def test_the_subscriber_count_is_not_an_input():
+    """Regression du 2026-11-18 : le gestionnaire de modes s'abonne lui aussi a mode_cmd, le compteur vaut 2 suivi eteint."""
+    import inspect
+    verdict, _ = _verdict()
+    assert "subs" not in inspect.signature(verdict).parameters
+
+
+def test_a_running_tracking_service_is_ok():
+    verdict, D = _verdict()
+    lvl, msg = verdict("", True, "running", 300.0, T)
+    assert lvl == D.OK and "apprentissage pret" in msg
+
+
+def test_a_tracking_service_still_starting_is_not_a_warning():
+    verdict, D = _verdict()
+    for host, age in (("starting", 5.0), ("running", 20.0), ("stopping", 3.0)):
+        assert verdict("", False, host, age, T)[0] == D.OK, host
+
+
+def test_a_tracking_launched_long_ago_without_its_action_server_is_reported():
+    verdict, D = _verdict()
+    lvl, msg = verdict("", False, "running", 120.0, T)
+    assert lvl == D.WARN and "face_train_node" in msg and "120" in msg
+
+
+def test_a_refused_keymap_stays_an_error_whatever_the_tracking_state():
+    verdict, D = _verdict()
+    for train, host, age in ((False, "stopped", None), (True, "running", 5.0), (False, "running", 500.0)):
+        lvl, msg = verdict("touche inconnue ZZ", train, host, age, T)
+        assert lvl == D.ERROR and "REFUSEE" in msg and "ZZ" in msg
