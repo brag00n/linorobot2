@@ -73,7 +73,7 @@
     <div class="pb" id="pb"><div class="sweep"></div></div>
   </section>
 
-  <footer class="foot fr"><span class="micro lbl">Santé</span><div class="pills" id="pills" role="status" aria-label="Santé du robot"></div><button class="btn jbtn" id="kbtn" type="button" aria-haspopup="dialog" title="Touches du clavier [H]">Touches</button><button class="btn jbtn" id="jbtn" type="button" aria-haspopup="dialog"><i class="live"></i>Journal<b id="jcount" data-lv="0" style="display:none">0</b></button></footer>
+  <footer class="foot fr"><span class="micro lbl">Santé</span><div class="pills" id="pills" role="status" aria-label="Santé du robot"></div><button class="btn jbtn" id="ibtn" type="button" aria-haspopup="dialog" title="Incidents du robot [I]">Incidents<b id="icount" data-lv="0" style="display:none">0</b></button><button class="btn jbtn" id="kbtn" type="button" aria-haspopup="dialog" title="Touches du clavier [H]">Touches</button><button class="btn jbtn" id="jbtn" type="button" aria-haspopup="dialog"><i class="live"></i>Journal<b id="jcount" data-lv="0" style="display:none">0</b></button></footer>
 </div>
 <dialog id="dlg" aria-labelledby="dlgT"></dialog>
 
@@ -161,6 +161,7 @@ var HANDLERS = {
   "/cc/mission/list": ["std_msgs/msg/String", 0, 1, function (m) { try { MIS.list = JSON.parse(m.data); } catch (e) { } }],
   "/cc/mission/state": ["std_msgs/msg/String", 500, 1, function (m) { try { MIS.st = JSON.parse(m.data); MIS.t = performance.now(); } catch (e) { } }],
   "/diagnostics_agg": ["diagnostic_msgs/msg/DiagnosticArray", 1000, 1, onDiag],
+  "/bamboo/incidents": ["std_msgs/msg/String", 1000, 1, function (m) { try { INC = JSON.parse(m.data); INCT = performance.now(); incBadge(); if (SLIDE === "incidents" && INCFILL) INCFILL(); } catch (e) { } }],
   "/rosout": ["rcl_interfaces/msg/Log", 0, 40, function (m) {
     if (m.level < 20) return; var l = m.level >= 40 ? 2 : m.level >= 30 ? 1 : 0, t = "[" + m.name + "] " + String(m.msg).replace(/\s+/g, " ");
     log(l, t.length > 220 ? t.slice(0, 219) + "…" : t); }]
@@ -197,7 +198,7 @@ var KEEP_HIDDEN = ["/cc/guard/state", "/teleop/state", "/gamepad/connected",
      reabonnement (derniere valeur de douze topics d'un coup, dont /diagnostics_agg et /rosout) sur un rosbridge a un seul coeur deja
      charge : mesure du journal, 13 cycles abonnement/desabonnement en 15 min pour un onglet qui bascule masque/visible, chacun
      retardant les battements du garde-fou de 1 a 3 s (oscillation de « Liaison CC »). Debit de ces quatre : < 4 messages/s. */
-  "/battery", "/bamboo/energy", "/navigation/state", "/cc/mission/state", "/cc/mission/list"];
+  "/battery", "/bamboo/energy", "/bamboo/incidents", "/navigation/state", "/cc/mission/state", "/cc/mission/list"];
 var syncT = 0, syncQ = [];
 document.addEventListener("visibilitychange", function () { syncSubs(); if (document.hidden) { log(0, "Onglet masqué : abonnements réduits aux topics légers et au garde-fou"); } });
 function syncSubs() {
@@ -930,6 +931,7 @@ var KEYS = [
   ["Navigation", [
     [["1", "2", "3", "4"], "Changer de mode : Mission, Vitaux, Config, Calib."],
     ["J", "Ouvrir / fermer le journal du robot."],
+    ["I", "Ouvrir / fermer les incidents : cause racine, conséquences, pistes de résolution."],
     ["H", "Ouvrir / fermer cette liste des touches."],
     ["S", "Afficher / masquer la source de chaque donnée (topic ROS)."],
     ["M", "Mode Mission : échange la carte de navigation et la vidéo de la scène centrale."]]],
@@ -970,7 +972,54 @@ function openJournal() {
   var tools = h("div", "jtools"); tools.append(seg, noiseB, pause); S.jPause = false; JL = list; S.unread = 0; S.unreadLv = 0; jbadge(); fill();
   dlgShow({ tag: "Journal // temps réel", title: "Journal du robot", slide: true, body: [tools, list, newB, cnt, h("div", "srcnote", "/rosout (INFO et au-dessus) · changements d'état de /diagnostics_agg · événements de cette page")], foot: [dbtn("Fermer", "pri", dlgClose)] });
 }
-$("#dlg").addEventListener("close", function () { if (!this.open) { JL = null; SLIDE = null; } });
+$("#dlg").addEventListener("close", function () { if (!this.open) { JL = null; SLIDE = null; INCFILL = null; } });
+
+/* ---------- INCIDENTS (2026-11-18) : lecture de /bamboo/incidents (noeud incident_node, JSON v1). LECTURE SEULE : aucun bouton n'agit sur le robot.
+   Les pistes de resolution sont du texte ; quand une etape contient une commande, un bouton la COPIE (presse-papiers) sans l'executer. ---------- */
+var INC = null, INCT = 0, INCFILL = null, INC_STALE_MS = 90000;
+function incFresh() { return INC && performance.now() - INCT < INC_STALE_MS; }
+function incBadge() {
+  var b = $("#icount"); if (!b) return; var n = incFresh() ? (INC.n_incidents || 0) : 0, worst = 0;
+  if (n) INC.incidents.forEach(function (x) { worst = Math.max(worst, x.niveau >= 2 ? 2 : 1); });
+  b.textContent = n; b.dataset.lv = worst; b.style.display = n ? "" : "none";
+}
+setInterval(incBadge, 5000);
+function incCmd(step) { var m = /(docker\/[\w.\-]+\.sh|docker (?:restart|compose|logs|start|stop) [^)»"]+)/.exec(step); return m ? m[1].trim() : ""; }
+function incCopy(txt, btn) {
+  var done = function (ok) { var o = btn.textContent; btn.textContent = ok ? "Copié" : "Copie impossible"; setTimeout(function () { btn.textContent = o; }, 1500); };
+  try { navigator.clipboard.writeText(txt).then(function () { done(true); }, function () { done(false); }); } catch (e) { done(false); }
+}
+function incRender(wrap) {
+  wrap.replaceChildren();
+  if (!INC) { wrap.appendChild(h("div", "kd", "En attente de /bamboo/incidents (nœud incident_node absent ou robot sans nomenclature de parts).")); return; }
+  var old = !incFresh();
+  wrap.appendChild(h("div", "incsum", old ? "Données anciennes : le nœud d'analyse ne publie plus." : (INC.n_incidents ? INC.n_incidents + " incident(s) actif(s) sur " + INC.n_taches_analysees + " tâches analysées" : "Aucun incident : " + INC.n_taches_analysees + " tâches analysées, tout est cohérent.")));
+  (INC.incidents || []).forEach(function (x) {
+    var c = h("div", "inc"); c.dataset.lv = x.niveau >= 2 ? 2 : 1;
+    c.appendChild(h("div", "inch", x.label + " — " + (x.type || "") + " · criticité " + x.criticite + (x.depuis_s != null ? " · depuis " + Math.round(x.depuis_s) + " s" : "")));
+    if (x.taches && x.taches.length) c.appendChild(h("div", "kd", "Tâches en défaut : " + x.taches.join(" · ")));
+    if (x.consequences && x.consequences.length) c.appendChild(h("div", "kd", "Conséquences : " + x.consequences.join(", ")));
+    if (x.impact && x.impact.length) c.appendChild(h("div", "kd", "Impact : " + x.impact.join(", ")));
+    if (x.certitude && x.certitude !== "confirme") c.appendChild(h("div", "kd incnote", "Certitude de la nomenclature : " + x.certitude));
+    if (x.resolution && x.resolution.length) {
+      var ol = h("ol", "incol"); x.resolution.forEach(function (st) {
+        var li = h("li", "", st), cmd = incCmd(st);
+        if (cmd) { var b = dbtn("Copier la commande", "incb", function () { incCopy(cmd, b); }); b.title = cmd; li.appendChild(b); }
+        ol.appendChild(li); });
+      c.appendChild(ol);
+    }
+    if (x.ref) c.appendChild(h("div", "kd incnote", "Référence : " + x.ref));
+    wrap.appendChild(c);
+  });
+  if ((INC.resolus_recents || []).length) { wrap.appendChild(h("div", "kg", "Résolus récemment")); INC.resolus_recents.forEach(function (x) { wrap.appendChild(h("div", "kd", x.label + " — résolu il y a " + Math.round(x.resolu_il_y_a_s || 0) + " s")); }); }
+  if ((INC.non_rattachees || []).length) { wrap.appendChild(h("div", "kg", "Tâches sans part connue")); INC.non_rattachees.forEach(function (t) { wrap.appendChild(h("div", "kd", t)); }); }
+  if ((INC.ignorees_attendues || []).length) wrap.appendChild(h("div", "kd incnote", "Ignorées car attendues (service à la demande arrêté) : " + INC.ignorees_attendues.length));
+}
+function openIncidents() {
+  SLIDE = "incidents";
+  var wrap = h("div", "kbd"); INCFILL = function () { incRender(wrap); }; INCFILL();
+  dlgShow({ tag: "Maintenance // incidents", title: "Incidents du robot", slide: true, body: [wrap, h("div", "srcnote", "/bamboo/incidents (incident_node, lecture seule) · nomenclature parts.yaml")], foot: [dbtn("Fermer", "pri", dlgClose)] });
+}
 
 var mdiv = $("#modes"); MODES.forEach(function (m) { var b = h("button", "mode"); b.type = "button"; b.dataset.mode = m[0]; b.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + ICON[m[0]] + '</svg><b>' + m[1] + '</b><small>' + m[2] + '</small>'; b.onclick = function () { setMode(m[0]); }; mdiv.appendChild(b); });
 var wave = $("#wave"); for (var wi = 0; wi < 28; wi++) wave.appendChild(h("i"));
@@ -1141,9 +1190,10 @@ var chips = $("#vchips"); [["det", "Suivi"], ["ret", "Réticule"]].forEach(funct
 var vst = h("span", "chip static", "Connexion…"); vst.style.display = "none";   /* remplacee par le DIRECT dessine dans la scene */ chips.appendChild(vst);
 $("#jbtn").onclick = function () { toggleSlide("journal", openJournal); };
 $("#kbtn").onclick = function () { toggleSlide("keys", openKeys); };
+$("#ibtn").onclick = function () { toggleSlide("incidents", openIncidents); };
 document.addEventListener("keydown", function (e) {
   if (e.ctrlKey || e.metaKey || e.altKey || document.querySelector("dialog[open]:not(.slide)")) return; if (e.target.closest && e.target.closest("input,textarea")) return;
-  var k = e.key.toLowerCase(); if (k >= "1" && k <= "4") setMode(MODES[+k - 1][0]); else if (k === "s") toggleSrc(!document.body.classList.contains("srcs")); else if (k === "j") toggleSlide("journal", openJournal); else if (k === "h") toggleSlide("keys", openKeys); else if (k === "m" && S.mode === "mission") toggleMapStage();
+  var k = e.key.toLowerCase(); if (k >= "1" && k <= "4") setMode(MODES[+k - 1][0]); else if (k === "s") toggleSrc(!document.body.classList.contains("srcs")); else if (k === "j") toggleSlide("journal", openJournal); else if (k === "h") toggleSlide("keys", openKeys); else if (k === "i") toggleSlide("incidents", openIncidents); else if (k === "m" && S.mode === "mission") toggleMapStage();
 });
 
 /* pastilles de santé du pied de page : uniquement ce qui n'est pas vert, comme la carte santé du HUD */
