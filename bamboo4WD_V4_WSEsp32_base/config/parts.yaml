@@ -29,7 +29,7 @@
 #                 {forme: cylindre, pos: [x,y,z], taille: [rayon,h], axe: x|y|z}
 #                 {via: <part>}                                          pas de forme propre : son incident s'affiche SUR cette part (liaison physique)
 #               `estime: true` (defaut pour un bloc dessine) : cotes NON mesurees, affichees comme telles. Les retirer apres mesure.
-#   resolution  pistes de depannage, DANS L'ORDRE (du plus simple au plus invasif), tirees de pannes reellement rencontrees quand c'est le cas
+#   resolution  pistes de depannage (un texte, ou {si: suivi_actif|nav_seule|aucun_gros_service, texte: ...} : affichee SEULEMENT si la condition est vraie), DANS L'ORDRE (du plus simple au plus invasif), tirees de pannes reellement rencontrees quand c'est le cas
 #
 # ETAT DU ROBOT : la panne de l'attache moteur M1 (2026-09-23) est REPAREE depuis le 2026-10-03 (bamboo_base/bench/JOURNAL.md).
 # =====================================================================================================================================
@@ -281,7 +281,9 @@ parts:
     criticite: 1
     resolution:
       - "sous-tension : controler l'alimentation 5 V (tache « alimentation » : get_throttled)"
-      - "CPU saturee : couper le suivi video (ZL + ZR) ou la pile NAV, voir docs 6.14"
+      - {si: suivi_actif, texte: "CPU saturee : couper le suivi video (ZL + ZR), gros consommateur, voir docs 6.14"}
+      - {si: nav_seule, texte: "CPU saturee, suivi arrete : la pile NAV (Nav2 + SLAM + lidar) est le consommateur ; l'arreter si la mission n'en a pas besoin, voir docs 6.14"}
+      - {si: aucun_gros_service, texte: "CPU saturee alors que ni le suivi ni la pile NAV ne tournent : chercher le processus en cause (docker stats, top) avant toute autre action"}
 
   - id: hub_usb
     type: electronique

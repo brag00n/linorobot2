@@ -315,3 +315,28 @@ def test_a_bad_via_is_reported(doc, v, frag):
 def test_the_tree_keeps_via_without_inventing_an_estimated_flag(doc):
     v = next(p for p in pm.arbre(doc)["parts"] if p["id"] == "manette")["visuel"]
     assert v == {"via": "adaptateur_bluetooth"}
+
+
+# ------------------------------------------------------------------ pistes de resolution contextuelles
+
+def _with_resolution(doc, pid, res):
+    d = copy.deepcopy(doc)
+    for p in d["parts"]:
+        if p["id"] == pid:
+            p["resolution"] = res
+    return d
+
+
+def test_a_conditional_resolution_step_is_valid(doc):
+    assert pm.validate(_with_resolution(doc, "rpi", ["a", {"si": "nav_seule", "texte": "b"}, {"texte": "c"}])) == []
+
+
+@pytest.mark.parametrize("res,frag", [
+    ([{"si": "demain", "texte": "x"}], "condition"),
+    ([{"si": "nav_seule"}], "texte"),
+    ([{"texte": "x", "autre": 1}], "texte ou"),
+    ([42], "texte ou"),
+    ("pas une liste", "liste"),
+])
+def test_a_malformed_resolution_is_reported(doc, res, frag):
+    assert any(frag in e for e in pm.validate(_with_resolution(doc, "rpi", res)))

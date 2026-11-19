@@ -1003,8 +1003,8 @@ function incRender(wrap) {
   if (!INC) { wrap.appendChild(h("div", "kd", "En attente de /bamboo/incidents (nœud incident_node absent ou robot sans nomenclature de parts).")); return; }
   var old = !incFresh();
   wrap.appendChild(h("div", "incsum", old ? "Données anciennes : le nœud d'analyse ne publie plus." : (INC.n_incidents ? INC.n_incidents + " incident(s) actif(s) sur " + INC.n_taches_analysees + " tâches analysées" : "Aucun incident : " + INC.n_taches_analysees + " tâches analysées, tout est cohérent.")));
-  (INC.incidents || []).forEach(function (x) {
-    var c = h("div", "inc"); c.dataset.lv = incLv(x);
+  (INC.incidents || []).map(function (x, n) { return { x: x, n: n }; }).sort(function (a, b) { return (incLv(b.x) - incLv(a.x)) || (a.n - b.n); }).forEach(function (e) {      // erreurs d'abord, puis avertissements
+    var x = e.x, c = h("div", "inc"); c.dataset.lv = incLv(x);
     c.classList.add("incgo"); c.title = "Cliquer : montrer cette pièce dans la vue 3D"; c.onclick = function (ev) { if (ev.target.closest && ev.target.closest("button")) return; if (R3D) R3D.reveal(x.racine); };
     c.appendChild(h("div", "inch", x.label + " — " + (x.type || "") + " · criticité " + x.criticite + (x.depuis_s != null ? " · depuis " + Math.round(x.depuis_s) + " s" : "")));
     if (x.taches && x.taches.length) c.appendChild(h("div", "kd", "Tâches en défaut : " + x.taches.join(" · ")));
@@ -1035,6 +1035,7 @@ function incRender(wrap) {
   });
   if ((INC.resolus_recents || []).length) { wrap.appendChild(h("div", "kg", "Résolus récemment")); INC.resolus_recents.forEach(function (x) { wrap.appendChild(h("div", "kd", x.label + " — résolu il y a " + Math.round(x.resolu_il_y_a_s || 0) + " s")); }); }
   if ((INC.non_rattachees || []).length) { wrap.appendChild(h("div", "kg", "Tâches sans part connue")); INC.non_rattachees.forEach(function (t) { wrap.appendChild(h("div", "kd", t)); }); }
+  if ((INC.en_observation || []).length) wrap.appendChild(h("div", "kd incnote", "En observation (défaut trop récent pour être retenu) : " + INC.en_observation.join(" · ")));
   if ((INC.ignorees_attendues || []).length) wrap.appendChild(h("div", "kd incnote", "Ignorées car attendues (service à la demande arrêté) : " + INC.ignorees_attendues.length));
 }
 function openIncidents() {

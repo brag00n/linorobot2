@@ -18,6 +18,12 @@ NIVEAU = {OK: "OK", WARN: "WARN", ERROR: "ERROR", STALE: "STALE"}
 # Gravite croissante d'un defaut, pour decider si une panne en amont en EXPLIQUE une en aval : WARN < STALE < ERROR.
 RANG = {OK: 0, WARN: 1, STALE: 2, ERROR: 3}
 
+RANG_NOM = {"OK": 0, "WARN": 1, "STALE": 2, "ERROR": 3}
+
+# Une surcharge CPU ne devient un defaut qu'APRES cette duree continue (s) : lancer la pile NAV ou le suivi sature le RPi quelques dizaines de secondes, et c'est NORMAL
+# (constate le 2026-11-19 : le RPi etait retenu comme racine pendant le demarrage de la pile NAV). Les autres taches ne sont pas retardees.
+DUREE_MIN_S = {"systeme: occupation CPU": 60.0}
+
 # Tache publiee par incident_node lui-meme : jamais analysee.
 SELF_TASK = "incident_node: synthese"
 
@@ -93,6 +99,54 @@ def niveau_max(feuilles_, taches):
     return pire
 
 
+class Persistance:
+    """Retient une tache en defaut tant qu'elle n'a pas dure `duree[tache]` secondes SANS INTERRUPTION : avant, elle est vue comme OK et listee « en observation »."""
+
+    def __init__(self, duree=None, clock=time.monotonic):
+        self.duree = dict(DUREE_MIN_S if duree is None else duree)
+        self.clock = clock
+        self._depuis = {}
+
+    def appliquer(self, feuilles_):
+        """-> (feuilles filtrees, [taches en observation])."""
+        now, out, attente = self.clock(), {}, []
+        for nom, (lvl, msg, hw) in feuilles_.items():
+            mn = self.duree.get(nom)
+            if mn and lvl != OK:
+                t0 = self._depuis.setdefault(nom, now)
+                if now - t0 < mn:
+                    attente.append(nom)
+                    out[nom] = (OK, msg, hw)
+                    continue
+            elif mn:
+                self._depuis.pop(nom, None)                       # revenue a OK : le compteur repart de zero
+            out[nom] = (lvl, msg, hw)
+        for nom in list(self._depuis):
+            if nom not in feuilles_:
+                del self._depuis[nom]
+        return out, sorted(attente)
+
+
+def condition_ok(si, ctx):
+    """Une piste `{si: ..., texte: ...}` ne s'affiche que si sa condition est vraie dans le contexte courant."""
+    if si is None:
+        return True
+    suivi, nav = ctx.get("suivi", False), ctx.get("nav", False)
+    return {"suivi_actif": suivi, "nav_seule": nav and not suivi, "aucun_gros_service": not suivi and not nav}[si]
+
+
+def resolution_pour(part, ctx):
+    """Les pistes d'une part, filtrees par le contexte (seuls les textes sortent)."""
+    out = []
+    for e in part.get("resolution") or []:
+        if isinstance(e, dict):
+            if condition_ok(e.get("si"), ctx):
+                out.append(str(e["texte"]))
+        else:
+            out.append(str(e))
+    return out
+
+
 class IncidentTracker:
     """Suit les incidents dans le temps : confirmation sur plusieurs relevees, memoire des resolus, anciennete."""
 
@@ -105,6 +159,12 @@ class IncidentTracker:
         self._actifs = {}        # racine -> dict incident (en cours)
         self._resolus = {}       # racine -> (incident, t_resolution)
 
+    def contexte(self, feuilles_):
+        """Ce qui tourne VRAIMENT : un service a la demande est actif si l'une de ses taches de diagnostic existe et n'est pas STALE."""
+        def actif(pid):
+            return any(t in feuilles_ and feuilles_[t][0] != STALE for t in (self.g.parts.get(pid) or {}).get("diag") or [])
+        return {"suivi": actif("bamboo_videotracking"), "nav": actif("navigation")}
+
     def update(self, bad, par_part, feuilles_):
         """bad : parts en defaut a ce releve. Rend (actifs, resolus) tries par criticite puis impact."""
         now = self.clock()
@@ -115,10 +175,12 @@ class IncidentTracker:
             self._vu[i] = self._vu.get(i, 0) + 1
         confirmes = {i for i, n in self._vu.items() if n >= self.confirmations}
         rang = {i: RANG[niveau_max(feuilles_, par_part.get(i, []))] for i in confirmes}
+        ctx = self.contexte(feuilles_)
         incidents = {}
         for racine, consequences, impact in self.g.incidents(confirmes, rang):
             part = self.g.parts[racine]
             taches = sorted({t for i in [racine] + consequences for t in par_part.get(i, [])})
+            consequences = sorted(consequences, key=lambda c: (-RANG[niveau_max(feuilles_, par_part.get(c, []))], self.g.parts[c].get("criticite", 3), c))      # les plus graves d'abord
             prev = self._actifs.get(racine)
             incidents[racine] = {
                 "racine": racine, "label": part.get("label", racine), "type": part.get("type"), "criticite": part.get("criticite", 3),
@@ -127,7 +189,7 @@ class IncidentTracker:
                 "consequences": consequences, "impact": impact, "certitude": part.get("certitude"),
                 "consequences_detail": [{"id": c, "label": self.g.parts[c].get("label", c), "niveau": NIVEAU[niveau_max(feuilles_, par_part.get(c, []))],
                                          "taches": sorted(par_part.get(c, []))} for c in consequences],
-                "resolution": list(part.get("resolution") or []), "ref": part.get("ref"),
+                "resolution": resolution_pour(part, ctx), "ref": part.get("ref"),
             }
         for racine, inc in self._actifs.items():                       # disparus : passent en « resolu »
             if racine not in incidents:
@@ -137,14 +199,16 @@ class IncidentTracker:
             if racine in incidents or now - t > self.garde_resolu_s:    # revenu, ou trop ancien
                 del self._resolus[racine]
         self._actifs = incidents
-        actifs = sorted(incidents.values(), key=lambda x: (x["criticite"], -len(x["impact"])))
+        # Erreurs d'abord, puis avertissements ; a gravite egale, l'incident dont la piece la plus critique (racine ou consequence) l'est le plus, puis le plus etendu.
+        actifs = sorted(incidents.values(), key=lambda x: (-RANG_NOM[x["niveau"]], min([x["criticite"]] + [self.g.parts[c].get("criticite", 3) for c in x["consequences"]]),
+                                                           -len(x["impact"]), x["racine"]))
         resolus = [dict(inc, resolu_il_y_a_s=round(now - t, 1)) for inc, t in self._resolus.values()]
         for x in actifs:
             x["depuis_s"] = round(now - x["depuis"], 1)
         return actifs, resolus
 
 
-def payload(actifs, resolus, orphelines, ignorees, n_taches):
+def payload(actifs, resolus, orphelines, ignorees, n_taches, en_observation=None):
     """Le JSON publie sur /bamboo/incidents. Les champs internes (`depuis`) sont retires."""
     def propre(x):
         return {k: v for k, v in x.items() if k != "depuis"}
@@ -156,6 +220,7 @@ def payload(actifs, resolus, orphelines, ignorees, n_taches):
         "resolus_recents": [propre(x) for x in resolus],
         "non_rattachees": sorted(orphelines),
         "ignorees_attendues": ignorees,
+        "en_observation": sorted(en_observation or []),
     }
 
 

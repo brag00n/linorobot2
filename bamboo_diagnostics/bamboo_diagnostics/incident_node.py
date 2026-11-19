@@ -39,6 +39,7 @@ class IncidentNode(Node):
         self._tracker = im.IncidentTracker(
             self._graph, confirmations=int(p("confirmations", 2).value), garde_resolu_s=float(p("garde_resolu_s", 30.0).value))
         self._odDir = str(p("ondemand_dir", "/run/bamboo-ondemand").value)
+        self._persist = im.Persistance({"systeme: occupation CPU": float(p("cpu_duree_min_s", im.DUREE_MIN_S["systeme: occupation CPU"]).value)})
         self._last = ""                                                    # derniere charge publiee (comparaison)
         self._lastPub = 0.0
         self._heartbeat = float(p("republier_toutes_s", 30.0).value)       # republication meme sans changement : un lecteur tardif ne reste pas sans etat
@@ -86,11 +87,11 @@ class IncidentNode(Node):
             return None, None
 
     def _onAgg(self, msg):
-        f = im.feuilles(msg.status)
+        f, attente = self._persist.appliquer(im.feuilles(msg.status))
         hs, age = self._hostTracking()
         bad, par_part, orph, ign = im.parts_en_defaut(f, self._idx, hs, age)
         actifs, resolus = self._tracker.update(bad, par_part, f)
-        body = im.payload(actifs, resolus, orph, ign, len(f))
+        body = im.payload(actifs, resolus, orph, ign, len(f), attente)
         # Comparaison SANS les champs qui changent a chaque releve (anciennete), sinon on republierait toutes les 3 s
         stable_cmp = json.dumps(self._sans_horloge(body), sort_keys=True, ensure_ascii=False)
         now = time.monotonic()

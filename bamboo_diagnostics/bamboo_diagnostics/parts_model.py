@@ -15,6 +15,8 @@ from collections import defaultdict
 TYPES = ("physique", "electronique", "logiciel", "infrastructure", "systeme")
 CERTITUDES = ("confirme", "deduit", "a_renseigner")
 ID_RE = re.compile(r"^[a-z0-9_]+$")
+# Conditions d'une piste de resolution contextuelle (`resolution: [{si: ..., texte: ...}]`). Evaluees par incident_model.condition_ok.
+SI_VALIDES = ("suivi_actif", "nav_seule", "aucun_gros_service")
 FORMES = ("boite", "cylindre")
 VISUEL_CLES = {"urdf", "forme", "pos", "taille", "axe", "estime", "via"}
 
@@ -79,12 +81,31 @@ def validate(doc, urdf_names=None, diag_names=None):
         if urdf_names is not None and p.get("type") == "physique" and re.search(r"(_link|_joint)$|^laser$", str(i)) and i not in urdf_names:
             errs.append("%s : nom de lien/joint absent de l'URDF" % i)
         errs += _visuel(p, urdf_names, idset)
+        errs += _resolution(p)
         if diag_names is not None:
             for t in p.get("diag") or []:
                 if t not in diag_names:
                     errs.append("%s : tache de diagnostic inconnue %r" % (i, t))
     errs += _cycles(parts, "parent")
     errs += _cycles(parts, "depends_on")
+    return errs
+
+
+def _resolution(p):
+    """Une piste est un TEXTE, ou {texte, si} : elle ne s'affiche alors que si la condition `si` est vraie (suivi_actif, nav_seule, aucun_gros_service)."""
+    i, errs = p.get("id"), []
+    r = p.get("resolution")
+    if r is None:
+        return errs
+    if not isinstance(r, list):
+        return ["%s : resolution doit etre une liste" % i]
+    for e in r:
+        if isinstance(e, str):
+            continue
+        if not isinstance(e, dict) or set(e) - {"texte", "si"} or not isinstance(e.get("texte"), str) or not e.get("texte"):
+            errs.append("%s : resolution : une piste est un texte ou {texte: ..., si: ...}, trouve %r" % (i, e))
+        elif "si" in e and e["si"] not in SI_VALIDES:
+            errs.append("%s : resolution : condition %r inconnue (attendu : %s)" % (i, e["si"], ", ".join(SI_VALIDES)))
     return errs
 
 

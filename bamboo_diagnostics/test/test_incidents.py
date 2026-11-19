@@ -254,3 +254,105 @@ def test_each_consequence_carries_its_own_label_level_and_tasks(graph, idx):
         assert [c["id"] for c in a["consequences_detail"]] == a["consequences"]
         for c in a["consequences_detail"]:
             assert set(c) == {"id", "label", "niveau", "taches"} and c["niveau"] in ("WARN", "ERROR", "STALE") and c["label"]
+
+
+# ------------------------------------------------------------------------------------------------ ordre : erreurs d'abord
+def test_errors_come_before_warnings_whatever_the_criticality_of_the_root(graph, idx):
+    """Un avertissement sur une part de criticite 1 (batterie) ne passe plus avant une erreur de criticite 2 (lidar)."""
+    st = arbre(**{"esp32_mavlink_driver: batterie": WARN, "scan_monitor: lidar": ERROR, "js0: peripherique": WARN})
+    actifs, *_ = cycle(graph, idx, st, im.IncidentTracker(graph, confirmations=1))
+    niveaux = [a["niveau"] for a in actifs]
+    assert niveaux == sorted(niveaux, key=lambda n: -im.RANG_NOM[n]), niveaux
+    assert actifs[0]["niveau"] == "ERROR" and actifs[-1]["niveau"] == "WARN"
+
+
+def test_among_equal_levels_the_incident_with_the_most_critical_piece_comes_first(graph, idx):
+    st = arbre(**{"js0: peripherique": WARN, "esp32_mavlink_driver: liaison serie": WARN})                       # deux pannes INDEPENDANTES
+    actifs, *_ = cycle(graph, idx, st, im.IncidentTracker(graph, confirmations=1))
+    assert [a["racine"] for a in actifs][:2] == ["cp2102_esp32", "manette"], [a["racine"] for a in actifs]       # criticite 1 avant 2
+
+
+def test_consequences_are_listed_most_serious_first(graph, idx):
+    st = arbre(**{"esp32_mavlink_driver: liaison serie": ERROR, "esp32_mavlink_driver: imu": WARN, "esp32_mavlink_driver: batterie": ERROR})
+    actifs, *_ = cycle(graph, idx, st, im.IncidentTracker(graph, confirmations=1))
+    for a in actifs:
+        niv = [c["niveau"] for c in a["consequences_detail"]]
+        assert niv == sorted(niv, key=lambda n: -im.RANG_NOM[n]), (a["racine"], niv)
+        assert [c["id"] for c in a["consequences_detail"]] == a["consequences"]
+
+
+# ------------------------------------------------------------------------------------------------ surcharge CPU : durée minimale
+CPU = "systeme: occupation CPU"
+
+
+def test_a_cpu_overload_is_not_an_incident_before_it_lasts(graph, idx):
+    h = Horloge()
+    pers = im.Persistance(clock=h)
+    st = arbre(**{CPU: ERROR})
+    f, attente = pers.appliquer(im.feuilles(st))
+    assert f[CPU][0] == OK and attente == [CPU]                                     # vue comme OK, mais signalee « en observation »
+    h.t += 30
+    assert pers.appliquer(im.feuilles(st))[0][CPU][0] == OK                         # 30 s : toujours un demarrage
+    h.t += 31
+    f, attente = pers.appliquer(im.feuilles(st))
+    assert f[CPU][0] == ERROR and attente == []                                     # plus de 60 s sans interruption : c'est une vraie surcharge
+
+
+def test_a_cpu_overload_that_stops_resets_the_counter(graph, idx):
+    h = Horloge()
+    pers = im.Persistance(clock=h)
+    pers.appliquer(im.feuilles(arbre(**{CPU: WARN})))
+    h.t += 50
+    pers.appliquer(im.feuilles(arbre()))                                            # retour a OK
+    h.t += 50
+    f, attente = pers.appliquer(im.feuilles(arbre(**{CPU: WARN})))                  # rechute : le compteur repart de zero
+    assert f[CPU][0] == OK and attente == [CPU]
+
+
+def test_other_tasks_are_never_delayed(graph, idx):
+    pers = im.Persistance(clock=Horloge())
+    f, attente = pers.appliquer(im.feuilles(arbre(**{"scan_monitor: lidar": ERROR})))
+    assert f["scan_monitor: lidar"][0] == ERROR and attente == []
+
+
+def test_the_nav_stack_startup_spike_does_not_blame_the_rpi(graph, idx):
+    """Constate le 2026-11-19 : la pile NAV demarree sans lidar faisait retenir le RPi comme racine de l'incident du lidar."""
+    h = Horloge()
+    pers = im.Persistance(clock=h)
+    st = arbre(**{CPU: ERROR, "scan_monitor: lidar": ERROR, "nav_supervisor: navigation": ERROR})
+    f, _a = pers.appliquer(im.feuilles(st))
+    bad, par, _o, _i = im.parts_en_defaut(f, idx)
+    actifs, _r = im.IncidentTracker(graph, confirmations=1).update(bad, par, f)
+    assert "rpi" not in [a["racine"] for a in actifs], [a["racine"] for a in actifs]
+
+
+def test_the_payload_lists_what_is_under_observation(graph, idx):
+    assert im.payload([], [], [], [], 38, [CPU])["en_observation"] == [CPU]
+    assert im.payload([], [], [], [], 38)["en_observation"] == []
+
+
+# ------------------------------------------------------------------------------------------------ conseil adapte a ce qui tourne
+NAV = ["nav_supervisor: navigation", "scan_monitor: lidar"]
+
+
+def _conseils(graph, idx, **etat):
+    st = arbre(**dict({CPU: ERROR}, **etat))
+    actifs, *_ = cycle(graph, idx, st, im.IncidentTracker(graph, confirmations=1))
+    return " ".join(next(a for a in actifs if a["racine"] == "rpi")["resolution"])
+
+
+def test_the_advice_never_tells_to_stop_a_stack_that_is_not_running(graph, idx):
+    texte = _conseils(graph, idx, **{t: STALE for t in NAV})                        # ni suivi ni NAV : leurs taches sont muettes (STALE), comme sur le robot au repos
+    assert "couper le suivi" not in texte and "pile NAV (Nav2" not in texte
+    assert "docker stats" in texte
+
+
+def test_with_the_tracking_running_the_advice_is_to_stop_the_tracking(graph, idx):
+    suivi = {t: OK for t in SUIVI}
+    texte = _conseils(graph, idx, **suivi)
+    assert "couper le suivi" in texte and "pile NAV (Nav2" not in texte
+
+
+def test_with_only_the_nav_running_the_advice_is_to_stop_the_nav(graph, idx):
+    texte = _conseils(graph, idx, **{"nav_supervisor: navigation": OK, "scan_monitor: lidar": OK})
+    assert "pile NAV (Nav2" in texte and "couper le suivi" not in texte
