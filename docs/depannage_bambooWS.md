@@ -150,7 +150,7 @@ Quand une amélioration est faite, la noter dans le journal des incidents (secti
 
 | | |
 |---|---|
-| **Statut** | proposée (étape 2 du chantier « nomenclature des parts ») |
+| **Statut** | faite (2026-11-18, `incident_node`, commit `208164a`) ; règle de gravité ajoutée le 2026-11-19 : un avertissement en amont n'absorbe plus une erreur en aval (`243fcde`), et une surcharge CPU doit durer 60 s pour compter (`0cedef7`) |
 | **Motif** | lidar débranché : **deux** erreurs (`scan_monitor`, `nav_supervisor`) pour une panne. Webcam gelée : **quatre** services en erreur pour une webcam. Le diagnostic actuel ne regroupe pas |
 | **Ce qu'on ferait** | un nœud en lecture seule qui lit `/diagnostics_agg`, rattache chaque tâche en défaut à une part (`parts.yaml`), calcule **racines** et **impact** (`parts_model.Graph.incidents` existe et est testé), puis publie un JSON `/bamboo/incidents` |
 | **Règles pour ne pas mentir** | un service **arrêté à la demande** (suivi, lidar, navigation) n'est pas un incident ; une tâche en défaut **sans part** est signalée, jamais ignorée ; un défaut doit durer deux relevés avant de devenir incident |
@@ -189,7 +189,7 @@ Quand une amélioration est faite, la noter dans le journal des incidents (secti
 
 | | |
 |---|---|
-| **Statut** | proposée |
+| **Statut** | faite (2026-11-18 à 2026-11-19, panneau Incidents du CC, touche `I`, avec vue 3D) |
 | **Motif** | les pistes de résolution existent dans `parts.yaml` mais il faut les chercher à la main |
 | **Ce qu'on ferait** | dans le CC, un panneau « Incidents » : racine, conséquences, **étapes numérotées** tirées de `resolution`, bouton « copier la commande ». **Le panneau n'exécute rien** : l'opérateur reste maître |
 | **Risque** | ne pas ajouter de bouton « réparer » : un service redémarré à tort, traction armée, peut être dangereux |
@@ -202,6 +202,57 @@ Quand une amélioration est faite, la noter dans le journal des incidents (secti
 | **Motif** | quatre parts sont encore « à renseigner » (`base_link`, `oled`, `hub_usb`, `adaptateur_bluetooth`), cinq autres « déduites » (dont les quatre moteurs) |
 | **Ce qu'on ferait** | relever les références sur le matériel (étiquettes, factures) : elles conditionnent le **remplacement** d'une pièce défaillante |
 | **Qui** | l'opérateur : je ne peux pas les deviner |
+
+### 5.9 Une « MEL du robot » : quelles pannes tolérer, mode par mode
+
+| | |
+|---|---|
+| **Statut** | proposée, **mise de côté le 2026-11-22** à la demande de l'opérateur (rien n'est fait) |
+| **Motif** | l'analyse d'incident dit *ce qui est en panne* ; elle ne dit pas *ce qu'on peut encore faire*. Aujourd'hui seul `requires` (nœud vivant) interdit l'entrée dans un mode, et la navigation vérifie seulement lidar et IMU au démarrage |
+| **Ce qu'on ferait** | un fichier `mel.yaml`, **à côté** de `parts.yaml` (le constructeur publie la MMEL, l'exploitant en tire sa MEL : on ne mélange pas « ce qu'est la pièce » et « ce que je tolère »). Pour chaque mode, chaque part est : `R` requise (NO-GO si erreur ou muette), `R+` requise dès l'avertissement, `T` tolérée avec consigne affichée, ou ignorée. Verdict par mode : `GO`, `GO RESTREINT`, `NO-GO`, publié dans `/bamboo/incidents` (champ `dispatch`) et affiché en une puce par mode dans le panneau Incidents. **Il informe, il ne coupe jamais le robot en mouvement** (c'est le rôle du garde-fou du CC) |
+| **Déjà acquis dans le code** | NAV exige `nav_supervisor`, `has_lidar` et, au démarrage, lidar et IMU (`required_sensors`) ; CALIB exige le nœud `bamboo_calibration` ; SANTE, CONDUITE et TRACKING n'ont aucun prérequis de part |
+| **À décider avant de commencer** | (1) **manette en NAV** : tolérée avec la consigne « arrêt d'urgence par le CC seulement », ou requise ? C'est la décision de sécurité principale (aujourd'hui B court arrête et annule le but) ; (2) moteurs arrière en conduite : tolérés à vitesse réduite ou NO-GO ; (3) une tolérance a-t-elle une **durée limite** (comme les délais de report d'une MEL aérienne) ; (4) afficher seulement, ou aussi refuser l'entrée dans un mode en NO-GO via le gestionnaire de modes |
+| **Tableau proposé** | voir ci-dessous. Seules les cases NAV (lidar, IMU) et CALIB (nœud) reposent sur le code ; **toutes les autres sont des propositions** |
+| **À confirmer** | l'IMU est supposée requise en calibration (mesure du glissement par gyroscope) : non vérifié |
+| **Mise en œuvre** | (1) `mel.yaml` et son validateur (part ou mode inconnu rejeté, tests de concordance avec `modes.yaml`) ; (2) calcul du verdict dans `incident_model.py` ; (3) puces dans le CC, puis, si voulu, refus d'entrée dans le gestionnaire de modes |
+| **Risque** | une tolérance mal choisie fait rouler le robot dans une condition dégradée : chaque case « tolérée » est une décision de sécurité de l'opérateur, pas un défaut à régler par code |
+
+Légende : `R` NO-GO si erreur ou muette ; `R+` NO-GO dès l'avertissement ; `T` toléré avec consigne ; `-` ignoré.
+
+| Part | CONDUITE | TRACKING | CALIB | NAV | SANTE |
+|---|---|---|---|---|---|
+| Carte ESP32, pont USB-série, driver | R | R | R | R | - |
+| Pont en H TB6612 | R | R | R | R | - |
+| Moteurs et roues avant | R | R | R | R | - |
+| Moteurs et roues arrière | T (vitesse réduite) | T | R | R | - |
+| Encodeurs | T | T | R | R | - |
+| Batterie | T (avertissement) ; R en erreur | T | R+ | R+ | - |
+| INA219 (mesure V/I) | T (missions courtes) | T | T | T | - |
+| IMU | - | - | R (à confirmer) | R | - |
+| Magnétomètre | - | - | - | - | - |
+| Lidar et son adaptateur | - | - | - | R | - |
+| Webcam, `bamboo_video`, `camera_h264` | T | R | - | R (le garde-fou du CC arrête sans vidéo) | - |
+| `bamboo_videotracking` | - | R | - | - | - |
+| Manette et adaptateur Bluetooth | R | R | R | **à décider** | - |
+| `bamboo_control` | R | R | R | R | - |
+| `rosbridge`, `robotdesc`, `navigation` | - | - | - | R | - |
+| `bamboo_calibration` | - | - | R | - | - |
+| `bamboo_diagnostics` | T | T | T | T | R |
+| RPi (alimentation, surcharge CPU soutenue) | T | T | T | R+ | - |
+
+**Ce que l'aviation fait (recherche du 2026-11-22, pages Wikipedia lues ; limites plus bas).**
+
+- **Hiérarchie des parts** : numérotation commune ATA 100 / iSpec 2200 (chapitre-section, ex. 24-20 génération AC ; 32-40 roues et freins), identique pour tous les constructeurs ; usage : manuels, catalogues, messages de panne pour le dépannage. C'est une hiérarchie de **rangement**, comme notre `parent`. Les dépendances causales vivent ailleurs (dossiers de sûreté).
+- **Analyse de sûreté** (SAE ARP4761 / ARP4754, certification CS-25.1309) : FHA (dangers fonctionnels, gravité Catastrophique / Dangereux / Majeur / Mineur / Sans effet), PSSA, SSA. **FTA est descendante** (on part de l'événement redouté et on remonte aux causes) ; **FMEA est ascendante** (on part de la panne d'un composant et on déduit ses effets, une panne à la fois). La pratique civile est de **faire les deux**, un résumé FMEA (FMES) servant d'interface. L'analyse de cause commune (CCA) cherche ce qui peut tuer plusieurs pièces redondantes à la fois : c'est notre `depends_on`.
+- **Détection embarquée** (BITE / BIT) : détecter, accommoder, annoncer ou journaliser ; mémoriser les pannes et gérer des tests.
+- **Exploitation** (MMEL / MEL) : le constructeur donne la liste des équipements pouvant être inopérants au départ, l'exploitant l'adapte à son avion, l'autorité l'approuve ; tout équipement non listé doit marcher avant le vol ; un report est limité en heures, cycles ou jours, avec marquage de l'équipement.
+- **Santé et pronostic** (IVHM / HUMS) : le diagnostic (détecter, identifier) est distinct du **pronostic** (prédire la panne, durée de vie restante) ; données urgentes traitées à bord, le reste au sol ; ISO 13374 et OSA-CBM découpent en couches (acquisition, traitement, détection d'état, évaluation de santé, pronostic, recommandation) ; la famille ARINC normalise l'échange de données.
+- **Direction de l'analyse** : *en conception et certification*, descendante (FHA, FTA) **et** ascendante (FMEA). *En exploitation*, la remontée des pannes est ascendante (BITE, messages), puis un calculateur central les corrèle. Notre `incident_node` fait ce second rôle.
+- **Pas de norme unique « gestion d'incident »** : ATA / iSpec 2200 (codage), ARP4761 et ARP4754 (sûreté), ISO 13374 et OSA-CBM (santé et pronostic), ARINC (échange de données), MEL / MMEL (exploitation).
+
+**Limites de cette recherche** : l'outil de recherche web était indisponible (le proxy refuse l'outil de recherche) ; seules des pages Wikipedia ont pu être lues. Non vérifiés : ARINC 624 et 604 (système de maintenance de bord, corrélation par calculateur central), les classes de messages Airbus (CFDS, FIM), MSG-3 (logique descendante de définition des tâches), les catégories A/B/C/D de délai de réparation de la MEL, les niveaux d'alerte ECAM/EICAS. Ne rien citer de ces points sans source.
+
+**Ce qui manque encore à notre système par rapport à cette pratique** : (a) une **gravité de la panne indépendante de la part** (en aviation, classée selon l'effet sur la mission ; chez nous, la criticité est attachée à la part) ; (b) la MEL ci-dessus ; (c) le **pronostic** (compteurs par part, le futur `maintenance_node`) ; (d) la séparation en couches détection / corrélation / présentation, que nous avons presque (`bamboo_health`, `incident_node`, le CC).
 
 ## 6. Comment ajouter un incident
 
