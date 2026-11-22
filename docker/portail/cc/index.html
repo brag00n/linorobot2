@@ -79,6 +79,9 @@
 
 <script src="widgets.js"></script>
 <script src="robot3d.js"></script>
+<script src="partmd.js"></script>
+<script src="partmaint.catalog.js"></script>
+<script src="partmaint.js"></script>
 <script>
 (function () {
 "use strict";
@@ -935,6 +938,7 @@ var KEYS = [
     [["1", "2", "3", "4"], "Changer de mode : Mission, Vitaux, Config, Calib."],
     ["J", "Ouvrir / fermer le journal du robot."],
     ["I", "Ouvrir / fermer les incidents : cause racine, conséquences, pistes de résolution."],
+    ["P", "Ouvrir / fermer la maintenance d'une part (métriques, actions, documentation, résolutions) ; double-clic sur une pièce de la vue 3D."],
     ["Retour arrière", "Dans les incidents : remonter d'un niveau de la vue 3D (aussi : clic dans le vide)."],
     ["H", "Ouvrir / fermer cette liste des touches."],
     ["S", "Afficher / masquer la source de chaque donnée (topic ROS)."],
@@ -1005,7 +1009,7 @@ function incRender(wrap) {
   wrap.appendChild(h("div", "incsum", old ? "Données anciennes : le nœud d'analyse ne publie plus." : (INC.n_incidents ? INC.n_incidents + " incident(s) actif(s) sur " + INC.n_taches_analysees + " tâches analysées" : "Aucun incident : " + INC.n_taches_analysees + " tâches analysées, tout est cohérent.")));
   (INC.incidents || []).map(function (x, n) { return { x: x, n: n }; }).sort(function (a, b) { return (incLv(b.x) - incLv(a.x)) || (a.n - b.n); }).forEach(function (e) {      // erreurs d'abord, puis avertissements
     var x = e.x, c = h("div", "inc"); c.dataset.lv = incLv(x);
-    c.classList.add("incgo"); c.title = "Cliquer : montrer cette pièce dans la vue 3D"; c.onclick = function (ev) { if (ev.target.closest && ev.target.closest("button")) return; if (R3D) R3D.reveal(x.racine); };
+    c.classList.add("incgo"); c.title = "Cliquer : montrer cette pièce dans la vue 3D"; c.onclick = function (ev) { if (ev.target.closest && ev.target.closest("button")) return; if (R3D) R3D.reveal(x.racine); if (window.PartMaint) PartMaint.open(x.racine, { section: "res" }); };
     c.appendChild(h("div", "inch", x.label + " — " + (x.type || "") + " · criticité " + x.criticite + (x.depuis_s != null ? " · depuis " + Math.round(x.depuis_s) + " s" : "")));
     if (x.taches && x.taches.length) c.appendChild(h("div", "kd", "Tâches en défaut : " + x.taches.join(" · ")));
     if (x.consequences && x.consequences.length) {                                   // une ligne par pièce touchée : celles que la vue 3D colore et étiquette
@@ -1053,7 +1057,7 @@ function openIncidents() {
     if (path.length > 1) { var back = h("button", "r3dback", "← Retour"); back.type = "button"; back.title = "Remonter d'un niveau (Retour arrière, ou clic dans le vide)"; back.onclick = function () { R3D.back(); }; crumb.appendChild(back); }
   };
   dlgShow({ tag: "Maintenance // incidents", title: "Incidents du robot", slide: true, body: [box, wrap, h("div", "srcnote", "/bamboo/incidents (incident_node, lecture seule) · nomenclature parts.yaml")], foot: [dbtn("Fermer", "pri", dlgClose)] });
-  R3D = Robot3D.create(cv, { lvFn: incLv, onChange: crumbFill }); R3D.setIncidents(INC); r3dFeed();
+  R3D = Robot3D.create(cv, { lvFn: incLv, onChange: crumbFill, onOpen: window.PartMaint ? function (id) { PartMaint.open(id); } : null }); R3D.setIncidents(INC); r3dFeed();
 }
 
 var mdiv = $("#modes"); MODES.forEach(function (m) { var b = h("button", "mode"); b.type = "button"; b.dataset.mode = m[0]; b.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + ICON[m[0]] + '</svg><b>' + m[1] + '</b><small>' + m[2] + '</small>'; b.onclick = function () { setMode(m[0]); }; mdiv.appendChild(b); });
@@ -1228,7 +1232,7 @@ $("#kbtn").onclick = function () { toggleSlide("keys", openKeys); };
 $("#ibtn").onclick = function () { toggleSlide("incidents", openIncidents); };
 document.addEventListener("keydown", function (e) {
   if (e.ctrlKey || e.metaKey || e.altKey || document.querySelector("dialog[open]:not(.slide)")) return; if (e.target.closest && e.target.closest("input,textarea")) return;
-  var k = e.key.toLowerCase(); if (k >= "1" && k <= "4") setMode(MODES[+k - 1][0]); else if (k === "s") toggleSrc(!document.body.classList.contains("srcs")); else if (k === "j") toggleSlide("journal", openJournal); else if (k === "h") toggleSlide("keys", openKeys); else if (k === "i") toggleSlide("incidents", openIncidents); else if (e.key === "Backspace" && SLIDE === "incidents" && R3D && R3D.back()) e.preventDefault(); else if (k === "m" && S.mode === "mission") toggleMapStage();
+  var k = e.key.toLowerCase(); if (k >= "1" && k <= "4") setMode(MODES[+k - 1][0]); else if (k === "s") toggleSrc(!document.body.classList.contains("srcs")); else if (k === "j") toggleSlide("journal", openJournal); else if (k === "h") toggleSlide("keys", openKeys); else if (k === "i") toggleSlide("incidents", openIncidents); else if (k === "p" && window.PartMaint) PartMaint.toggle(); else if (e.key === "Backspace" && SLIDE === "incidents" && R3D && R3D.back()) e.preventDefault(); else if (k === "m" && S.mode === "mission") toggleMapStage();
 });
 
 /* pastilles de santé du pied de page : uniquement ce qui n'est pas vert, comme la carte santé du HUD */
@@ -1315,13 +1319,19 @@ function frame(ts) {
   var live = AI.client && (AI.mic || AI.st === "speaking") && performance.now() - AI.lvT < 400, lv = live ? Math.min(1, AI.level * 4) : 0;
   for (var i = 0; i < wv.length; i++) wv[i].style.height = live ? (4 + lv * (6 + (Math.sin(ts / 90 + i * 1.3) * .5 + .5) * 22)) + "px"
     : (4 + (Math.sin(ts / 420 + i * .6) * .5 + .5) * 6 + (Math.sin(ts / 1100 + i * 1.7) * .5 + .5) * 5) + "px";
+  if (window.PartMaint) PartMaint.tick(ts);
   requestAnimationFrame(frame);
 }
 if (HASH.src) toggleSrc(true);
 setMode(HASH.mode && BUILD[HASH.mode] ? HASH.mode : "vitals", true);
 log(0, "Session ouverte"); typeAI(); rbConnect(); vidStart();
 if (HASH.open === "journal") toggleSlide("journal", openJournal); else if (HASH.open === "keys") toggleSlide("keys", openKeys);
-window.CC = { test: { r3d: function () { return R3D; }, ai: { init: function () { aiInit(); }, save: function (u, k) { aiSave(u, k); }, state: function () { return AI; }, fail: function (e) { aiFail(e); }, settings: function () { aiSettings(); }, mic: function (on) { if (on) aiMicStart(); else aiMicStop("test"); } }, hide: function (h) { Object.defineProperty(document, "hidden", { configurable: true, get: function () { return h; } }); document.dispatchEvent(new Event("visibilitychange")); }, subs: function () { return Object.keys(SUBS).sort(); }, linkOk: function () { return ccLinkOk(); }, calls: CALLS_OUT, arm: ARM, hb: HB, setWs: function (w) { ws = w; SUBS = {}; syncQ.length = 0; }, resync: function () { syncSubs(); }, setTR: function (t) { TR = t; TRT = performance.now(); }, setGS: function (st) { GS = { cc: st, video: st, tripped: false, pilot: TABID }; GST = performance.now(); } }, V: V, S: S, inject: function (topic, msg) { var d = HANDLERS[topic]; if (d) d[3](msg); }, state: function () { return { rb: S.rb, vid: S.vid, tasks: Object.keys(DT).length, mods: DMODS.length, V: V, pad: S.pad, mode: S.robotMode, charging: S.charging, T: T }; } };
+if (window.PartMaint) PartMaint.init({
+  rbCall: rbCall, log: log, incLv: incLv, incCmd: incCmd, incCopy: incCopy,
+  parts: function () { return PARTS; }, inc: function () { return incFresh() ? INC : null; }, dt: function () { return window.CCSTATE.DT; }, vars: function () { return V; },
+  env: function () { return { link: ccLinkOk(), linkWhy: ccLinkWhy().replace("Indisponible : ", ""), armed: TR ? !!TR.armed : null }; }
+});
+window.CC = { test: { pm: function () { return window.PartMaint || null; }, r3d: function () { return R3D; }, ai: { init: function () { aiInit(); }, save: function (u, k) { aiSave(u, k); }, state: function () { return AI; }, fail: function (e) { aiFail(e); }, settings: function () { aiSettings(); }, mic: function (on) { if (on) aiMicStart(); else aiMicStop("test"); } }, hide: function (h) { Object.defineProperty(document, "hidden", { configurable: true, get: function () { return h; } }); document.dispatchEvent(new Event("visibilitychange")); }, subs: function () { return Object.keys(SUBS).sort(); }, linkOk: function () { return ccLinkOk(); }, calls: CALLS_OUT, arm: ARM, hb: HB, setWs: function (w) { ws = w; SUBS = {}; syncQ.length = 0; }, resync: function () { syncSubs(); }, setTR: function (t) { TR = t; TRT = performance.now(); }, setGS: function (st) { GS = { cc: st, video: st, tripped: false, pilot: TABID }; GST = performance.now(); } }, V: V, S: S, inject: function (topic, msg) { var d = HANDLERS[topic]; if (d) d[3](msg); }, state: function () { return { rb: S.rb, vid: S.vid, tasks: Object.keys(DT).length, mods: DMODS.length, V: V, pad: S.pad, mode: S.robotMode, charging: S.charging, T: T }; } };
 requestAnimationFrame(frame);
 })();
 </script>

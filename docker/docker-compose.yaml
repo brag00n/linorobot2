@@ -358,6 +358,9 @@ services:
     read_only: true
     volumes:
       - ./portail:/www:ro
+      # Fiches de maintenance par part (docs/parts/<id>.md), lues par le slide Maintenance du CC (module optionnel partmaint.js) : lecture seule.
+      # Le point de montage doit EXISTER dans l'image montee (le conteneur est en lecture seule : Docker ne peut pas creer /www/docs) : cc/docs/ est dans le depot.
+      - ../docs/parts:/www/cc/docs/parts:ro
       # Assistant d'appairage de la manette (modales du portail) : /cgi-bin/pad DEPOSE une
       # demande ici, bamboo-pad.path (hote) l'execute et y ecrit l'etat. Meme schema que
       # /run/bamboo-ondemand : le conteneur n'a ni D-Bus ni Docker. Voir docker/pad/.

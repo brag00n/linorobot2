@@ -470,11 +470,18 @@
       } else { var h = hitAt(p); hov = h ? h.id : null; canvas.style.cursor = h ? (h.zoom ? "zoom-in" : "pointer") : "grab"; }
       if (reduce) self.draw();
     });
+    var clickT = 0, DBL_MS = 260;                                                        // un clic simple zoome APRES ce delai : un second clic dans l'intervalle est un double-clic (maintenance)
     var release = function (e) {
       if (!pdown) return; var wasMoved = pdown.moved; pdown = null; idleUntil = now0() + 2500;
       try { canvas.releasePointerCapture(e.pointerId); } catch (er) { }
       if (wasMoved) { canvas.style.cursor = "grab"; self.draw(); return; }
       var h = hitAt(local(e));
+      if (h && opts.onOpen) {
+        if (clickT && clickT.id === h.id) { clearTimeout(clickT.t); clickT = 0; sel = h.id; opts.onOpen(h.id); self.draw(); return; }          // double-clic : maintenance de cette part
+        if (clickT) { clearTimeout(clickT.t); clickT = 0; }
+        if (h.zoom) { var hid = h.id; clickT = { id: hid, t: setTimeout(function () { clickT = 0; self.zoomTo(hid); }, DBL_MS) }; return; }               // zoom differe
+        sel = h.id; opts.onOpen(h.id); self.draw(); return;                                  // piece terminale : rien a eclater, la maintenance s'ouvre
+      }
       if (h) { if (h.zoom) self.zoomTo(h.id); else { sel = h.id; if (opts.onPick) opts.onPick(h.id); self.draw(); } }
       else self.back();                                                                // clic dans le vide : un niveau en arriere
     };
